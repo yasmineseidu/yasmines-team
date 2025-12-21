@@ -199,8 +199,9 @@ class TestHeyReachClientCampaigns:
             ]
         }
 
-        with patch.object(client, "get", new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = mock_response
+        # list_campaigns now uses POST
+        with patch.object(client, "post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = mock_response
 
             campaigns = await client.list_campaigns(limit=50, offset=0)
 
@@ -218,8 +219,9 @@ class TestHeyReachClientCampaigns:
             "total": 1,
         }
 
-        with patch.object(client, "get", new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = mock_response
+        # list_campaigns now uses POST
+        with patch.object(client, "post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = mock_response
 
             campaigns = await client.list_campaigns()
 
@@ -229,8 +231,9 @@ class TestHeyReachClientCampaigns:
     @pytest.mark.asyncio
     async def test_list_campaigns_raises_on_error(self, client: HeyReachClient) -> None:
         """Should raise HeyReachError on API error."""
-        with patch.object(client, "get", new_callable=AsyncMock) as mock_get:
-            mock_get.side_effect = IntegrationError("Failed", status_code=500)
+        # list_campaigns now uses POST
+        with patch.object(client, "post", new_callable=AsyncMock) as mock_post:
+            mock_post.side_effect = IntegrationError("Failed", status_code=500)
 
             with pytest.raises(HeyReachError):
                 await client.list_campaigns()
@@ -246,6 +249,7 @@ class TestHeyReachClientCampaigns:
             "campaignAccountIds": ["acc-1", "acc-2"],
         }
 
+        # get_campaign now uses /campaign/GetById with query param
         with patch.object(client, "get", new_callable=AsyncMock) as mock_get:
             mock_get.return_value = mock_response
 
@@ -254,7 +258,9 @@ class TestHeyReachClientCampaigns:
             assert campaign.id == "campaign-1"
             assert campaign.description == "Test campaign"
             assert campaign.account_ids == ["acc-1", "acc-2"]
-            mock_get.assert_called_once_with("/campaign/campaign-1")
+            mock_get.assert_called_once_with(
+                "/campaign/GetById", params={"campaignId": "campaign-1"}
+            )
 
     @pytest.mark.asyncio
     async def test_get_active_campaigns(self, client: HeyReachClient) -> None:
@@ -305,7 +311,9 @@ class TestHeyReachClientCampaigns:
             campaign = await client.pause_campaign("campaign-1")
 
             assert campaign.status == CampaignStatus.PAUSED
-            mock_post.assert_called_once_with("/campaign/pause", json={"campaignId": "campaign-1"})
+            mock_post.assert_called_once_with(
+                "/campaign/Pause", params={"campaignId": "campaign-1"}
+            )
 
     @pytest.mark.asyncio
     async def test_resume_campaign_success(self, client: HeyReachClient) -> None:
@@ -318,7 +326,9 @@ class TestHeyReachClientCampaigns:
             campaign = await client.resume_campaign("campaign-1")
 
             assert campaign.status == CampaignStatus.ACTIVE
-            mock_post.assert_called_once_with("/campaign/resume", json={"campaignId": "campaign-1"})
+            mock_post.assert_called_once_with(
+                "/campaign/Resume", params={"campaignId": "campaign-1"}
+            )
 
 
 class TestHeyReachClientLeads:
@@ -361,7 +371,7 @@ class TestHeyReachClientLeads:
             assert result.added_count == 2
             assert result.failed_count == 0
             mock_post.assert_called_once_with(
-                "/campaign/AddLeadsToListV2",
+                "/campaign/AddLeadsToCampaignV2",
                 json={"campaignId": "campaign-1", "leads": leads},
             )
 
@@ -426,8 +436,9 @@ class TestHeyReachClientLeads:
             "customUserFields": [{"name": "industry", "value": "Technology"}],
         }
 
-        with patch.object(client, "get", new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = mock_response
+        # get_lead_details now uses POST /lead/GetLead
+        with patch.object(client, "post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = mock_response
 
             lead = await client.get_lead_details("https://linkedin.com/in/johndoe")
 
@@ -475,8 +486,9 @@ class TestHeyReachClientLists:
             ]
         }
 
-        with patch.object(client, "get", new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = mock_response
+        # list_all_lists now uses POST
+        with patch.object(client, "post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = mock_response
 
             lists = await client.list_all_lists()
 
@@ -500,7 +512,7 @@ class TestHeyReachClientLists:
             assert lead_list.name == "New List"
             assert lead_list.lead_count == 0
             mock_post.assert_called_once_with(
-                "/list/CreateEmpty", json={"name": "New List", "type": "lead"}
+                "/list/CreateEmptyList", json={"name": "New List", "type": "lead"}
             )
 
     @pytest.mark.asyncio
@@ -602,8 +614,9 @@ class TestHeyReachClientMessaging:
             ]
         }
 
-        with patch.object(client, "get", new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = mock_response
+        # get_conversations now uses POST /inbox/GetConversationsV2
+        with patch.object(client, "post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = mock_response
 
             conversations = await client.get_conversations()
 
@@ -727,19 +740,38 @@ class TestHeyReachClientAnalytics:
     @pytest.mark.asyncio
     async def test_get_overall_stats_success(self, client: HeyReachClient) -> None:
         """Should retrieve overall account stats."""
-        mock_response = {
-            "totalCampaigns": 10,
-            "totalLeads": 5000,
-            "totalConnections": 1000,
+        # get_overall_stats now fetches campaigns first to get IDs
+        mock_campaigns_response = {
+            "items": [
+                {
+                    "id": "campaign-1",
+                    "name": "Test",
+                    "status": "ACTIVE",
+                    "campaignAccountIds": ["acc-1"],
+                },
+            ]
+        }
+        mock_stats_response = {
+            "overallStats": {
+                "profileViews": 100,
+                "messagesSent": 50,
+                "connectionsSent": 25,
+            },
+            "byDayStats": {},
         }
 
-        with patch.object(client, "get", new_callable=AsyncMock) as mock_get:
-            mock_get.return_value = mock_response
+        with patch.object(client, "post", new_callable=AsyncMock) as mock_post:
+            # First call is list_campaigns, second call is get_overall_stats
+            mock_post.side_effect = [
+                mock_campaigns_response,
+                mock_campaigns_response,
+                mock_stats_response,
+            ]
 
             stats = await client.get_overall_stats()
 
-            assert stats["totalCampaigns"] == 10
-            assert stats["totalLeads"] == 5000
+            assert "overallStats" in stats
+            assert stats["overallStats"]["profileViews"] == 100
 
 
 class TestHeyReachClientCallEndpoint:
@@ -918,8 +950,9 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_raises_heyreach_error_on_auth_failure(self, client: HeyReachClient) -> None:
         """Should raise HeyReachError with status code on auth failure."""
-        with patch.object(client, "get", new_callable=AsyncMock) as mock_get:
-            mock_get.side_effect = IntegrationError(
+        # list_campaigns now uses POST
+        with patch.object(client, "post", new_callable=AsyncMock) as mock_post:
+            mock_post.side_effect = IntegrationError(
                 "Unauthorized", status_code=401, response_data={"error": "Invalid key"}
             )
 
@@ -932,8 +965,9 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_raises_heyreach_error_on_rate_limit(self, client: HeyReachClient) -> None:
         """Should raise HeyReachError on rate limit."""
-        with patch.object(client, "get", new_callable=AsyncMock) as mock_get:
-            mock_get.side_effect = IntegrationError("Rate limited", status_code=429)
+        # list_campaigns now uses POST
+        with patch.object(client, "post", new_callable=AsyncMock) as mock_post:
+            mock_post.side_effect = IntegrationError("Rate limited", status_code=429)
 
             with pytest.raises(HeyReachError) as exc_info:
                 await client.list_campaigns()

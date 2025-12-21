@@ -299,7 +299,28 @@ class HeyReachClient(BaseIntegrationClient):
         """
         try:
             response = await self.get("/auth/CheckApiKey")
-            return response.get("success", response.get("data", False)) is True
+            # API returns various formats - check for any success indicator
+            if isinstance(response, bool):
+                return response
+            if isinstance(response, dict):
+                # Check for explicit False values first
+                if response.get("data") is False:
+                    return False
+                if response.get("success") is False:
+                    return False
+                if response.get("valid") is False:
+                    return False
+                # Check for explicit True values
+                if response.get("data") is True:
+                    return True
+                if response.get("success") is True:
+                    return True
+                if response.get("valid") is True:
+                    return True
+                # If we got a 200 response with any data, key is valid
+                if response:
+                    return True
+            return False
 
         except IntegrationError as e:
             logger.error(f"[{self.name}] check_api_key failed: {e}")
@@ -355,14 +376,21 @@ class HeyReachClient(BaseIntegrationClient):
         Raises:
             HeyReachError: If listing fails.
         """
-        params: dict[str, Any] = {
-            "limit": limit,
-            "offset": offset,
-        }
+        # HeyReach API requires POST with empty body for GetAll
+        payload: dict[str, Any] = {}
 
         try:
-            response = await self.get("/campaign/GetAll", params=params)
+            response = await self.post("/campaign/GetAll", json=payload)
             campaigns_data = self._extract_list_data(response)
+
+            # If no items/data key, response might be the list directly
+            if not campaigns_data and isinstance(response, dict):
+                # Check if response contains campaign-like data
+                if "id" in response and "name" in response:
+                    campaigns_data = [response]
+                # Or it might be wrapped differently
+                elif response.get("campaigns"):
+                    campaigns_data = response["campaigns"]
 
             return [self._parse_campaign(c) for c in campaigns_data]
 
@@ -388,7 +416,8 @@ class HeyReachClient(BaseIntegrationClient):
             HeyReachError: If campaign not found or request fails.
         """
         try:
-            response = await self.get(f"/campaign/{campaign_id}")
+            # HeyReach API uses query param, not path param
+            response = await self.get("/campaign/GetById", params={"campaignId": campaign_id})
             return self._parse_campaign(response)
 
         except IntegrationError as e:
@@ -480,7 +509,8 @@ class HeyReachClient(BaseIntegrationClient):
             HeyReachError: If pausing fails.
         """
         try:
-            response = await self.post("/campaign/pause", json={"campaignId": campaign_id})
+            # HeyReach API uses query param for campaign ID
+            response = await self.post("/campaign/Pause", params={"campaignId": campaign_id})
             logger.info(f"[{self.name}] Paused campaign {campaign_id}")
             return self._parse_campaign(response)
 
@@ -509,7 +539,8 @@ class HeyReachClient(BaseIntegrationClient):
             HeyReachError: If resuming fails.
         """
         try:
-            response = await self.post("/campaign/resume", json={"campaignId": campaign_id})
+            # HeyReach API uses query param for campaign ID
+            response = await self.post("/campaign/Resume", params={"campaignId": campaign_id})
             logger.info(f"[{self.name}] Resumed campaign {campaign_id}")
             return self._parse_campaign(response)
 
@@ -574,7 +605,8 @@ class HeyReachClient(BaseIntegrationClient):
         }
 
         try:
-            response = await self.post("/campaign/AddLeadsToListV2", json=payload)
+            # Correct endpoint: AddLeadsToCampaignV2 (not AddLeadsToListV2)
+            response = await self.post("/campaign/AddLeadsToCampaignV2", json=payload)
 
             return BulkAddResult(
                 success=response.get("success", True),
@@ -651,10 +683,11 @@ class HeyReachClient(BaseIntegrationClient):
         Raises:
             HeyReachError: If lead not found or request fails.
         """
-        params = {"linkedinUrl": linkedin_url}
+        payload = {"linkedinUrl": linkedin_url}
 
         try:
-            response = await self.get("/lead/GetDetails", params=params)
+            # Correct endpoint: POST /lead/GetLead
+            response = await self.post("/lead/GetLead", json=payload)
             return self._parse_lead(response)
 
         except IntegrationError as e:
@@ -728,13 +761,11 @@ class HeyReachClient(BaseIntegrationClient):
         Raises:
             HeyReachError: If retrieval fails.
         """
-        params: dict[str, Any] = {
-            "limit": limit,
-            "offset": offset,
-        }
+        # HeyReach API requires POST for list endpoints
+        payload: dict[str, Any] = {}
 
         try:
-            response = await self.get("/list/GetAll", params=params)
+            response = await self.post("/list/GetAll", json=payload)
             lists_data = self._extract_list_data(response)
 
             return [self._parse_list(lst) for lst in lists_data]
@@ -771,7 +802,8 @@ class HeyReachClient(BaseIntegrationClient):
         }
 
         try:
-            response = await self.post("/list/CreateEmpty", json=payload)
+            # Correct endpoint: CreateEmptyList (not CreateEmpty)
+            response = await self.post("/list/CreateEmptyList", json=payload)
             return self._parse_list(response)
 
         except IntegrationError as e:
@@ -922,14 +954,16 @@ class HeyReachClient(BaseIntegrationClient):
         Raises:
             HeyReachError: If retrieval fails.
         """
-        params: dict[str, Any] = {
+        # HeyReach API requires POST for inbox endpoints
+        payload: dict[str, Any] = {
             "limit": limit,
             "offset": offset,
             **filters,
         }
 
         try:
-            response = await self.get("/conversations/GetAll", params=params)
+            # Correct endpoint: /inbox/GetConversationsV2
+            response = await self.post("/inbox/GetConversationsV2", json=payload)
             conversations_data = self._extract_list_data(response)
 
             return [self._parse_conversation(c) for c in conversations_data]
@@ -1021,9 +1055,19 @@ class HeyReachClient(BaseIntegrationClient):
                 response_data=e.response_data,
             ) from e
 
-    async def get_overall_stats(self) -> dict[str, Any]:
+    async def get_overall_stats(
+        self,
+        account_ids: list[str] | None = None,
+        campaign_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
         """
         Get comprehensive account-wide analytics.
+
+        Args:
+            account_ids: List of LinkedIn account IDs to get stats for.
+                        If None, will attempt to fetch all campaigns and use their IDs.
+            campaign_ids: List of campaign IDs to get stats for.
+                         If None, will attempt to fetch all campaigns and use their IDs.
 
         Returns:
             Dictionary with overall statistics.
@@ -1032,7 +1076,26 @@ class HeyReachClient(BaseIntegrationClient):
             HeyReachError: If retrieval fails.
         """
         try:
-            return await self.get("/analytics/overall")
+            # If no IDs provided, fetch campaigns to get their IDs
+            if campaign_ids is None:
+                campaigns = await self.list_campaigns()
+                campaign_ids = [c.id for c in campaigns] if campaigns else []
+
+            # AccountIds are required - try to extract from campaigns
+            if account_ids is None:
+                campaigns = await self.list_campaigns()
+                account_ids = []
+                for c in campaigns:
+                    account_ids.extend(c.account_ids)
+                account_ids = list(set(account_ids))  # Remove duplicates
+
+            payload = {
+                "AccountIds": account_ids,
+                "CampaignIds": campaign_ids,
+            }
+
+            # Correct endpoint: /stats/GetOverallStats with POST
+            return await self.post("/stats/GetOverallStats", json=payload)
 
         except IntegrationError as e:
             logger.error(f"[{self.name}] get_overall_stats failed: {e}")
