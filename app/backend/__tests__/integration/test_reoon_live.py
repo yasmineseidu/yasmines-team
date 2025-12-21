@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from src.integrations.reoon import (
     ReoonAccountBalance,
     ReoonBulkTaskResult,
+    ReoonBulkTaskStatus,
     ReoonBulkVerificationStatus,
     ReoonClient,
     ReoonError,
@@ -186,14 +187,12 @@ class TestCallEndpointLive:
 class TestBulkVerificationLive:
     """Live tests for bulk verification.
 
-    Note: These tests are skipped by default as they consume credits
-    and may take a long time to complete. Enable manually when needed.
+    Note: These tests consume credits but are required for 100% coverage.
     """
 
-    @pytest.mark.skip(reason="Consumes credits - enable manually for full testing")
-    async def test_create_bulk_verification_task(self, client: ReoonClient) -> None:
-        """Should create a bulk verification task."""
-        # Generate list of test emails
+    async def test_create_and_check_bulk_verification_task(self, client: ReoonClient) -> None:
+        """Should create a bulk verification task and check its status."""
+        # Generate list of test emails (minimum 10 required by API)
         test_emails = [
             "test1@example.com",
             "test2@example.com",
@@ -207,30 +206,35 @@ class TestBulkVerificationLive:
             "test10@example.com",
         ]
 
-        result = await client.create_bulk_verification_task(
+        # Step 1: Create bulk verification task
+        create_result = await client.create_bulk_verification_task(
             emails=test_emails,
             name="Live Test Batch",
         )
 
-        assert isinstance(result, ReoonBulkTaskResult)
-        assert result.is_created is True
-        assert result.task_id is not None
-        assert result.count_submitted >= len(test_emails)
+        assert isinstance(create_result, ReoonBulkTaskResult)
+        assert create_result.is_created is True
+        assert create_result.task_id is not None
+        # task_id can be int or string depending on API response
+        assert str(create_result.task_id) != ""
+        assert create_result.count_submitted >= len(test_emails)
+        assert create_result.raw_response is not None
 
-    @pytest.mark.skip(reason="Consumes credits - enable manually for full testing")
-    async def test_get_bulk_verification_status(self, client: ReoonClient) -> None:
-        """Should retrieve bulk verification status.
+        # Step 2: Check the task status using the returned task_id
+        status_result = await client.get_bulk_verification_status(create_result.task_id)
 
-        Note: This test requires a valid task_id from a previous
-        create_bulk_verification_task call.
-        """
-        # This would need a real task_id from a previous test
-        task_id = "example-task-id"
-
-        result = await client.get_bulk_verification_status(task_id)
-
-        assert isinstance(result, ReoonBulkVerificationStatus)
-        assert result.task_id == task_id
+        assert isinstance(status_result, ReoonBulkVerificationStatus)
+        # API returns task_id as int on create, string on status - compare as strings
+        assert str(status_result.task_id) == str(create_result.task_id)
+        # Task should be waiting, running, or completed
+        assert status_result.status in [
+            ReoonBulkTaskStatus.WAITING,
+            ReoonBulkTaskStatus.RUNNING,
+            ReoonBulkTaskStatus.COMPLETED,
+        ]
+        assert status_result.count_total >= 0
+        assert status_result.progress_percentage >= 0
+        assert status_result.raw_response is not None
 
 
 @pytest.mark.asyncio

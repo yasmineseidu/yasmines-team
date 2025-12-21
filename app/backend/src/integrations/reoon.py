@@ -440,7 +440,7 @@ class ReoonClient(BaseIntegrationClient):
 
     async def get_bulk_verification_status(
         self,
-        task_id: str,
+        task_id: str | int,
     ) -> ReoonBulkVerificationStatus:
         """
         Get the status and results of a bulk verification task.
@@ -458,12 +458,14 @@ class ReoonClient(BaseIntegrationClient):
             ReoonError: If status retrieval fails.
             ValueError: If task_id is invalid.
         """
-        if not task_id or not task_id.strip():
+        # Handle both int and string task_ids from API
+        task_id_str = str(task_id).strip() if task_id is not None else ""
+        if not task_id_str:
             raise ValueError("task_id is required")
 
         params = self._add_api_key_to_params(
             {
-                "task_id": task_id.strip(),
+                "task_id": task_id_str,
             }
         )
 
