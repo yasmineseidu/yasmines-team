@@ -11,10 +11,11 @@ Each client extends BaseIntegrationClient and provides:
 Integration Clients:
     - AnymailfinderClient: Email finding and verification (first in waterfall)
     - FindymailClient: Email finding for tech companies (second in waterfall)
+    - TombaClient: Domain-wide email discovery (third in waterfall)
     - InstantlyClient: Cold email automation and campaign management
 
 Example:
-    >>> from src.integrations import AnymailfinderClient, FindymailClient, InstantlyClient
+    >>> from src.integrations import AnymailfinderClient, FindymailClient, TombaClient
     >>> # Email finding
     >>> email_client = AnymailfinderClient(api_key="your-key")
     >>> result = await email_client.find_person_email(
@@ -22,12 +23,11 @@ Example:
     ...     last_name="Doe",
     ...     domain="example.com"
     ... )
-    >>> # Campaign management
-    >>> campaign_client = InstantlyClient(api_key="your-key")
-    >>> campaign = await campaign_client.create_campaign(
-    ...     name="Q1 Outreach",
-    ...     campaign_schedule={"schedules": [...]}
-    ... )
+    >>> # Domain-wide search
+    >>> tomba_client = TombaClient(api_key="ta_xxx", api_secret="ts_xxx")
+    >>> result = await tomba_client.search_domain("stripe.com")
+    >>> for email in result.emails:
+    ...     print(f"{email.email} - {email.position}")
 """
 
 from src.integrations.anymailfinder import (
@@ -64,6 +64,18 @@ from src.integrations.instantly import (
     Lead,
     LeadInterestStatus,
 )
+from src.integrations.tomba import (
+    TombaAccountInfo,
+    TombaClient,
+    TombaDomainSearchResult,
+    TombaEmail,
+    TombaEmailCountResult,
+    TombaEmailFinderResult,
+    TombaEmailType,
+    TombaError,
+    TombaVerificationResult,
+    TombaVerificationStatus,
+)
 
 __all__ = [
     # Base
@@ -96,4 +108,15 @@ __all__ = [
     "LeadInterestStatus",
     "BulkAddResult",
     "BackgroundJob",
+    # Tomba
+    "TombaClient",
+    "TombaError",
+    "TombaAccountInfo",
+    "TombaEmail",
+    "TombaEmailType",
+    "TombaEmailFinderResult",
+    "TombaEmailCountResult",
+    "TombaDomainSearchResult",
+    "TombaVerificationResult",
+    "TombaVerificationStatus",
 ]

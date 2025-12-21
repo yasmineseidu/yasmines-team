@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     # Lead Enrichment - Findymail (second in waterfall)
     findymail_api_key: str = ""
 
+    # Lead Enrichment - Tomba (third in waterfall)
+    tomba_api_key: str = ""
+    tomba_api_secret: str = ""
+
     # JWT
     jwt_algorithm: str = "HS256"
     jwt_expiration_hours: int = 24
