@@ -12,12 +12,17 @@ def create_account_info_response(
     email: str = "user@example.com",
     user_id: int = 12345,
     plan_name: str = "Starter",
-    search_available: int = 100,
-    search_used: int = 25,
+    domains_available: int = 100,
+    domains_used: int = 25,
     verifications_available: int = 200,
     verifications_used: int = 50,
+    phones_available: int = 10,
+    phones_used: int = 0,
 ) -> dict[str, Any]:
-    """Create mock response for /me endpoint."""
+    """Create mock response for /me endpoint.
+
+    Note: Tomba API uses 'domains' for domain search credits, not 'search'.
+    """
     return {
         "data": {
             "user_id": user_id,
@@ -25,16 +30,28 @@ def create_account_info_response(
             "first_name": "Test",
             "last_name": "User",
             "requests": {
-                "search": {
-                    "available": search_available,
-                    "used": search_used,
+                "domains": {
+                    "available": domains_available,
+                    "used": domains_used,
                 },
                 "verifications": {
                     "available": verifications_available,
                     "used": verifications_used,
                 },
-                "phone": {
-                    "available": 10,
+                "phones": {
+                    "available": phones_available,
+                    "used": phones_used,
+                },
+                "count": {
+                    "available": 40000,
+                    "used": 0,
+                },
+                "similar": {
+                    "available": 5000,
+                    "used": 0,
+                },
+                "technologies": {
+                    "available": 5000,
                     "used": 0,
                 },
             },

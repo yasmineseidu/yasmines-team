@@ -159,8 +159,8 @@ class TestTombaGetAccountInfo:
             ) as mock_request:
                 mock_request.return_value = create_account_info_response(
                     email="user@example.com",
-                    search_available=100,
-                    search_used=25,
+                    domains_available=100,
+                    domains_used=25,
                 )
 
                 result = await client.get_account_info()
@@ -186,8 +186,8 @@ class TestTombaGetAccountInfo:
                 new_callable=AsyncMock,
             ) as mock_request:
                 mock_request.return_value = create_account_info_response(
-                    search_available=100,
-                    search_used=75,
+                    domains_available=100,
+                    domains_used=75,
                 )
 
                 result = await client.get_account_info()

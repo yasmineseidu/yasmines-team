@@ -312,21 +312,22 @@ class TombaClient(BaseIntegrationClient):
                 endpoint="/me",
             )
             data = response.get("data", response)
+            credits = data.get("requests", {})
+            # Tomba uses "domains" for domain search credits, not "search"
+            domains = credits.get("domains", {})
+            verifications = credits.get("verifications", {})
+            phones = credits.get("phones", {})
             return TombaAccountInfo(
                 user_id=data.get("user_id", 0),
                 email=data.get("email", ""),
                 first_name=data.get("first_name"),
                 last_name=data.get("last_name"),
-                requests_available=data.get("requests", {}).get("search", {}).get("available", 0),
-                requests_used=data.get("requests", {}).get("search", {}).get("used", 0),
-                verifications_available=data.get("requests", {})
-                .get("verifications", {})
-                .get("available", 0),
-                verifications_used=data.get("requests", {}).get("verifications", {}).get("used", 0),
-                phone_credits_available=data.get("requests", {})
-                .get("phone", {})
-                .get("available", 0),
-                phone_credits_used=data.get("requests", {}).get("phone", {}).get("used", 0),
+                requests_available=domains.get("available", 0),
+                requests_used=domains.get("used", 0),
+                verifications_available=verifications.get("available", 0),
+                verifications_used=verifications.get("used", 0),
+                phone_credits_available=phones.get("available", 0),
+                phone_credits_used=phones.get("used", 0),
                 plan_name=data.get("pricing", {}).get("name"),
                 raw_response=response,
             )
@@ -368,10 +369,15 @@ class TombaClient(BaseIntegrationClient):
         if not domain or not domain.strip():
             raise ValueError("domain is required")
 
+        # Tomba only accepts specific limit values: 10, 20, 50, 100
+        valid_limits = [10, 20, 50, 100]
+        # Find the closest valid limit that's >= requested (or max)
+        effective_limit = next((v for v in valid_limits if v >= limit), 100)
+
         params: dict[str, Any] = {
             "domain": domain.strip().lower(),
             "page": page,
-            "limit": min(limit, 100),  # API max is 100
+            "limit": effective_limit,
         }
 
         if department:
