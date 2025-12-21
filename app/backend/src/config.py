@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     # Lead Enrichment - Anymailfinder (first in waterfall)
     anymailfinder_api_key: str = ""
 
+    # Lead Enrichment - Findymail (second in waterfall)
+    findymail_api_key: str = ""
+
     # JWT
     jwt_algorithm: str = "HS256"
     jwt_expiration_hours: int = 24
