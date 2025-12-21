@@ -8,28 +8,57 @@ Each client extends BaseIntegrationClient and provides:
 - Structured error handling
 - Health check capabilities
 
-Integration Clients:
-    - AnymailfinderClient: Email finding and verification (first in waterfall)
-    - FindymailClient: Email finding for tech companies (second in waterfall)
-    - TombaClient: Domain-wide email discovery (third in waterfall)
+Integration Clients (Email Finding - Waterfall Order):
+    1. AnymailfinderClient: Email finding and verification (best for C-level executives)
+    2. FindymailClient: Email finding for tech companies
+    3. TombaClient: Domain-wide email discovery
+    4. VoilaNorbertClient: Email finding (best for common names)
+    5. IcypeasClient: Email finding (best for European contacts)
+    6. MuraenaClient: B2B lead discovery and email verification
+    7. NimblerClient: B2B contact enrichment
+    8. MailVerifyClient: Email verification and deliverability checking
+
+Orchestrator:
+    - LeadEnrichmentWaterfall: Cascading email finder using all services
+
+Data Management:
+    - AirtableClient: Database management for leads, contacts, campaigns
+
+Other Integrations:
     - InstantlyClient: Cold email automation and campaign management
+    - ReoonClient: Email verification and deliverability monitoring
 
 Example:
-    >>> from src.integrations import AnymailfinderClient, FindymailClient, TombaClient
-    >>> # Email finding
-    >>> email_client = AnymailfinderClient(api_key="your-key")
-    >>> result = await email_client.find_person_email(
-    ...     first_name="John",
-    ...     last_name="Doe",
-    ...     domain="example.com"
+    >>> from src.integrations import LeadEnrichmentWaterfall
+    >>> waterfall = LeadEnrichmentWaterfall(
+    ...     anymailfinder_key="key1",  # pragma: allowlist secret
+    ...     findymail_key="key2",  # pragma: allowlist secret
+    ...     tomba_key="key3",  # pragma: allowlist secret
+    ...     tomba_secret="secret3",  # pragma: allowlist secret
     ... )
-    >>> # Domain-wide search
-    >>> tomba_client = TombaClient(api_key="ta_xxx", api_secret="ts_xxx")
-    >>> result = await tomba_client.search_domain("stripe.com")
-    >>> for email in result.emails:
-    ...     print(f"{email.email} - {email.position}")
+    >>> result = await waterfall.find_email(
+    ...     first_name="John",
+    ...     last_name="Smith",
+    ...     domain="company.com"
+    ... )
+    >>> if result.found:
+    ...     print(f"Found via {result.source}: {result.email}")
 """
 
+from src.integrations.airtable import (
+    AirtableClient,
+    AirtableError,
+    AirtableNotFoundError,
+    AirtableRecord,
+    AirtableTable,
+    AirtableValidationError,
+    BatchResult,
+    CellFormat,
+    ListRecordsResult,
+    SortConfig,
+    SortDirection,
+    UpsertResult,
+)
 from src.integrations.anymailfinder import (
     AccountInfo,
     AnymailfinderClient,
@@ -53,6 +82,14 @@ from src.integrations.findymail import (
     FindymailPhoneResult,
     FindymailVerificationResult,
 )
+from src.integrations.icypeas import (
+    IcypeasClient,
+    IcypeasCreditsInfo,
+    IcypeasEmailResult,
+    IcypeasError,
+    IcypeasSearchStatus,
+    IcypeasVerificationResult,
+)
 from src.integrations.instantly import (
     BackgroundJob,
     BulkAddResult,
@@ -63,6 +100,62 @@ from src.integrations.instantly import (
     InstantlyError,
     Lead,
     LeadInterestStatus,
+)
+from src.integrations.lead_enrichment import (
+    EnrichmentResult,
+    EnrichmentSource,
+    LeadEnrichmentWaterfall,
+    ServiceStats,
+    WaterfallStats,
+)
+from src.integrations.mailverify import (
+    MailVerifyBulkResult,
+    MailVerifyClient,
+    MailVerifyError,
+    MailVerifyResult,
+    MailVerifyStatus,
+)
+from src.integrations.muraena import (
+    MuraenaClient,
+    MuraenaContactResult,
+    MuraenaCreditsInfo,
+    MuraenaError,
+    MuraenaVerificationResult,
+)
+from src.integrations.nimbler import (
+    NimblerClient,
+    NimblerCompanyResult,
+    NimblerContactResult,
+    NimblerError,
+)
+from src.integrations.reoon import (
+    ReoonAccountBalance,
+    ReoonBulkTaskResult,
+    ReoonBulkTaskStatus,
+    ReoonBulkVerificationStatus,
+    ReoonClient,
+    ReoonError,
+    ReoonVerificationMode,
+    ReoonVerificationResult,
+    ReoonVerificationStatus,
+)
+from src.integrations.serper import (
+    SerperAnswerBox,
+    SerperAutocompleteResult,
+    SerperClient,
+    SerperError,
+    SerperImageResult,
+    SerperKnowledgeGraph,
+    SerperNewsResult,
+    SerperOrganicResult,
+    SerperPeopleAlsoAsk,
+    SerperPlaceResult,
+    SerperRelatedSearch,
+    SerperScholarResult,
+    SerperSearchResult,
+    SerperSearchType,
+    SerperShoppingResult,
+    SerperVideoResult,
 )
 from src.integrations.tomba import (
     TombaAccountInfo,
@@ -76,6 +169,14 @@ from src.integrations.tomba import (
     TombaVerificationResult,
     TombaVerificationStatus,
 )
+from src.integrations.voilanorbert import (
+    VoilaNorbertAccountInfo,
+    VoilaNorbertClient,
+    VoilaNorbertEmailResult,
+    VoilaNorbertEmailStatus,
+    VoilaNorbertError,
+    VoilaNorbertVerificationResult,
+)
 
 __all__ = [
     # Base
@@ -84,6 +185,19 @@ __all__ = [
     "AuthenticationError",
     "PaymentRequiredError",
     "RateLimitError",
+    # Airtable
+    "AirtableClient",
+    "AirtableError",
+    "AirtableNotFoundError",
+    "AirtableValidationError",
+    "AirtableRecord",
+    "AirtableTable",
+    "BatchResult",
+    "CellFormat",
+    "ListRecordsResult",
+    "SortConfig",
+    "SortDirection",
+    "UpsertResult",
     # Anymailfinder
     "AnymailfinderClient",
     "AnymailfinderError",
@@ -98,16 +212,6 @@ __all__ = [
     "FindymailEmailStatus",
     "FindymailVerificationResult",
     "FindymailPhoneResult",
-    # Instantly
-    "InstantlyClient",
-    "InstantlyError",
-    "Campaign",
-    "CampaignStatus",
-    "CampaignAnalytics",
-    "Lead",
-    "LeadInterestStatus",
-    "BulkAddResult",
-    "BackgroundJob",
     # Tomba
     "TombaClient",
     "TombaError",
@@ -119,4 +223,78 @@ __all__ = [
     "TombaDomainSearchResult",
     "TombaVerificationResult",
     "TombaVerificationStatus",
+    # VoilaNorbert
+    "VoilaNorbertClient",
+    "VoilaNorbertError",
+    "VoilaNorbertEmailResult",
+    "VoilaNorbertEmailStatus",
+    "VoilaNorbertVerificationResult",
+    "VoilaNorbertAccountInfo",
+    # Icypeas
+    "IcypeasClient",
+    "IcypeasError",
+    "IcypeasEmailResult",
+    "IcypeasSearchStatus",
+    "IcypeasVerificationResult",
+    "IcypeasCreditsInfo",
+    # Muraena
+    "MuraenaClient",
+    "MuraenaError",
+    "MuraenaContactResult",
+    "MuraenaVerificationResult",
+    "MuraenaCreditsInfo",
+    # Nimbler
+    "NimblerClient",
+    "NimblerError",
+    "NimblerContactResult",
+    "NimblerCompanyResult",
+    # MailVerify
+    "MailVerifyClient",
+    "MailVerifyError",
+    "MailVerifyResult",
+    "MailVerifyBulkResult",
+    "MailVerifyStatus",
+    # Lead Enrichment Waterfall
+    "LeadEnrichmentWaterfall",
+    "EnrichmentResult",
+    "EnrichmentSource",
+    "ServiceStats",
+    "WaterfallStats",
+    # Instantly
+    "InstantlyClient",
+    "InstantlyError",
+    "Campaign",
+    "CampaignStatus",
+    "CampaignAnalytics",
+    "Lead",
+    "LeadInterestStatus",
+    "BulkAddResult",
+    "BackgroundJob",
+    # Reoon
+    "ReoonClient",
+    "ReoonError",
+    "ReoonVerificationResult",
+    "ReoonVerificationStatus",
+    "ReoonVerificationMode",
+    "ReoonAccountBalance",
+    "ReoonBulkTaskResult",
+    "ReoonBulkTaskStatus",
+    "ReoonBulkVerificationStatus",
+    # Serper (Google Search API)
+    "SerperClient",
+    "SerperError",
+    "SerperSearchType",
+    "SerperSearchResult",
+    "SerperOrganicResult",
+    "SerperKnowledgeGraph",
+    "SerperAnswerBox",
+    "SerperPeopleAlsoAsk",
+    "SerperRelatedSearch",
+    "SerperImageResult",
+    "SerperNewsResult",
+    "SerperPlaceResult",
+    "SerperVideoResult",
+    "SerperShoppingResult",
+    "SerperScholarResult",
+    "SerperAutocompleteResult",
 ]
