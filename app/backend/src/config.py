@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     secret_key: str = "change-me-in-production"
 
     # API
-    api_host: str = "0.0.0.0"
+    api_host: str = "0.0.0.0"  # nosec B104 - intentional for containerized deployment
     api_port: int = 8000
     api_prefix: str = "/api"
     allowed_origins: list[str] = [
@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     ]
 
     # Database
-    database_url: str
+    database_url: str = ""
     db_pool_size: int = 20
     db_max_overflow: int = 40
     db_pool_recycle: int = 3600
@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     supabase_servicerole_key: str = ""
 
     # Redis
-    redis_url: str
+    redis_url: str = ""
     redis_password: str = ""
 
     # Celery
@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     celery_timezone: str = "UTC"
 
     # Claude Agent SDK
-    anthropic_api_key: str
+    anthropic_api_key: str = ""
     anthropic_model: str = "claude-opus-4-20250514"
     anthropic_request_timeout: int = 300
 

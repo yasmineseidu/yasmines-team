@@ -34,22 +34,22 @@ class TestAnymailfinderClientInitialization:
 
     def test_client_has_correct_name(self) -> None:
         """Client should have 'anymailfinder' as name."""
-        client = AnymailfinderClient(api_key="test-key")
+        client = AnymailfinderClient(api_key="test-key")  # pragma: allowlist secret
         assert client.name == "anymailfinder"
 
     def test_client_has_correct_base_url(self) -> None:
         """Client should use v5.1 API base URL."""
-        client = AnymailfinderClient(api_key="test-key")
+        client = AnymailfinderClient(api_key="test-key")  # pragma: allowlist secret
         assert client.base_url == "https://api.anymailfinder.com/v5.1"
 
     def test_client_has_correct_api_version(self) -> None:
         """Client should report v5.1 API version."""
-        client = AnymailfinderClient(api_key="test-key")
+        client = AnymailfinderClient(api_key="test-key")  # pragma: allowlist secret
         assert client.API_VERSION == "v5.1"
 
     def test_client_default_timeout_is_180_seconds(self) -> None:
         """Client should have 180s timeout for SMTP verification."""
-        client = AnymailfinderClient(api_key="test-key")
+        client = AnymailfinderClient(api_key="test-key")  # pragma: allowlist secret
         assert client.timeout == 180.0
 
     def test_client_custom_timeout(self) -> None:
@@ -59,7 +59,7 @@ class TestAnymailfinderClientInitialization:
 
     def test_client_default_max_retries(self) -> None:
         """Client should have 3 retries by default."""
-        client = AnymailfinderClient(api_key="test-key")
+        client = AnymailfinderClient(api_key="test-key")  # pragma: allowlist secret
         assert client.max_retries == 3
 
     def test_client_custom_max_retries(self) -> None:
@@ -69,8 +69,8 @@ class TestAnymailfinderClientInitialization:
 
     def test_client_stores_api_key(self) -> None:
         """Client should store API key."""
-        client = AnymailfinderClient(api_key="my-secret-key")
-        assert client.api_key == "my-secret-key"
+        client = AnymailfinderClient(api_key="my-secret-key")  # pragma: allowlist secret
+        assert client.api_key == "my-secret-key"  # pragma: allowlist secret
 
 
 class TestAnymailfinderClientHeaders:
@@ -78,19 +78,19 @@ class TestAnymailfinderClientHeaders:
 
     def test_headers_include_api_key(self) -> None:
         """Headers should include API key in Authorization."""
-        client = AnymailfinderClient(api_key="test-key")
+        client = AnymailfinderClient(api_key="test-key")  # pragma: allowlist secret
         headers = client._get_headers()
         assert headers["Authorization"] == "test-key"
 
     def test_headers_include_content_type(self) -> None:
         """Headers should include JSON content type."""
-        client = AnymailfinderClient(api_key="test-key")
+        client = AnymailfinderClient(api_key="test-key")  # pragma: allowlist secret
         headers = client._get_headers()
         assert headers["Content-Type"] == "application/json"
 
     def test_headers_include_accept(self) -> None:
         """Headers should include Accept header."""
-        client = AnymailfinderClient(api_key="test-key")
+        client = AnymailfinderClient(api_key="test-key")  # pragma: allowlist secret
         headers = client._get_headers()
         assert headers["Accept"] == "application/json"
 
@@ -101,7 +101,9 @@ class TestFindPersonEmail:
     @pytest.fixture
     def client(self) -> AnymailfinderClient:
         """Create client for testing."""
-        return AnymailfinderClient(api_key="test-key")
+        return AnymailfinderClient(
+            api_key="test-key"  # pragma: allowlist secret
+        )
 
     @pytest.mark.asyncio
     async def test_find_email_with_first_and_last_name(self, client: AnymailfinderClient) -> None:
@@ -276,7 +278,9 @@ class TestFindDecisionMakerEmail:
     @pytest.fixture
     def client(self) -> AnymailfinderClient:
         """Create client for testing."""
-        return AnymailfinderClient(api_key="test-key")
+        return AnymailfinderClient(
+            api_key="test-key"  # pragma: allowlist secret
+        )
 
     @pytest.mark.asyncio
     async def test_find_decision_maker_success(self, client: AnymailfinderClient) -> None:
@@ -335,7 +339,9 @@ class TestFindCompanyEmails:
     @pytest.fixture
     def client(self) -> AnymailfinderClient:
         """Create client for testing."""
-        return AnymailfinderClient(api_key="test-key")
+        return AnymailfinderClient(
+            api_key="test-key"  # pragma: allowlist secret
+        )
 
     @pytest.mark.asyncio
     async def test_find_company_emails_success(self, client: AnymailfinderClient) -> None:
@@ -401,7 +407,7 @@ class TestVerifyEmail:
     @pytest.fixture
     def client(self) -> AnymailfinderClient:
         """Create client for testing."""
-        return AnymailfinderClient(api_key="test-key")
+        return AnymailfinderClient(api_key="test-key")  # pragma: allowlist secret
 
     @pytest.mark.asyncio
     async def test_verify_email_valid(self, client: AnymailfinderClient) -> None:
@@ -454,7 +460,7 @@ class TestGetAccountInfo:
     @pytest.fixture
     def client(self) -> AnymailfinderClient:
         """Create client for testing."""
-        return AnymailfinderClient(api_key="test-key")
+        return AnymailfinderClient(api_key="test-key")  # pragma: allowlist secret
 
     @pytest.mark.asyncio
     async def test_get_account_info_success(self, client: AnymailfinderClient) -> None:
@@ -481,7 +487,7 @@ class TestHealthCheck:
     @pytest.fixture
     def client(self) -> AnymailfinderClient:
         """Create client for testing."""
-        return AnymailfinderClient(api_key="test-key")
+        return AnymailfinderClient(api_key="test-key")  # pragma: allowlist secret
 
     @pytest.mark.asyncio
     async def test_health_check_healthy(self, client: AnymailfinderClient) -> None:
@@ -520,7 +526,7 @@ class TestErrorHandling:
     @pytest.fixture
     def client(self) -> AnymailfinderClient:
         """Create client for testing."""
-        return AnymailfinderClient(api_key="test-key")
+        return AnymailfinderClient(api_key="test-key")  # pragma: allowlist secret
 
     @pytest.mark.asyncio
     async def test_authentication_error(self, client: AnymailfinderClient) -> None:
@@ -576,7 +582,7 @@ class TestCallEndpoint:
     @pytest.fixture
     def client(self) -> AnymailfinderClient:
         """Create client for testing."""
-        return AnymailfinderClient(api_key="test-key")
+        return AnymailfinderClient(api_key="test-key")  # pragma: allowlist secret
 
     @pytest.mark.asyncio
     async def test_call_endpoint_get(self, client: AnymailfinderClient) -> None:
@@ -615,7 +621,9 @@ class TestAsyncContextManager:
     @pytest.mark.asyncio
     async def test_context_manager_closes_client(self) -> None:
         """Should close client on exit."""
-        async with AnymailfinderClient(api_key="test-key") as client:
+        async with AnymailfinderClient(
+            api_key="test-key"  # pragma: allowlist secret
+        ) as client:
             # Force client creation
             _ = client.client
             assert client._client is not None

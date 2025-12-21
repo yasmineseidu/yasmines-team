@@ -173,7 +173,9 @@ class TestAnymailfinderLiveAPI:
     @pytest.mark.asyncio
     async def test_error_handling_invalid_api_key(self) -> None:
         """Test error handling with invalid API key."""
-        async with AnymailfinderClient(api_key="invalid-key") as bad_client:
+        async with AnymailfinderClient(
+            api_key="invalid-key"  # pragma: allowlist secret
+        ) as bad_client:
             with pytest.raises(AnymailfinderError) as exc_info:
                 await bad_client.get_account_info()
 

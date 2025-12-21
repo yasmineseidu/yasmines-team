@@ -34,7 +34,7 @@ class ConcreteClient(BaseIntegrationClient):
         super().__init__(
             name="test_client",
             base_url="https://api.test.com/v1",
-            api_key="test-api-key",
+            api_key="test-api-key",  # pragma: allowlist secret
             **kwargs,
         )
 
@@ -55,7 +55,7 @@ class TestBaseIntegrationClientInitialization:
     def test_client_stores_api_key(self) -> None:
         """Client should store API key."""
         client = ConcreteClient()
-        assert client.api_key == "test-api-key"
+        assert client.api_key == "test-api-key"  # pragma: allowlist secret
 
     def test_client_default_timeout(self) -> None:
         """Client should have 30s default timeout."""
