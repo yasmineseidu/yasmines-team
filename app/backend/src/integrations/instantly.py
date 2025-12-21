@@ -263,6 +263,39 @@ class InstantlyClient(BaseIntegrationClient):
         )
         logger.info(f"Initialized {self.name} client (API {self.API_VERSION})")
 
+    async def delete(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
+        """
+        Make DELETE request without Content-Type header.
+
+        The Instantly API rejects DELETE requests with Content-Type: application/json
+        header when there's no body. This override removes that header for DELETE requests.
+
+        Args:
+            endpoint: API endpoint path.
+            **kwargs: Additional request arguments.
+
+        Returns:
+            Parsed JSON response data.
+        """
+        url = f"{self.base_url}{endpoint}"
+        # Only include Authorization header for DELETE requests
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Accept": "application/json",
+        }
+
+        # Merge custom headers if provided
+        if "headers" in kwargs:
+            headers.update(kwargs.pop("headers"))
+
+        response = await self.client.request(
+            method="DELETE",
+            url=url,
+            headers=headers,
+            **kwargs,
+        )
+        return await self._handle_response(response)
+
     # -------------------------------------------------------------------------
     # Campaign Management
     # -------------------------------------------------------------------------
@@ -473,7 +506,8 @@ class InstantlyClient(BaseIntegrationClient):
             InstantlyError: If activation fails.
         """
         try:
-            response = await self.post(f"/campaigns/{campaign_id}/activate")
+            # Pass empty JSON body to satisfy Content-Type: application/json requirement
+            response = await self.post(f"/campaigns/{campaign_id}/activate", json={})
             logger.info(f"[{self.name}] Activated campaign {campaign_id}")
             return self._parse_campaign(response)
 
@@ -502,7 +536,8 @@ class InstantlyClient(BaseIntegrationClient):
             InstantlyError: If pausing fails.
         """
         try:
-            response = await self.post(f"/campaigns/{campaign_id}/pause")
+            # Pass empty JSON body to satisfy Content-Type: application/json requirement
+            response = await self.post(f"/campaigns/{campaign_id}/pause", json={})
             logger.info(f"[{self.name}] Paused campaign {campaign_id}")
             return self._parse_campaign(response)
 
@@ -531,7 +566,8 @@ class InstantlyClient(BaseIntegrationClient):
             InstantlyError: If duplication fails.
         """
         try:
-            response = await self.post(f"/campaigns/{campaign_id}/duplicate")
+            # Pass empty JSON body to satisfy Content-Type: application/json requirement
+            response = await self.post(f"/campaigns/{campaign_id}/duplicate", json={})
             logger.info(f"[{self.name}] Duplicated campaign {campaign_id}")
             return self._parse_campaign(response)
 
@@ -789,8 +825,9 @@ class InstantlyClient(BaseIntegrationClient):
 
         payload: dict[str, Any] = {"leads": leads}
 
+        # Note: bulk add uses "campaign_id" not "campaign" (unlike single lead creation)
         if campaign_id:
-            payload["campaign"] = campaign_id
+            payload["campaign_id"] = campaign_id
         if list_id:
             payload["list_id"] = list_id
 
@@ -943,9 +980,30 @@ class InstantlyClient(BaseIntegrationClient):
             response = await self.get("/campaigns/analytics", params=params)
 
             if campaign_id:
+                # Single campaign analytics - response may be dict or in a list
+                if isinstance(response, list):
+                    if len(response) > 0:
+                        return self._parse_analytics(response[0], campaign_id)
+                    # Empty list means no analytics data - return zeros
+                    return CampaignAnalytics(
+                        campaign_id=campaign_id,
+                        total_leads=0,
+                        contacted=0,
+                        emails_sent=0,
+                        emails_opened=0,
+                        emails_clicked=0,
+                        emails_replied=0,
+                        emails_bounced=0,
+                        unsubscribed=0,
+                        raw_response={},
+                    )
                 return self._parse_analytics(response, campaign_id)
 
-            analytics_data = response.get("items", response.get("data", []))
+            # All campaigns analytics - API returns list directly or dict with items
+            if isinstance(response, list):
+                analytics_data = response
+            else:
+                analytics_data = response.get("items", response.get("data", []))
             return [
                 self._parse_analytics(a, a.get("campaign_id", a.get("id", "")))
                 for a in analytics_data
@@ -1026,6 +1084,9 @@ class InstantlyClient(BaseIntegrationClient):
 
         try:
             response = await self.get("/campaigns/analytics/daily", params=params)
+            # API may return list directly or dict with items
+            if isinstance(response, list):
+                return response
             result: list[dict[str, Any]] = response.get("items", response.get("data", []))
             return result
 
@@ -1073,7 +1134,7 @@ class InstantlyClient(BaseIntegrationClient):
         endpoint: str,
         method: str = "GET",
         **kwargs: Any,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | list[Any]:
         """
         Call any endpoint dynamically - future-proof for new API releases.
 
@@ -1098,14 +1159,46 @@ class InstantlyClient(BaseIntegrationClient):
             ...     json={"param": "value"}
             ... )
         """
+        method_upper = method.upper()
         try:
-            return await self._request_with_retry(method, endpoint, **kwargs)
+            # DELETE needs special handling (no Content-Type header)
+            if method_upper == "DELETE":
+                return await self.delete(endpoint, **kwargs)
+            return await self._request_with_retry(method_upper, endpoint, **kwargs)
         except IntegrationError as e:
             raise InstantlyError(
                 message=str(e),
                 status_code=e.status_code,
                 response_data=e.response_data,
             ) from e
+
+    async def call_get(
+        self, endpoint: str, params: dict[str, Any] | None = None, **kwargs: Any
+    ) -> dict[str, Any] | list[Any]:
+        """GET request to any endpoint. Example: client.call_get('/campaigns')"""
+        return await self.call_endpoint(endpoint, "GET", params=params, **kwargs)
+
+    async def call_post(
+        self, endpoint: str, json: dict[str, Any] | None = None, **kwargs: Any
+    ) -> dict[str, Any] | list[Any]:
+        """POST request to any endpoint. Example: client.call_post('/leads', json={...})"""
+        return await self.call_endpoint(endpoint, "POST", json=json, **kwargs)
+
+    async def call_patch(
+        self, endpoint: str, json: dict[str, Any] | None = None, **kwargs: Any
+    ) -> dict[str, Any] | list[Any]:
+        """PATCH request to any endpoint. Example: client.call_patch('/leads/x', json={...})"""
+        return await self.call_endpoint(endpoint, "PATCH", json=json, **kwargs)
+
+    async def call_put(
+        self, endpoint: str, json: dict[str, Any] | None = None, **kwargs: Any
+    ) -> dict[str, Any] | list[Any]:
+        """PUT request to any endpoint. Example: client.call_put('/resource/x', json={...})"""
+        return await self.call_endpoint(endpoint, "PUT", json=json, **kwargs)
+
+    async def call_delete(self, endpoint: str, **kwargs: Any) -> dict[str, Any] | list[Any]:
+        """DELETE request to any endpoint. Example: client.call_delete('/campaigns/x')"""
+        return await self.call_endpoint(endpoint, "DELETE", **kwargs)
 
     # -------------------------------------------------------------------------
     # Private Helper Methods

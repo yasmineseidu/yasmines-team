@@ -329,7 +329,7 @@ class TestActivateCampaign:
             result = await client.activate_campaign("camp-123")
 
             assert result.status == CampaignStatus.ACTIVE
-            mock_post.assert_called_once_with("/campaigns/camp-123/activate")
+            mock_post.assert_called_once_with("/campaigns/camp-123/activate", json={})
 
 
 class TestPauseCampaign:
@@ -355,7 +355,7 @@ class TestPauseCampaign:
             result = await client.pause_campaign("camp-123")
 
             assert result.status == CampaignStatus.PAUSED
-            mock_post.assert_called_once_with("/campaigns/camp-123/pause")
+            mock_post.assert_called_once_with("/campaigns/camp-123/pause", json={})
 
 
 class TestDuplicateCampaign:
@@ -381,7 +381,7 @@ class TestDuplicateCampaign:
             result = await client.duplicate_campaign("camp-123")
 
             assert result.id == "camp-456"
-            mock_post.assert_called_once_with("/campaigns/camp-123/duplicate")
+            mock_post.assert_called_once_with("/campaigns/camp-123/duplicate", json={})
 
 
 class TestCreateLead:
