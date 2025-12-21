@@ -9,7 +9,8 @@ This file is automatically loaded by pytest and provides:
 """
 
 import asyncio
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import Any
 
 import pytest
 
@@ -157,4 +158,8 @@ def pytest_configure(config: Any) -> None:
     config.addinivalue_line(
         "markers",
         "slow: mark test as slow running",
+    )
+    config.addinivalue_line(
+        "markers",
+        "live_api: mark test as live API test requiring real credentials",
     )

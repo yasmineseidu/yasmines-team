@@ -9,8 +9,6 @@ Usage:
     print(settings.database_url)
 """
 
-from typing import Any
-
 from pydantic_settings import BaseSettings
 
 
@@ -67,6 +65,9 @@ class Settings(BaseSettings):
     # Zep
     zep_api_key: str = ""
     zep_base_url: str = "https://api.getzep.com"
+
+    # Lead Enrichment - Anymailfinder (first in waterfall)
+    anymailfinder_api_key: str = ""
 
     # JWT
     jwt_algorithm: str = "HS256"
