@@ -1,0 +1,92 @@
+// ~/.claude/settings.json
+{
+    "permissions": {
+      "allow": [
+        "Write(*)",
+        "Update(*:*)",
+        "Delete(*)",
+
+        "Bash(*)",
+        "Zsh(*)",
+        "Fish(*)",
+
+        "Bash(ls:*)",
+        "Bash(cat:*)",
+        "Bash(cp:*)",
+        "Bash(mv:*)",
+        "Bash(rm:*)",
+        "Bash(mkdir:*)",
+        "Bash(chmod:*)",
+        "Bash(chown:*)",
+        "Bash(touch:*)",
+        "Bash(find:*)",
+        "Bash(grep:*)",
+        "Bash(sed:*)",
+        "Bash(awk:*)",
+        "Bash(head:*)",
+        "Bash(tail:*)",
+        "Bash(diff:*)",
+        "Bash(du:*)",
+        "Bash(df:*)",
+        "Bash(ps:*)",
+        "Bash(kill:*)",
+        "Bash(ssh:*)",
+        "Bash(curl:*)",
+        "Bash(wget:*)",
+        "Bash(tar:*)",
+        "Bash(zip:*)",
+        "Bash(unzip:*)",
+
+        "Bash(git:*)",
+        "Bash(gh:*)",
+
+        "Bash(node:*)",
+        "Bash(npm:*)",
+        "Bash(npx:*)",
+        "Bash(pnpm:*)",
+        "Bash(yarn:*)",
+
+        "Bash(python:*)",
+        "Bash(python3:*)",
+        "Bash(pip:*)",
+        "Bash(pip3:*)",
+        "Bash(uv:*)",
+
+        "Bash(ruby:*)",
+        "Bash(bundle:*)",
+        "Bash(bundler:*)",
+        "Bash(gem:*)",
+
+        "Bash(go:*)",
+        "Bash(golang:*)",
+        "Bash(gofmt:*)",
+
+        "Bash(java:*)",
+        "Bash(javac:*)",
+        "Bash(mvn:*)",
+        "Bash(gradle:*)",
+        "Bash(gradlew:*)",
+
+        "Bash(deno:*)",
+        "Bash(bun:*)",
+
+        "Bash(docker:*)",
+        "Bash(docker-compose:*)",
+        "Bash(kubectl:*)",
+        "Bash(kind:*)",
+
+        "Bash(make:*)",
+        "Bash(gcc:*)",
+        "Bash(clang:*)",
+
+        "Bash(sqlite3:*)",
+        "Bash(psql:*)",
+        "Bash(mysql:*)",
+
+        "Read(*)",
+        "Open(*)",
+        "Execute(*)"
+      ],
+      "deny": []
+    }
+  }

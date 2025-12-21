@@ -1,0 +1,94 @@
+# Pre-commit hooks configuration
+# Install: pre-commit install
+# Run manually: pre-commit run --all-files
+
+repos:
+  # General file checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        name: Trim trailing whitespace
+      - id: end-of-file-fixer
+        name: Fix end of file
+      - id: check-yaml
+        name: Check YAML syntax
+      - id: check-json
+        name: Check JSON syntax
+      - id: check-toml
+        name: Check TOML syntax
+      - id: check-added-large-files
+        name: Check for large files
+        args: ['--maxkb=5000']
+      - id: detect-private-key
+        name: Detect private keys
+      - id: mixed-line-ending
+        name: Fix mixed line endings
+
+  # Python code formatting
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+        name: Ruff linting
+        args: [--fix]
+      - id: ruff-format
+        name: Ruff formatting
+
+  # Type checking
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.14.1
+    hooks:
+      - id: mypy
+        name: MyPy type checking
+        additional_dependencies:
+          - types-PyYAML
+          - types-requests
+          - types-redis
+          - types-python-jose
+          - types-passlib
+        args: [--strict, --ignore-missing-imports]
+        files: ^app/backend/src/
+        exclude: ^(__tests__|docs)
+
+  # Security scanning
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.8.0
+    hooks:
+      - id: bandit
+        name: Bandit security scan
+        args: [-ll, src/]
+        exclude: ^(__tests__|docs)
+
+  # Semgrep security scanning (additional coverage)
+  - repo: https://github.com/semgrep/semgrep
+    rev: v1.99.0
+    hooks:
+      - id: semgrep
+        name: Semgrep security scan
+        args: [--config, auto, --error]
+        exclude: ^(__tests__|docs)
+
+  # Secrets detection
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        name: Detect secrets
+        args: [--baseline, .secrets.baseline]
+        exclude: \.md$
+
+# Configuration options
+default_language_version:
+  python: python3.12
+
+# Exclude certain files/directories
+exclude: |
+  (?x)^(
+    \.venv|
+    venv|
+    build|
+    dist|
+    \.eggs|
+    \.git
+  )
