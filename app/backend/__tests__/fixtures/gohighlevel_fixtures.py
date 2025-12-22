@@ -170,3 +170,110 @@ RATE_LIMIT_RESPONSE = {
     "statusCode": 429,
     "message": "Too many requests",
 }
+
+# ============================================================================
+# COMPREHENSIVE SAMPLE DATA FOR REAL API TESTING
+# ============================================================================
+
+# Test contacts with realistic scenarios
+TEST_CONTACTS_FOR_CREATION = [
+    {
+        "first_name": "Alice",
+        "last_name": "Johnson",
+        "email": "alice@techcorp.com",
+        "phone": "+1-555-0101",
+        "source": "api",
+        "status": "lead",
+        "tags": ["prospect", "tech"],
+    },
+    {
+        "first_name": "Bob",
+        "last_name": "Smith",
+        "email": "bob@innovations.io",
+        "phone": "+1-555-0102",
+        "source": "form",
+        "status": "customer",
+        "tags": ["client"],
+    },
+    {
+        "first_name": "Carol",
+        "last_name": "Williams",
+        "email": "carol@startup.co",
+        "phone": "+1-555-0103",
+        "source": "import",
+        "status": "opportunity",
+        "tags": ["enterprise", "vip"],
+    },
+]
+
+# Test deals with realistic scenarios
+TEST_DEALS_FOR_CREATION = [
+    {
+        "name": "Small Project",
+        "value": 5000.00,
+        "status": "open",
+        "stage": "discovery",
+    },
+    {
+        "name": "Mid-Market Contract",
+        "value": 50000.00,
+        "status": "open",
+        "stage": "proposal",
+        "probability": 60,
+    },
+    {
+        "name": "Enterprise Deal",
+        "value": 250000.00,
+        "status": "open",
+        "stage": "negotiation",
+        "probability": 75,
+        "expected_close_date": "2025-12-31",
+    },
+]
+
+# Expected API responses from GoHighLevel
+SUCCESSFUL_CONTACT_RESPONSE = {
+    "contact": {
+        "id": "cls_abc123def456",
+        "firstName": "Test",
+        "lastName": "Contact",
+        "email": "test@example.com",
+        "phone": None,
+        "status": "lead",
+        "source": "api",
+        "tags": [],
+        "customFields": {},
+        "createdAt": "2025-12-22T12:00:00Z",
+        "updatedAt": "2025-12-22T12:00:00Z",
+    }
+}
+
+SUCCESSFUL_DEAL_RESPONSE = {
+    "deal": {
+        "id": "opp_xyz789uvw012",
+        "name": "Test Deal",
+        "value": 50000.00,
+        "status": "open",
+        "stage": "proposal",
+        "probability": 50,
+        "contactId": "cls_abc123def456",
+        "expectedCloseDate": None,
+        "createdAt": "2025-12-22T12:00:00Z",
+        "updatedAt": "2025-12-22T12:00:00Z",
+    }
+}
+
+# Test scenarios and edge cases
+TEST_SCENARIOS = {
+    "valid_email": "test@example.com",
+    "invalid_email": "not-an-email",
+    "phone_with_formatting": "+1 (555) 123-4567",
+    "phone_without_formatting": "+15551234567",
+    "long_name": "A" * 100,
+    "special_characters": "José García-López",
+    "unicode_name": "李明",
+    "empty_string": "",
+    "large_deal_value": 999999999.99,
+    "negative_deal_value": -10000.00,
+    "zero_deal_value": 0.00,
+}

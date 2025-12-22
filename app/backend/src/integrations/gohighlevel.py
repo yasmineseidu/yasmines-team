@@ -735,6 +735,63 @@ class GoHighLevelClient(BaseIntegrationClient):
             logger.error(f"Failed to get user info: {e}")
             raise GoHighLevelError(f"Failed to get user info: {e}") from e
 
+    async def call_endpoint(
+        self,
+        endpoint: str,
+        method: str = "GET",
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """
+        Call any endpoint dynamically - future-proof for new API releases.
+
+        This method allows calling endpoints that may be released in the future
+        without requiring code changes to the client.
+
+        Args:
+            endpoint: Endpoint path (e.g., "/contacts", "/deals/123/update")
+            method: HTTP method (GET, POST, PUT, DELETE, PATCH)
+            **kwargs: Request parameters (json, params, data, etc.)
+
+        Returns:
+            API response as dictionary
+
+        Example:
+            >>> # Call new endpoint that doesn't have specific method yet
+            >>> result = await client.call_endpoint(
+            ...     "/new-feature",
+            ...     method="POST",
+            ...     json={"param": "value"}
+            ... )
+            >>> # Call with query parameters
+            >>> result = await client.call_endpoint(
+            ...     "/contacts",
+            ...     method="GET",
+            ...     params={"status": "lead", "limit": 50}
+            ... )
+        """
+        # Ensure endpoint starts with /
+        if not endpoint.startswith("/"):
+            endpoint = "/" + endpoint
+
+        method = method.upper()
+
+        try:
+            if method == "GET":
+                return await self.get(f"{endpoint}?locationId={self.location_id}", **kwargs)
+            elif method == "POST":
+                return await self.post(f"{endpoint}?locationId={self.location_id}", **kwargs)
+            elif method == "PUT":
+                return await self.put(f"{endpoint}?locationId={self.location_id}", **kwargs)
+            elif method == "DELETE":
+                return await self.delete(f"{endpoint}?locationId={self.location_id}", **kwargs)
+            elif method == "PATCH":
+                return await self.patch(f"{endpoint}?locationId={self.location_id}", **kwargs)
+            else:
+                raise ValueError(f"Unsupported HTTP method: {method}")
+        except Exception as e:
+            logger.error(f"API call to {endpoint} failed: {e}")
+            raise GoHighLevelError(f"Failed to call endpoint {endpoint}: {e}") from e
+
     async def health_check(self) -> dict[str, Any]:
         """
         Check integration health/connectivity.

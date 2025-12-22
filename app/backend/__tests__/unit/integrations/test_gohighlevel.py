@@ -465,6 +465,48 @@ class TestGoHighLevelClientHealthCheck:
             assert result["healthy"] is False
 
 
+class TestGoHighLevelFutureProof:
+    """Tests for future-proof endpoint calling."""
+
+    @pytest.fixture
+    def client(self) -> GoHighLevelClient:
+        """Create test client."""
+        return GoHighLevelClient(
+            api_key="test_key",  # pragma: allowlist secret
+            location_id="loc_123",
+        )
+
+    @pytest.mark.asyncio
+    async def test_call_endpoint_get(self, client: GoHighLevelClient) -> None:
+        """Should call GET endpoint dynamically."""
+        with patch.object(client, "get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = {"result": "success"}
+
+            result = await client.call_endpoint("/new-endpoint", method="GET")
+
+            assert result["result"] == "success"
+            mock_get.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_call_endpoint_post(self, client: GoHighLevelClient) -> None:
+        """Should call POST endpoint dynamically."""
+        with patch.object(client, "post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = {"id": "new_123"}
+
+            result = await client.call_endpoint(
+                "/new-feature", method="POST", json={"data": "value"}
+            )
+
+            assert result["id"] == "new_123"
+            mock_post.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_call_endpoint_unsupported_method(self, client: GoHighLevelClient) -> None:
+        """Should raise error for unsupported HTTP method."""
+        with pytest.raises(GoHighLevelError, match="Failed to call endpoint"):
+            await client.call_endpoint("/test", method="INVALID")
+
+
 class TestGoHighLevelDataClasses:
     """Tests for data class parsing."""
 
