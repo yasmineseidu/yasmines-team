@@ -98,6 +98,12 @@ from src.integrations.findymail import (
     FindymailPhoneResult,
     FindymailVerificationResult,
 )
+from src.integrations.firecrawl import (
+    CrawlJob,
+    FirecrawlClient,
+    FirecrawlError,
+    ScrapedPage,
+)
 from src.integrations.icypeas import (
     IcypeasClient,
     IcypeasCreditsInfo,
@@ -415,4 +421,9 @@ __all__ = [
     "PerplexityUsage",
     "PerplexityMessage",
     "PerplexityConversation",
+    # Firecrawl (Web Scraping)
+    "FirecrawlClient",
+    "FirecrawlError",
+    "ScrapedPage",
+    "CrawlJob",
 ]
