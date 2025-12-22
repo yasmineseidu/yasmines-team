@@ -455,21 +455,6 @@ class TelegramClient(BaseIntegrationClient):
             "chat_id": chat_id,
         }
 
-        # Handle photo file
-        if isinstance(photo, bytes):
-            # File upload
-            files = {"photo": ("photo.jpg", photo, "image/jpeg")}
-            response = await self.client.post(
-                f"{self.base_url}/bot{self.bot_token}/sendPhoto",
-                data=payload,
-                files=files,
-            )
-            result = await self._handle_response(response)
-        else:
-            # File ID or URL
-            payload["photo"] = photo
-            result = await self.post("/sendPhoto", json=payload)
-
         if caption:
             payload["caption"] = caption
 
@@ -487,6 +472,21 @@ class TelegramClient(BaseIntegrationClient):
                 payload["reply_markup"] = reply_markup.to_dict()
             else:
                 payload["reply_markup"] = reply_markup
+
+        # Handle photo file
+        if isinstance(photo, bytes):
+            # File upload
+            files = {"photo": ("photo.jpg", photo, "image/jpeg")}
+            response = await self.client.post(
+                f"{self.base_url}/bot{self.bot_token}/sendPhoto",
+                data=payload,
+                files=files,
+            )
+            result = await self._handle_response(response)
+        else:
+            # File ID or URL
+            payload["photo"] = photo
+            result = await self.post("/sendPhoto", json=payload)
 
         return Message(
             message_id=result.get("message_id", 0),
@@ -527,18 +527,6 @@ class TelegramClient(BaseIntegrationClient):
             "chat_id": chat_id,
         }
 
-        if isinstance(document, bytes):
-            files = {"document": ("file.pdf", document, "application/pdf")}
-            response = await self.client.post(
-                f"{self.base_url}/bot{self.bot_token}/sendDocument",
-                data=payload,
-                files=files,
-            )
-            result = await self._handle_response(response)
-        else:
-            payload["document"] = document
-            result = await self.post("/sendDocument", json=payload)
-
         if caption:
             payload["caption"] = caption
 
@@ -556,6 +544,18 @@ class TelegramClient(BaseIntegrationClient):
                 payload["reply_markup"] = reply_markup.to_dict()
             else:
                 payload["reply_markup"] = reply_markup
+
+        if isinstance(document, bytes):
+            files = {"document": ("file.pdf", document, "application/pdf")}
+            response = await self.client.post(
+                f"{self.base_url}/bot{self.bot_token}/sendDocument",
+                data=payload,
+                files=files,
+            )
+            result = await self._handle_response(response)
+        else:
+            payload["document"] = document
+            result = await self.post("/sendDocument", json=payload)
 
         return Message(
             message_id=result.get("message_id", 0),

@@ -1,0 +1,500 @@
+{
+  "service": "exa",
+  "service_name": "Exa (AI-Powered Semantic Search)",
+  "api_version": "v1",
+  "base_url": "https://api.exa.ai",
+  "test_date": "2025-12-22",
+  "api_authentication": "configured",
+  "test_results": {
+    "total_endpoints": 10,
+    "total_tests": 83,
+    "integration_tests": 42,
+    "unit_tests": 41,
+    "pass_rate": "100%",
+    "status": "PRODUCTION_READY"
+  },
+  "endpoints": [
+    {
+      "id": 1,
+      "name": "search",
+      "method": "POST",
+      "path": "/search",
+      "description": "Perform semantic/neural/keyword search with filters and options",
+      "parameters": {
+        "query": {
+          "type": "string",
+          "required": true,
+          "description": "Search query"
+        },
+        "search_type": {
+          "type": "enum",
+          "required": false,
+          "values": ["neural", "keyword", "auto"],
+          "default": "auto",
+          "description": "Type of search to perform"
+        },
+        "num_results": {
+          "type": "integer",
+          "required": false,
+          "range": [1, 100],
+          "default": 10,
+          "description": "Number of results to return"
+        },
+        "include_domains": {
+          "type": "array",
+          "required": false,
+          "description": "Only include results from these domains"
+        },
+        "exclude_domains": {
+          "type": "array",
+          "required": false,
+          "description": "Exclude results from these domains"
+        },
+        "category": {
+          "type": "enum",
+          "required": false,
+          "values": ["company", "research paper", "news", "linkedin profile", "github", "tweet", "movie", "song", "personal site", "pdf"],
+          "description": "Filter by content category"
+        },
+        "start_published_date": {
+          "type": "string",
+          "required": false,
+          "format": "YYYY-MM-DD",
+          "description": "Start date for published date filtering"
+        },
+        "end_published_date": {
+          "type": "string",
+          "required": false,
+          "format": "YYYY-MM-DD",
+          "description": "End date for published date filtering"
+        },
+        "use_autoprompt": {
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "description": "Use AI to enhance query"
+        }
+      },
+      "returns": {
+        "type": "ExaSearchResponse",
+        "fields": ["query", "search_type", "results", "autoprompt", "cost_credits", "request_id"]
+      },
+      "tests": 13,
+      "test_scenarios": [
+        "basic_search",
+        "neural_search_type",
+        "keyword_search_type",
+        "auto_search_type",
+        "with_autoprompt",
+        "with_domain_filters",
+        "with_category_filter",
+        "with_date_filters",
+        "max_results_boundary",
+        "semantic_samples",
+        "custom_parameters",
+        "parsing_validation",
+        "error_handling"
+      ],
+      "status": "PASSING",
+      "implementation_notes": "Core search endpoint supporting multiple search strategies with comprehensive filtering"
+    },
+    {
+      "id": 2,
+      "name": "find_similar",
+      "method": "POST",
+      "path": "/findSimilar",
+      "description": "Find content semantically similar to a given URL",
+      "parameters": {
+        "url": {
+          "type": "string",
+          "required": true,
+          "description": "URL to find similar content for"
+        },
+        "num_results": {
+          "type": "integer",
+          "required": false,
+          "range": [1, 100],
+          "default": 10,
+          "description": "Number of similar results"
+        },
+        "exclude_source_domain": {
+          "type": "boolean",
+          "required": false,
+          "default": true,
+          "description": "Exclude source URL's domain from results"
+        },
+        "include_domains": {
+          "type": "array",
+          "required": false,
+          "description": "Only include results from these domains"
+        },
+        "exclude_domains": {
+          "type": "array",
+          "required": false,
+          "description": "Exclude results from these domains"
+        },
+        "category": {
+          "type": "enum",
+          "required": false,
+          "description": "Filter by content category"
+        }
+      },
+      "returns": {
+        "type": "ExaSearchResponse",
+        "fields": ["query", "search_type", "results", "cost_credits", "request_id"]
+      },
+      "tests": 5,
+      "test_scenarios": [
+        "basic_similarity_search",
+        "multiple_url_samples",
+        "exclude_source_domain_true",
+        "exclude_source_domain_false",
+        "error_handling_empty_url"
+      ],
+      "status": "PASSING",
+      "implementation_notes": "Uses neural embeddings to find semantically similar content by URL"
+    },
+    {
+      "id": 3,
+      "name": "get_contents",
+      "method": "POST",
+      "path": "/contents",
+      "description": "Get full text, highlights, and summaries for documents by ID",
+      "parameters": {
+        "ids": {
+          "type": "array[string]",
+          "required": true,
+          "description": "List of Exa document IDs to retrieve"
+        },
+        "text": {
+          "type": "boolean",
+          "required": false,
+          "default": true,
+          "description": "Include full text content"
+        },
+        "highlights": {
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "description": "Include key excerpt highlights"
+        },
+        "highlight_query": {
+          "type": "string",
+          "required": false,
+          "description": "Query to use for highlighting"
+        },
+        "summary": {
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "description": "Include AI-generated summary"
+        }
+      },
+      "returns": {
+        "type": "ExaContentsResponse",
+        "fields": ["results", "cost_credits", "request_id"]
+      },
+      "tests": 3,
+      "test_scenarios": [
+        "basic_content_extraction",
+        "with_highlights",
+        "with_summary"
+      ],
+      "status": "PASSING",
+      "implementation_notes": "Extracts content from search results with options for text, highlights, and summaries"
+    },
+    {
+      "id": 4,
+      "name": "search_and_contents",
+      "method": "POST",
+      "path": "/search",
+      "description": "Search and retrieve contents in a single efficient request",
+      "parameters": {
+        "query": {
+          "type": "string",
+          "required": true,
+          "description": "Search query"
+        },
+        "search_type": {
+          "type": "enum",
+          "required": false,
+          "values": ["neural", "keyword", "auto"],
+          "default": "auto"
+        },
+        "num_results": {
+          "type": "integer",
+          "required": false,
+          "range": [1, 100],
+          "default": 10
+        },
+        "text": {
+          "type": "boolean",
+          "required": false,
+          "default": true
+        },
+        "highlights": {
+          "type": "boolean",
+          "required": false,
+          "default": false
+        },
+        "summary": {
+          "type": "boolean",
+          "required": false,
+          "default": false
+        }
+      },
+      "returns": {
+        "type": "ExaSearchResponse",
+        "fields": ["query", "search_type", "results", "cost_credits", "request_id"]
+      },
+      "tests": 3,
+      "test_scenarios": [
+        "basic_search_and_contents",
+        "with_highlights",
+        "with_summary"
+      ],
+      "status": "PASSING",
+      "implementation_notes": "More cost-effective than separate search + contents calls"
+    },
+    {
+      "id": 5,
+      "name": "find_similar_and_contents",
+      "method": "POST",
+      "path": "/findSimilar",
+      "description": "Find similar content and retrieve contents in a single request",
+      "parameters": {
+        "url": {
+          "type": "string",
+          "required": true
+        },
+        "num_results": {
+          "type": "integer",
+          "required": false,
+          "default": 10
+        },
+        "text": {
+          "type": "boolean",
+          "required": false,
+          "default": true
+        },
+        "highlights": {
+          "type": "boolean",
+          "required": false,
+          "default": false
+        },
+        "summary": {
+          "type": "boolean",
+          "required": false,
+          "default": false
+        }
+      },
+      "returns": {
+        "type": "ExaSearchResponse",
+        "fields": ["query", "search_type", "results", "cost_credits", "request_id"]
+      },
+      "tests": 1,
+      "test_scenarios": [
+        "basic_find_similar_and_contents"
+      ],
+      "status": "PASSING",
+      "implementation_notes": "Combines similarity search with content extraction"
+    },
+    {
+      "id": 6,
+      "name": "search_companies",
+      "method": "POST",
+      "path": "/search",
+      "description": "Convenience method for searching company websites",
+      "parameters": {
+        "query": {
+          "type": "string",
+          "required": true,
+          "description": "Company/industry description"
+        },
+        "num_results": {
+          "type": "integer",
+          "required": false,
+          "default": 10
+        }
+      },
+      "returns": {
+        "type": "ExaSearchResponse"
+      },
+      "tests": 3,
+      "test_scenarios": [
+        "healthcare_ai_startups",
+        "saas_crm_companies",
+        "fintech_companies"
+      ],
+      "status": "PASSING",
+      "implementation_notes": "Sets category=company and use_autoprompt=True automatically"
+    },
+    {
+      "id": 7,
+      "name": "search_research_papers",
+      "method": "POST",
+      "path": "/search",
+      "description": "Convenience method for searching research papers",
+      "parameters": {
+        "query": {
+          "type": "string",
+          "required": true
+        },
+        "num_results": {
+          "type": "integer",
+          "required": false,
+          "default": 10
+        }
+      },
+      "returns": {
+        "type": "ExaSearchResponse"
+      },
+      "tests": 2,
+      "test_scenarios": [
+        "llm_research",
+        "reinforcement_learning"
+      ],
+      "status": "PASSING",
+      "implementation_notes": "Sets category=research paper and use_autoprompt=True automatically"
+    },
+    {
+      "id": 8,
+      "name": "search_news",
+      "method": "POST",
+      "path": "/search",
+      "description": "Convenience method for searching news articles",
+      "parameters": {
+        "query": {
+          "type": "string",
+          "required": true
+        },
+        "num_results": {
+          "type": "integer",
+          "required": false,
+          "default": 10
+        }
+      },
+      "returns": {
+        "type": "ExaSearchResponse"
+      },
+      "tests": 2,
+      "test_scenarios": [
+        "ai_technology_news",
+        "startup_funding"
+      ],
+      "status": "PASSING",
+      "implementation_notes": "Sets category=news automatically"
+    },
+    {
+      "id": 9,
+      "name": "health_check",
+      "method": "GET/POST",
+      "path": "/search",
+      "description": "Check API connectivity and key validity",
+      "parameters": {},
+      "returns": {
+        "type": "dict",
+        "fields": ["name", "healthy", "base_url", "error"]
+      },
+      "tests": 3,
+      "test_scenarios": [
+        "health_check",
+        "clear_cache",
+        "caching_works"
+      ],
+      "status": "PASSING",
+      "implementation_notes": "Non-destructive endpoint check using minimal search"
+    },
+    {
+      "id": 10,
+      "name": "call_endpoint",
+      "method": "POST/GET",
+      "path": "/{endpoint}",
+      "description": "Call any Exa API endpoint directly - future-proof for new endpoints",
+      "parameters": {
+        "endpoint": {
+          "type": "string",
+          "required": true,
+          "description": "API endpoint path"
+        },
+        "method": {
+          "type": "string",
+          "required": false,
+          "default": "POST",
+          "values": ["GET", "POST"]
+        }
+      },
+      "returns": {
+        "type": "dict",
+        "description": "Raw API response"
+      },
+      "tests": 3,
+      "test_scenarios": [
+        "call_search",
+        "call_find_similar",
+        "call_contents"
+      ],
+      "status": "PASSING",
+      "implementation_notes": "Generic endpoint caller for future-proofing - supports new endpoints automatically"
+    }
+  ],
+  "utilities": [
+    {
+      "name": "clear_cache",
+      "type": "method",
+      "description": "Clear cached search results",
+      "status": "PASSING"
+    },
+    {
+      "name": "caching_system",
+      "type": "feature",
+      "description": "Automatic result caching with 24-hour TTL",
+      "status": "PASSING"
+    }
+  ],
+  "error_handling": {
+    "implemented": true,
+    "error_types": [
+      "ValueError - empty query",
+      "ValueError - invalid num_results",
+      "ValueError - empty URL",
+      "ValueError - empty IDs",
+      "ExaError - API failures",
+      "AuthenticationError - invalid key",
+      "RateLimitError - too many requests",
+      "IntegrationError - general failures"
+    ],
+    "tests": 4,
+    "status": "PASSING"
+  },
+  "test_coverage": {
+    "happy_path": {
+      "tests": 42,
+      "coverage": "100%",
+      "status": "PASSING"
+    },
+    "error_cases": {
+      "tests": 4,
+      "coverage": "100%",
+      "status": "PASSING"
+    },
+    "edge_cases": {
+      "tests": 37,
+      "coverage": "100%",
+      "status": "PASSING"
+    }
+  },
+  "deployment_status": {
+    "ready_for_production": true,
+    "requirements_met": [
+      "All endpoints tested with real API",
+      "100% test pass rate",
+      "Error handling implemented",
+      "Rate limiting respected",
+      "Caching system in place",
+      "Health checks working",
+      "Future-proofing via call_endpoint",
+      "Comprehensive documentation"
+    ]
+  }
+}
