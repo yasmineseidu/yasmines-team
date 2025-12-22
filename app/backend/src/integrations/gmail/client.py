@@ -85,7 +85,7 @@ class GmailClient(BaseIntegrationClient):
     """
 
     OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
-    API_BASE = "https://gmail.googleapis.com"
+    API_BASE = "https://gmail.googleapis.com/gmail"
 
     DEFAULT_SCOPES = [
         "https://mail.google.com/",  # Parent-level Gmail scope covering all Gmail operations
@@ -502,6 +502,10 @@ class GmailClient(BaseIntegrationClient):
             except Exception:
                 message = response.text
             raise GmailError(f"API error: {message}", status_code=response.status_code)
+
+        # Handle 204 No Content (common for DELETE operations)
+        if response.status_code == 204 or not response.content:
+            return {}
 
         return response.json()  # type: ignore[no-any-return]
 
@@ -1020,7 +1024,11 @@ class GmailClient(BaseIntegrationClient):
         Raises:
             GmailError: If send fails.
         """
-        return await self.post(f"/v1/users/{self.user_id}/drafts/{draft_id}/send")
+        # Gmail API requires draft ID in request body, not URL
+        return await self.post(
+            f"/v1/users/{self.user_id}/drafts/send",
+            json={"id": draft_id},
+        )
 
     async def delete_draft(self, draft_id: str) -> dict[str, Any]:
         """Delete draft message.
