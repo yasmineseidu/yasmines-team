@@ -290,6 +290,45 @@ class TestClickUpClientCreateTask:
             await client.create_task(list_id="list_1", name="")
 
     @pytest.mark.asyncio
+    async def test_create_task_with_all_optional_params(self, client: ClickUpClient) -> None:
+        """Should create task with all optional parameters."""
+        mock_response = {
+            "id": "task_456",
+            "custom_id": None,
+            "name": "Full Task",
+            "description": "Complete description",
+            "status": {"status": "open"},
+            "priority": {"priority": 1},
+            "due_date": 1704067200000,
+            "start_date": 1703980800000,
+            "assignees": [{"id": 1, "username": "user1"}, {"id": 2, "username": "user2"}],
+            "tags": [{"name": "feature"}, {"name": "backend"}],
+            "list": {"id": "list_1"},
+            "folder": None,
+            "space": {"id": "111"},
+            "date_created": 1703980800000,
+            "date_updated": 1703980800000,
+        }
+
+        with patch.object(client, "post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = mock_response
+            task = await client.create_task(
+                list_id="list_1",
+                name="Full Task",
+                description="Complete description",
+                priority=1,
+                due_date=1704067200000,
+                start_date=1703980800000,
+                assignee_ids=[1, 2],
+                tags=["feature", "backend"],
+            )
+
+            assert task.id == "task_456"
+            assert len(task.assignees) == 2
+            assert len(task.tags) == 2
+            assert "feature" in task.tags
+
+    @pytest.mark.asyncio
     async def test_create_task_raises_on_error(self, client: ClickUpClient) -> None:
         """Should raise ClickUpError on API failure."""
         with patch.object(client, "post", new_callable=AsyncMock) as mock_post:
@@ -397,6 +436,44 @@ class TestClickUpClientUpdateTask:
         """Should raise ValueError for empty task ID."""
         with pytest.raises(ValueError, match="Task ID cannot be empty"):
             await client.update_task(task_id="", name="Updated")
+
+    @pytest.mark.asyncio
+    async def test_update_task_with_all_fields(self, client: ClickUpClient) -> None:
+        """Should update task with all fields."""
+        mock_response = {
+            "id": "task_123",
+            "custom_id": None,
+            "name": "Fully Updated Task",
+            "description": "New description",
+            "status": {"status": "in_progress"},
+            "priority": {"priority": 1},
+            "due_date": 1704153600000,
+            "start_date": 1704067200000,
+            "assignees": [],
+            "tags": [],
+            "list": {"id": "list_1"},
+            "folder": None,
+            "space": {"id": "111"},
+            "date_created": 1703980800000,
+            "date_updated": 1704000000000,
+        }
+
+        with patch.object(client, "put", new_callable=AsyncMock) as mock_put:
+            mock_put.return_value = mock_response
+            task = await client.update_task(
+                task_id="task_123",
+                name="Fully Updated Task",
+                description="New description",
+                status="in_progress",
+                priority=1,
+                due_date=1704153600000,
+            )
+
+            assert task.id == "task_123"
+            assert task.name == "Fully Updated Task"
+            assert task.description == "New description"
+            assert task.status == "in_progress"
+            mock_put.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_update_task_raises_on_error(self, client: ClickUpClient) -> None:
