@@ -74,6 +74,21 @@ from src.integrations.base import (
     PaymentRequiredError,
     RateLimitError,
 )
+from src.integrations.brave import (
+    BraveClient,
+    BraveError,
+    BraveFaq,
+    BraveFreshness,
+    BraveImageResult,
+    BraveInfobox,
+    BraveNewsResult,
+    BraveSafesearch,
+    BraveSearchResponse,
+    BraveSearchType,
+    BraveSuggestResponse,
+    BraveVideoResult,
+    BraveWebResult,
+)
 from src.integrations.findymail import (
     FindymailClient,
     FindymailEmailResult,
@@ -230,6 +245,20 @@ __all__ = [
     "AuthenticationError",
     "PaymentRequiredError",
     "RateLimitError",
+    # Brave Search (Privacy-Focused Web Search)
+    "BraveClient",
+    "BraveError",
+    "BraveSafesearch",
+    "BraveFreshness",
+    "BraveSearchType",
+    "BraveSearchResponse",
+    "BraveSuggestResponse",
+    "BraveWebResult",
+    "BraveNewsResult",
+    "BraveImageResult",
+    "BraveVideoResult",
+    "BraveInfobox",
+    "BraveFaq",
     # Airtable
     "AirtableClient",
     "AirtableError",
