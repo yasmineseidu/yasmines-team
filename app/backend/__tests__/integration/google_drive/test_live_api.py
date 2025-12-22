@@ -60,30 +60,18 @@ class TestGoogleDriveLiveAPI:
     """Live API tests for complete Google Drive integration."""
 
     @pytest.fixture
-    async def client(self):
+    async def client(self, oauth_credentials):
         """Create and configure Google Drive client with real credentials."""
-        # Get credentials from environment
-        google_client_id = os.getenv("GOOGLE_CLIENT_ID")
-        google_client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
-
-        if not google_client_id or not google_client_secret:
-            pytest.skip("Google OAuth credentials not configured in environment")
-
-        # Create client with OAuth credentials
+        # Create client with OAuth credentials (includes real access token from fixture)
         client = GoogleDriveClient(
-            credentials_json={
-                "client_id": google_client_id,
-                "client_secret": google_client_secret,
-                "type": "oauth",
-                "access_token": None,  # Will be obtained via OAuth
-            },
+            credentials_json=oauth_credentials,
             timeout=30.0,
             max_retries=3,
         )
 
-        # Note: In production, you would handle OAuth flow here
-        # For testing, we need an actual access token
-        # This test assumes the token is provided or can be obtained
+        # Authenticate the client using the provided access token
+        await client.authenticate()
+
         yield client
         await client.close()
 
