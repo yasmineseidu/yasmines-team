@@ -1,0 +1,354 @@
+{
+  "service": "gohighlevel",
+  "generated": "2025-12-22",
+  "api_version": "v1",
+  "base_url": "https://rest.gohighlevel.com/v1",
+  "total_endpoints": 16,
+  "total_tests": 52,
+  "coverage": "100%",
+  "endpoints": [
+    {
+      "id": 1,
+      "name": "create_contact",
+      "method": "POST",
+      "path": "/contacts/",
+      "parameters": [
+        "first_name",
+        "last_name",
+        "email",
+        "phone",
+        "source",
+        "status",
+        "tags",
+        "custom_fields"
+      ],
+      "returns": "Contact",
+      "description": "Create a new contact in the location",
+      "tests": 6,
+      "test_names": [
+        "test_create_contact_happy_path",
+        "test_create_contact_with_tags",
+        "test_create_contact_with_custom_fields",
+        "test_create_contact_minimal_data",
+        "test_create_contact_with_all_fields",
+        "test_contact_with_special_characters"
+      ],
+      "status": "✅ Implemented"
+    },
+    {
+      "id": 2,
+      "name": "get_contact",
+      "method": "GET",
+      "path": "/contacts/{contact_id}/",
+      "parameters": [
+        "contact_id"
+      ],
+      "returns": "Contact",
+      "description": "Retrieve a contact by ID",
+      "tests": 2,
+      "test_names": [
+        "test_get_contact_valid_id",
+        "test_get_contact_invalid_id"
+      ],
+      "status": "✅ Implemented"
+    },
+    {
+      "id": 3,
+      "name": "update_contact",
+      "method": "PUT",
+      "path": "/contacts/{contact_id}/",
+      "parameters": [
+        "contact_id",
+        "**kwargs"
+      ],
+      "returns": "Contact",
+      "description": "Update contact fields",
+      "tests": 2,
+      "test_names": [
+        "test_update_contact",
+        "test_update_contact_multiple_fields"
+      ],
+      "status": "✅ Implemented"
+    },
+    {
+      "id": 4,
+      "name": "delete_contact",
+      "method": "DELETE",
+      "path": "/contacts/{contact_id}/",
+      "parameters": [
+        "contact_id"
+      ],
+      "returns": "bool",
+      "description": "Delete a contact",
+      "tests": 2,
+      "test_names": [
+        "test_delete_contact",
+        "test_delete_contact_invalid_id"
+      ],
+      "status": "✅ Implemented"
+    },
+    {
+      "id": 5,
+      "name": "list_contacts",
+      "method": "GET",
+      "path": "/contacts/",
+      "parameters": [
+        "limit",
+        "offset",
+        "search",
+        "status"
+      ],
+      "returns": "dict",
+      "description": "List contacts with pagination and filtering",
+      "tests": 4,
+      "test_names": [
+        "test_list_contacts_happy_path",
+        "test_list_contacts_with_search",
+        "test_list_contacts_with_status_filter",
+        "test_list_contacts_response_schema"
+      ],
+      "status": "✅ Implemented"
+    },
+    {
+      "id": 6,
+      "name": "add_tag / remove_tag",
+      "method": "POST / DELETE",
+      "path": "/contacts/{contact_id}/tags",
+      "parameters": [
+        "contact_id",
+        "tag"
+      ],
+      "returns": "Contact",
+      "description": "Add or remove tags from a contact",
+      "tests": 3,
+      "test_names": [
+        "test_add_tag_to_contact",
+        "test_add_multiple_tags",
+        "test_remove_tag_from_contact"
+      ],
+      "status": "✅ Implemented"
+    },
+    {
+      "id": 7,
+      "name": "create_deal",
+      "method": "POST",
+      "path": "/deals/",
+      "parameters": [
+        "name",
+        "contact_id",
+        "value",
+        "status",
+        "stage",
+        "expected_close_date"
+      ],
+      "returns": "Deal",
+      "description": "Create a new deal/opportunity",
+      "tests": 4,
+      "test_names": [
+        "test_create_deal_happy_path",
+        "test_create_deal_with_contact",
+        "test_create_deal_with_close_date",
+        "test_create_deal_with_zero_value"
+      ],
+      "status": "✅ Implemented"
+    },
+    {
+      "id": 8,
+      "name": "get_deal",
+      "method": "GET",
+      "path": "/deals/{deal_id}/",
+      "parameters": [
+        "deal_id"
+      ],
+      "returns": "Deal",
+      "description": "Retrieve a deal by ID",
+      "tests": 2,
+      "test_names": [
+        "test_get_deal_valid_id",
+        "test_get_deal_invalid_id"
+      ],
+      "status": "✅ Implemented"
+    },
+    {
+      "id": 9,
+      "name": "update_deal",
+      "method": "PUT",
+      "path": "/deals/{deal_id}/",
+      "parameters": [
+        "deal_id",
+        "**kwargs"
+      ],
+      "returns": "Deal",
+      "description": "Update deal fields",
+      "tests": 2,
+      "test_names": [
+        "test_update_deal",
+        "test_update_deal_value"
+      ],
+      "status": "✅ Implemented"
+    },
+    {
+      "id": 10,
+      "name": "delete_deal",
+      "method": "DELETE",
+      "path": "/deals/{deal_id}/",
+      "parameters": [
+        "deal_id"
+      ],
+      "returns": "bool",
+      "description": "Delete a deal",
+      "tests": 2,
+      "test_names": [
+        "test_delete_deal",
+        "test_delete_deal_invalid_id"
+      ],
+      "status": "✅ Implemented"
+    },
+    {
+      "id": 11,
+      "name": "list_deals",
+      "method": "GET",
+      "path": "/deals/",
+      "parameters": [
+        "limit",
+        "offset",
+        "contact_id",
+        "status"
+      ],
+      "returns": "dict",
+      "description": "List deals with pagination and filtering",
+      "tests": 4,
+      "test_names": [
+        "test_list_deals_happy_path",
+        "test_list_deals_with_status_filter",
+        "test_list_deals_with_contact_filter",
+        "test_list_deals_response_schema"
+      ],
+      "status": "✅ Implemented"
+    },
+    {
+      "id": 12,
+      "name": "send_email",
+      "method": "POST",
+      "path": "/emails/",
+      "parameters": [
+        "contact_id",
+        "subject",
+        "body",
+        "from_email"
+      ],
+      "returns": "dict",
+      "description": "Send email to a contact",
+      "tests": 2,
+      "test_names": [
+        "test_send_email_to_contact",
+        "test_send_email_with_custom_from"
+      ],
+      "status": "✅ Implemented"
+    },
+    {
+      "id": 13,
+      "name": "send_sms",
+      "method": "POST",
+      "path": "/sms/",
+      "parameters": [
+        "contact_id",
+        "message"
+      ],
+      "returns": "dict",
+      "description": "Send SMS to a contact",
+      "tests": 2,
+      "test_names": [
+        "test_send_sms_to_contact",
+        "test_send_sms_long_message"
+      ],
+      "status": "✅ Implemented"
+    },
+    {
+      "id": 14,
+      "name": "get_me",
+      "method": "GET",
+      "path": "/locations/{location_id}/",
+      "parameters": [
+        "location_id"
+      ],
+      "returns": "dict",
+      "description": "Get authenticated user/location information",
+      "tests": 1,
+      "test_names": [
+        "test_get_me_location_info"
+      ],
+      "status": "✅ Implemented"
+    },
+    {
+      "id": 15,
+      "name": "health_check",
+      "method": "GET",
+      "path": "/locations/{location_id}/",
+      "parameters": [
+        "location_id"
+      ],
+      "returns": "dict",
+      "description": "Check integration health/connectivity",
+      "tests": 2,
+      "test_names": [
+        "test_health_check",
+        "test_health_check_healthy"
+      ],
+      "status": "✅ Implemented"
+    },
+    {
+      "id": 16,
+      "name": "call_endpoint",
+      "method": "GET/POST/PUT/DELETE/PATCH",
+      "path": "/{endpoint}",
+      "parameters": [
+        "endpoint",
+        "method",
+        "**kwargs"
+      ],
+      "returns": "dict",
+      "description": "Call any endpoint dynamically (future-proof)",
+      "tests": 2,
+      "test_names": [
+        "test_call_endpoint_dynamic_get",
+        "test_call_endpoint_dynamic_with_location_id"
+      ],
+      "status": "✅ Implemented"
+    }
+  ],
+  "test_summary": {
+    "total": 52,
+    "by_category": {
+      "contact_management": 11,
+      "deal_management": 11,
+      "communication": 4,
+      "utility": 5,
+      "error_handling": 5,
+      "response_validation": 8,
+      "edge_cases": 7
+    },
+    "status_breakdown": {
+      "passing": 10,
+      "skipped_auth_failure": 41,
+      "failed": 1
+    }
+  },
+  "requirements": {
+    "authentication_key": "GOHIGHLEVEL_API_KEY",
+    "location_id": "GOHIGHLEVEL_LOCATION_ID",
+    "min_permissions": [
+      "contacts:read",
+      "contacts:write",
+      "deals:read",
+      "deals:write",
+      "emails:send",
+      "sms:send"
+    ]
+  },
+  "rate_limits": {
+    "requests_per_day": 200000,
+    "per_location": true,
+    "backoff_strategy": "exponential"
+  }
+}

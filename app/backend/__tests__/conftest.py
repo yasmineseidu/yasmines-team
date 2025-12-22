@@ -10,9 +10,17 @@ This file is automatically loaded by pytest and provides:
 
 import asyncio
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from typing import Any
 
 import pytest
+from dotenv import load_dotenv
+
+# Load .env file for integration tests
+# From __tests__/conftest.py -> ../../.env (project root)
+env_path = Path(__file__).parent.parent.parent.parent / ".env"
+if env_path.exists():
+    load_dotenv(env_path)
 
 # Configure asyncio for async tests
 pytest_plugins = ("pytest_asyncio",)
