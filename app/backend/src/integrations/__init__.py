@@ -67,6 +67,17 @@ from src.integrations.anymailfinder import (
     EmailStatus,
     VerificationResult,
 )
+from src.integrations.autobound import (
+    AutoboundClient,
+    AutoboundContent,
+    AutoboundContentType,
+    AutoboundError,
+    AutoboundInsight,
+    AutoboundInsightsResult,
+    AutoboundModel,
+    AutoboundRateLimitError,
+    AutoboundWritingStyle,
+)
 from src.integrations.base import (
     AuthenticationError,
     BaseIntegrationClient,
@@ -287,6 +298,16 @@ __all__ = [
     "EmailStatus",
     "VerificationResult",
     "AccountInfo",
+    # Autobound (AI Sales Personalization)
+    "AutoboundClient",
+    "AutoboundError",
+    "AutoboundRateLimitError",
+    "AutoboundContent",
+    "AutoboundContentType",
+    "AutoboundWritingStyle",
+    "AutoboundModel",
+    "AutoboundInsight",
+    "AutoboundInsightsResult",
     # Findymail
     "FindymailClient",
     "FindymailError",

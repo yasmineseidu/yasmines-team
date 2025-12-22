@@ -37,7 +37,7 @@ class TestFirecrawlClientInitialization:
     def test_client_has_correct_base_url(self) -> None:
         """Client should use correct base URL."""
         client = FirecrawlClient(api_key="test-key")  # pragma: allowlist secret
-        assert client.base_url == "https://api.firecrawl.dev/v1"
+        assert client.base_url == "https://api.firecrawl.dev/v2"
 
     def test_client_default_timeout_is_60_seconds(self) -> None:
         """Client should have 60s default timeout for scraping."""
@@ -442,6 +442,43 @@ class TestHealthCheck:
             assert result["name"] == "firecrawl"
             assert result["healthy"] is False
             assert "failed" in result["message"].lower()
+
+
+class TestCallEndpoint:
+    """Tests for call_endpoint future-proofing method."""
+
+    @pytest.fixture
+    def client(self) -> FirecrawlClient:
+        """Create client for testing."""
+        return FirecrawlClient(api_key="test-key")  # pragma: allowlist secret
+
+    @pytest.mark.asyncio
+    async def test_call_endpoint_get(self, client: FirecrawlClient) -> None:
+        """Should call GET endpoint dynamically."""
+        with patch.object(client, "get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = {"data": "result"}
+            result = await client.call_endpoint("/test", method="GET")
+            assert result == {"data": "result"}
+            mock_get.assert_called_once_with("/test")
+
+    @pytest.mark.asyncio
+    async def test_call_endpoint_post(self, client: FirecrawlClient) -> None:
+        """Should call POST endpoint dynamically."""
+        with patch.object(client, "post", new_callable=AsyncMock) as mock_post:
+            mock_post.return_value = {"success": True}
+            result = await client.call_endpoint("/test", method="POST", json={"param": "value"})
+            assert result == {"success": True}
+            mock_post.assert_called_once_with("/test", json={"param": "value"})
+
+    @pytest.mark.asyncio
+    async def test_call_endpoint_raises_on_error(self, client: FirecrawlClient) -> None:
+        """Should raise FirecrawlError on API error."""
+        from src.integrations.base import IntegrationError
+
+        with patch.object(client, "post", new_callable=AsyncMock) as mock_post:
+            mock_post.side_effect = IntegrationError("API error", status_code=400)
+            with pytest.raises(FirecrawlError):
+                await client.call_endpoint("/test", method="POST")
 
 
 class TestErrorHandling:
