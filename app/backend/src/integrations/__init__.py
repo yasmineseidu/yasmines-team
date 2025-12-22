@@ -128,6 +128,31 @@ from src.integrations.nimbler import (
     NimblerContactResult,
     NimblerError,
 )
+from src.integrations.perplexity import (
+    PerplexityCitation,
+    PerplexityClient,
+    PerplexityConversation,
+    PerplexityError,
+    PerplexityMessage,
+    PerplexityModel,
+    PerplexityResponse,
+    PerplexitySearchMode,
+    PerplexityUsage,
+)
+from src.integrations.reddit import (
+    RedditAuthError,
+    RedditClient,
+    RedditComment,
+    RedditError,
+    RedditPost,
+    RedditRateLimitError,
+    RedditSearchResult,
+    RedditSortType,
+    RedditSubreddit,
+    RedditTimeFilter,
+    RedditUser,
+    SubredditAnalysis,
+)
 from src.integrations.reoon import (
     ReoonAccountBalance,
     ReoonBulkTaskResult,
@@ -156,6 +181,17 @@ from src.integrations.serper import (
     SerperSearchType,
     SerperShoppingResult,
     SerperVideoResult,
+)
+from src.integrations.tavily import (
+    TavilyAnswer,
+    TavilyClient,
+    TavilyError,
+    TavilyImage,
+    TavilySearchDepth,
+    TavilySearchResponse,
+    TavilySearchResult,
+    TavilyTimeRange,
+    TavilyTopic,
 )
 from src.integrations.tomba import (
     TombaAccountInfo,
@@ -280,6 +316,19 @@ __all__ = [
     "ReoonBulkTaskResult",
     "ReoonBulkTaskStatus",
     "ReoonBulkVerificationStatus",
+    # Reddit (Research & Niche Analysis)
+    "RedditClient",
+    "RedditError",
+    "RedditAuthError",
+    "RedditRateLimitError",
+    "RedditSortType",
+    "RedditTimeFilter",
+    "RedditSubreddit",
+    "RedditPost",
+    "RedditComment",
+    "RedditUser",
+    "RedditSearchResult",
+    "SubredditAnalysis",
     # Serper (Google Search API)
     "SerperClient",
     "SerperError",
@@ -297,4 +346,24 @@ __all__ = [
     "SerperShoppingResult",
     "SerperScholarResult",
     "SerperAutocompleteResult",
+    # Tavily (AI-Powered Search)
+    "TavilyClient",
+    "TavilyError",
+    "TavilyTopic",
+    "TavilySearchDepth",
+    "TavilyTimeRange",
+    "TavilySearchResponse",
+    "TavilySearchResult",
+    "TavilyAnswer",
+    "TavilyImage",
+    # Perplexity (AI Research & Q&A)
+    "PerplexityClient",
+    "PerplexityError",
+    "PerplexityModel",
+    "PerplexitySearchMode",
+    "PerplexityResponse",
+    "PerplexityCitation",
+    "PerplexityUsage",
+    "PerplexityMessage",
+    "PerplexityConversation",
 ]
