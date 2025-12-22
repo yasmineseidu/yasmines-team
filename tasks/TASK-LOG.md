@@ -11,6 +11,7 @@ Chronological record of completed tasks.
 | 2025-12-21 | backend | 013-setup-airtable-integration | COMPLETED | Airtable database management client |
 | 2025-12-21 | backend | 017-setup-perplexity-research-integration | COMPLETED | Perplexity AI research client |
 | 2025-12-21 | backend | 017-setup-brave-search-integration | COMPLETED | Brave Search privacy-focused web search client |
+| 2025-12-21 | backend | 017-create-serp-api-integration | COMPLETED | SerpApi search engine results client |
 
 ---
 
@@ -152,3 +153,29 @@ Chronological record of completed tasks.
 - **Tests:** 70 unit tests (93.13% coverage)
 - **Quality gates:** All passed (ruff, mypy, pytest, bandit, semgrep, detect-secrets)
 - **Commit:** `c027aa5`
+
+### Completed: 017-create-serp-api-integration
+- **Implemented:** SerpApi search engine results client (serpapi.com)
+- **Files created:**
+  - `app/backend/src/integrations/serp_api.py` - SerpApi client (1273 lines)
+  - `app/backend/__tests__/unit/integrations/test_serp_api.py` - Unit tests (49 tests)
+  - `app/backend/__tests__/fixtures/serp_api_fixtures.py` - Test fixtures
+- **Features:**
+  - Web search with organic results, ads, knowledge graph, answer box
+  - Image search with thumbnails and source URLs
+  - News search with publication metadata
+  - Shopping search with prices and ratings
+  - Video search with rich snippets
+  - Local/Maps search with GPS coordinates
+  - Convenience methods: get_organic_results(), get_paid_results(), get_related_searches()
+  - Pagination support with paginate_results() for deep retrieval
+  - Multiple search engines (Google, Bing, Yahoo, DuckDuckGo, Baidu, Yandex)
+  - Time filter support (hour, day, week, month, year)
+  - Location and language customization
+  - People Also Ask and Related Searches parsing
+  - Account info and health check methods
+  - 15+ typed dataclasses for structured responses
+  - Future-proof `call_endpoint()` for new API releases
+- **Tests:** 49 unit tests (100% pass rate)
+- **Quality gates:** All passed (ruff, mypy, pytest, bandit, semgrep, detect-secrets)
+- **Commit:** `7fc9f06`

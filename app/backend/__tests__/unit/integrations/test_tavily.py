@@ -320,8 +320,8 @@ class TestTavilyClientCaching:
     async def test_cache_disabled_always_hits_api(self, mock_response: dict) -> None:
         """search() should not cache when caching disabled."""
         client = TavilyClient(
-            api_key="tvly-test",
-            enable_caching=False,  # pragma: allowlist secret
+            api_key="tvly-test",  # pragma: allowlist secret
+            enable_caching=False,
         )
 
         with patch.object(client, "post", new_callable=AsyncMock) as mock_post:
@@ -394,15 +394,93 @@ class TestTavilyClientResearch:
 
             await client.research("AI trends")
 
-            mock_search.assert_called_once()
+            # Should be called 5 times (default max_iterations)
+            assert mock_search.call_count == 5
             call_kwargs = mock_search.call_args.kwargs
             assert call_kwargs["search_depth"] == TavilySearchDepth.ADVANCED
+
+    @pytest.mark.asyncio
+    async def test_research_uses_max_iterations(self, client: TavilyClient) -> None:
+        """research() should call search() max_iterations times."""
+        with patch.object(client, "search", new_callable=AsyncMock) as mock_search:
+            mock_search.return_value = TavilySearchResponse(
+                query="test",
+                results=[
+                    TavilySearchResult(
+                        title="Test Result",
+                        url=f"https://example.com/{i}",
+                        content="Test content",
+                        score=0.9,
+                    )
+                    for i in range(3)
+                ],
+            )
+
+            await client.research("AI trends", max_iterations=3)
+
+            # Should be called exactly max_iterations times
+            assert mock_search.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_research_aggregates_results(self, client: TavilyClient) -> None:
+        """research() should aggregate unique results from all iterations."""
+        with patch.object(client, "search", new_callable=AsyncMock) as mock_search:
+            # Return different results for each iteration
+            def mock_search_side_effect(*args, **kwargs):
+                iteration = mock_search.call_count
+                return TavilySearchResponse(
+                    query="test",
+                    results=[
+                        TavilySearchResult(
+                            title=f"Result {iteration}-{i}",
+                            url=f"https://example.com/{iteration}-{i}",
+                            content=f"Content {iteration}-{i}",
+                            score=0.9 - (i * 0.1),
+                        )
+                        for i in range(2)
+                    ],
+                )
+
+            mock_search.side_effect = mock_search_side_effect
+
+            result = await client.research("AI trends", max_iterations=3)
+
+            # Should aggregate all unique results (3 iterations * 2 results = 6)
+            assert len(result.results) == 6
+            assert mock_search.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_research_deduplicates_by_url(self, client: TavilyClient) -> None:
+        """research() should deduplicate results by URL."""
+        with patch.object(client, "search", new_callable=AsyncMock) as mock_search:
+            # Return same URL in multiple iterations
+            mock_search.return_value = TavilySearchResponse(
+                query="test",
+                results=[
+                    TavilySearchResult(
+                        title="Duplicate Result",
+                        url="https://example.com/same",
+                        content="Same content",
+                        score=0.9,
+                    )
+                ],
+            )
+
+            result = await client.research("AI trends", max_iterations=3)
+
+            # Should only have one unique result despite 3 iterations
+            assert len(result.results) == 1
+            assert result.results[0].url == "https://example.com/same"
+            assert mock_search.call_count == 3
 
     @pytest.mark.asyncio
     async def test_research_validates_max_iterations(self, client: TavilyClient) -> None:
         """research() should validate max_iterations range."""
         with pytest.raises(ValueError, match="max_iterations must be between 1 and 10"):
             await client.research("test", max_iterations=15)
+
+        with pytest.raises(ValueError, match="max_iterations must be between 1 and 10"):
+            await client.research("test", max_iterations=0)
 
 
 class TestTavilyClientHealthCheck:

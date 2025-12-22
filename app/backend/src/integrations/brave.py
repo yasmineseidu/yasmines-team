@@ -54,7 +54,14 @@ class BraveSafesearch(str, Enum):
     """Safe search filtering options."""
 
     OFF = "off"
-    MODERATE = "moderate"
+    MODERATE = "moderate"  # Note: Not supported for Images API
+    STRICT = "strict"
+
+
+class BraveImageSafesearch(str, Enum):
+    """Safe search filtering options for Images API (only off/strict supported)."""
+
+    OFF = "off"
     STRICT = "strict"
 
 
@@ -486,18 +493,20 @@ class BraveClient(BaseIntegrationClient):
         count: int = 10,
         country: str = "us",
         language: str = "en",
-        safesearch: BraveSafesearch | str = BraveSafesearch.MODERATE,
+        safesearch: BraveImageSafesearch | str = BraveImageSafesearch.STRICT,
         spellcheck: bool = True,
     ) -> BraveSearchResponse:
         """
         Perform an image search using Brave Search API.
+
+        Note: Images API only supports 'off' or 'strict' safesearch values.
 
         Args:
             query: Search query string
             count: Number of results to return (max 150, default 10)
             country: Country code for localized results (default "us")
             language: Language code for results (default "en")
-            safesearch: Safe search filter level (off, moderate, strict)
+            safesearch: Safe search filter level (off or strict only)
             spellcheck: Enable spellcheck suggestions
 
         Returns:
@@ -513,14 +522,20 @@ class BraveClient(BaseIntegrationClient):
         if count < 1 or count > 150:
             raise ValueError("count must be between 1 and 150")
 
+        # Images API only supports 'off' or 'strict' safesearch
+        safesearch_value = (
+            safesearch.value if isinstance(safesearch, BraveImageSafesearch) else safesearch
+        )
+        # Handle BraveSafesearch.MODERATE being passed - default to strict
+        if safesearch_value == "moderate":
+            safesearch_value = "strict"
+
         params: dict[str, Any] = {
             "q": query.strip(),
             "count": count,
             "country": country.lower(),
             "search_lang": language.lower(),
-            "safesearch": safesearch.value
-            if isinstance(safesearch, BraveSafesearch)
-            else safesearch,
+            "safesearch": safesearch_value,
             "spellcheck": str(spellcheck).lower(),
         }
 

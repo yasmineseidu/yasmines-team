@@ -20,6 +20,7 @@ from src.integrations.brave import (
     BraveFaq,
     BraveFreshness,
     BraveImageResult,
+    BraveImageSafesearch,
     BraveInfobox,
     BraveNewsResult,
     BraveSafesearch,
@@ -359,6 +360,41 @@ class TestBraveClientImagesSearch:
             await client.search_images("test")
 
             mock_get.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_images_search_coerces_moderate_to_strict(self, client: BraveClient) -> None:
+        """search_images() should coerce 'moderate' safesearch to 'strict' (API limitation)."""
+        with patch.object(client, "get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = MOCK_IMAGES_SEARCH_RESPONSE
+            await client.search_images("test", safesearch="moderate")
+
+            # Verify that safesearch was coerced to 'strict'
+            mock_get.assert_called_once()
+            call_args = mock_get.call_args
+            params = call_args[1]["params"]
+            assert params["safesearch"] == "strict"
+
+    @pytest.mark.asyncio
+    async def test_images_search_accepts_strict_safesearch(self, client: BraveClient) -> None:
+        """search_images() should accept BraveImageSafesearch.STRICT."""
+        with patch.object(client, "get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = MOCK_IMAGES_SEARCH_RESPONSE
+            await client.search_images("test", safesearch=BraveImageSafesearch.STRICT)
+
+            call_args = mock_get.call_args
+            params = call_args[1]["params"]
+            assert params["safesearch"] == "strict"
+
+    @pytest.mark.asyncio
+    async def test_images_search_accepts_off_safesearch(self, client: BraveClient) -> None:
+        """search_images() should accept BraveImageSafesearch.OFF."""
+        with patch.object(client, "get", new_callable=AsyncMock) as mock_get:
+            mock_get.return_value = MOCK_IMAGES_SEARCH_RESPONSE
+            await client.search_images("test", safesearch=BraveImageSafesearch.OFF)
+
+            call_args = mock_get.call_args
+            params = call_args[1]["params"]
+            assert params["safesearch"] == "off"
             assert mock_get.call_args[0][0] == "/images/search"
 
 
@@ -673,6 +709,13 @@ class TestBraveEnums:
         assert BraveSafesearch.OFF.value == "off"
         assert BraveSafesearch.MODERATE.value == "moderate"
         assert BraveSafesearch.STRICT.value == "strict"
+
+    def test_image_safesearch_enum_values(self) -> None:
+        """BraveImageSafesearch should only have off and strict (API limitation)."""
+        assert BraveImageSafesearch.OFF.value == "off"
+        assert BraveImageSafesearch.STRICT.value == "strict"
+        # Verify moderate is NOT available for images
+        assert not hasattr(BraveImageSafesearch, "MODERATE")
 
     def test_freshness_enum_values(self) -> None:
         """BraveFreshness should have correct values."""
