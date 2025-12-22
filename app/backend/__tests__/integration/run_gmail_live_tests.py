@@ -22,6 +22,26 @@ from pathlib import Path
 # Add backend to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+# Load .env file manually
+# Path: __tests__/integration/run_gmail_live_tests.py -> app/backend -> parent -> parent = project root
+script_dir = Path(__file__).parent.parent.parent  # backend
+project_root = script_dir.parent.parent  # yasmines-team
+env_file = project_root / ".env"
+
+print(f"   Script dir: {script_dir}")
+print(f"   Project root: {project_root}")
+print(f"   Env file: {env_file}")
+print(f"   Env exists: {env_file.exists()}")
+
+if env_file.exists():
+    with open(env_file) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                os.environ[key.strip()] = value.strip()
+    print("   ✅ Env loaded")
+
 from src.integrations.gmail.client import GmailClient
 from src.integrations.gmail.exceptions import GmailAuthError, GmailError
 

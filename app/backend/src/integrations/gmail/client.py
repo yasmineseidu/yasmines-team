@@ -88,9 +88,7 @@ class GmailClient(BaseIntegrationClient):
     API_BASE = "https://gmail.googleapis.com"
 
     DEFAULT_SCOPES = [
-        "https://www.googleapis.com/auth/gmail.compose",
-        "https://www.googleapis.com/auth/gmail.modify",
-        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://mail.google.com/",  # Parent-level Gmail scope covering all Gmail operations
     ]
 
     def __init__(
@@ -489,11 +487,13 @@ class GmailClient(BaseIntegrationClient):
         if response.status_code == 404:
             try:
                 error_data = response.json()
-                message = error_data.get("error", {}).get("message", "unknown")
+                message = error_data.get("error", {}).get("message", response.text)
+                logger.error(f"Gmail 404 error - Full response: {error_data}")
                 resource_type = message.split("'")[0].strip() if "'" in message else "resource"
                 raise GmailNotFoundError(resource_type, message)
-            except Exception:
-                raise GmailNotFoundError("resource", "unknown")
+            except Exception as e:
+                logger.error(f"Failed to parse 404 error: {response.text}")
+                raise GmailNotFoundError("resource", response.text or "unknown")
 
         if response.status_code >= 400:
             try:
