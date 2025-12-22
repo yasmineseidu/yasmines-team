@@ -27,10 +27,13 @@ class TestGmailClientInitialization:
         assert client.user_id == "me"
 
     def test_init_missing_access_token_raises_error(self):
-        """Client raises error without access token."""
+        """Client raises error without credentials."""
         with pytest.raises(GmailError) as exc_info:
             GmailClient()
-        assert "No access_token provided" in str(exc_info.value)
+        # Error message now includes all three authentication methods
+        assert "No credentials provided" in str(exc_info.value) or "Service Account" in str(
+            exc_info.value
+        )
 
     def test_init_with_all_oauth_params(self):
         """Client initializes with all OAuth parameters."""
@@ -69,6 +72,84 @@ class TestGmailClientInitialization:
         with pytest.raises(GmailError) as exc_info:
             GmailClient(credentials_json="{invalid json")
         assert "Invalid credentials JSON" in str(exc_info.value)
+
+    def test_init_detects_service_account_credentials(self):
+        """Client detects and configures service account credentials."""
+        creds = {
+            "type": "service_account",  # pragma: allowlist secret
+            "private_key": "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----",  # pragma: allowlist secret
+            "client_email": "service@project.iam.gserviceaccount.com",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+        client = GmailClient(credentials_json=creds)
+        assert client.auth_method == "service_account"
+        assert client.access_token is None  # Token obtained via JWT flow
+
+    def test_init_detects_oauth2_credentials(self):
+        """Client detects and configures OAuth 2.0 credentials."""
+        client = GmailClient(
+            access_token="ya29...",  # pragma: allowlist secret
+            refresh_token="1//...",  # pragma: allowlist secret
+            client_id="client-123",
+            client_secret="secret-456",  # pragma: allowlist secret
+        )
+        assert client.auth_method == "oauth2"
+        assert client.access_token == "ya29..."
+        assert client.refresh_token == "1//..."
+
+    def test_init_detects_pre_generated_token(self):
+        """Client detects and configures pre-generated token."""
+        client = GmailClient(access_token="ya29...")
+        assert client.auth_method == "pre_generated_token"
+        assert client.access_token == "ya29..."
+        assert client.refresh_token is None
+
+    def test_service_account_invalid_credentials_raises_error(self):
+        """Service account with missing required fields raises error."""
+        creds = {"type": "service_account"}  # Missing required fields
+        with pytest.raises(GmailError) as exc_info:
+            GmailClient(credentials_json=creds)
+        assert "missing required fields" in str(exc_info.value)
+
+
+class TestGmailClientAuthentication:
+    """Tests for authentication methods."""
+
+    @pytest.mark.asyncio
+    async def test_authenticate_pre_generated_token(self):
+        """Authentication succeeds with pre-generated token."""
+        client = GmailClient(access_token="ya29...")
+        # Should not raise
+        await client.authenticate()
+        assert client.access_token == "ya29..."
+
+    @pytest.mark.asyncio
+    async def test_authenticate_oauth2_validates_credentials(self):
+        """OAuth 2.0 authentication validates required credentials."""
+        client = GmailClient(
+            access_token="ya29...",  # pragma: allowlist secret
+            refresh_token="1//...",  # pragma: allowlist secret
+            client_id="client-123",
+            client_secret="secret-456",  # pragma: allowlist secret
+        )
+        # Should not raise
+        await client.authenticate()
+        assert client.auth_method == "oauth2"
+
+    @pytest.mark.asyncio
+    async def test_authenticate_service_account_without_google_auth(self):
+        """Service account auth fails gracefully without google-auth lib."""
+        creds = {
+            "type": "service_account",  # pragma: allowlist secret
+            "private_key": "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----",  # pragma: allowlist secret
+            "client_email": "service@project.iam.gserviceaccount.com",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+        client = GmailClient(credentials_json=creds)
+        # Without google-auth library and without access_token, should fail
+        with pytest.raises(GmailAuthError) as exc_info:
+            await client.authenticate()
+        assert "google-auth" in str(exc_info.value).lower() or "access_token" in str(exc_info.value)
 
 
 class TestGmailClientHeaders:

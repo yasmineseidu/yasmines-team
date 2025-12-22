@@ -1,7 +1,23 @@
-"""Gmail API async client with OAuth 2.0 support.
+"""Gmail API async client with OAuth 2.0 and Service Account support.
 
 Extends BaseIntegrationClient with full Gmail API support for message,
 draft, label, thread, and attachment operations.
+
+Supports three authentication methods:
+1. Service Account (Recommended for production)
+   - Uses JWT bearer token flow with Google-signed private key
+   - No user interaction required
+   - Supports domain-wide delegation
+
+2. OAuth 2.0 (Standard user authentication)
+   - Access token with automatic refresh using refresh token
+   - Requires client_id, client_secret, refresh_token
+   - Best for user-specific access
+
+3. Pre-generated Token (Development/simple use)
+   - Direct access_token without refresh capability
+   - Simplest setup, limited to token lifetime
+   - Best for testing and development
 """
 
 import base64
@@ -31,20 +47,41 @@ logger = logging.getLogger(__name__)
 
 
 class GmailClient(BaseIntegrationClient):
-    """Async client for Gmail API with OAuth 2.0 authentication.
+    """Async client for Gmail API with three authentication methods.
 
     Handles email operations including send, list, read, manage labels,
     attachments, drafts, and threads with automatic token refresh.
 
-    Example:
-        >>> client = GmailClient(
-        ...     access_token="ya29...",
-        ...     refresh_token="1//...",
-        ...     client_id="...",
-        ...     client_secret="..."
+    Supports three authentication methods:
+    1. Service Account (Production) - JWT bearer token flow, zero user interaction
+    2. OAuth 2.0 (User Access) - Access token with automatic refresh
+    3. Pre-generated Token (Development) - Simple token without refresh
+
+    Examples:
+        # Service Account (Recommended for production)
+        >>> client = GmailClient(credentials_json={  # pragma: allowlist secret
+        ...     "type": "service_account",
+        ...     "private_key": "-----BEGIN RSA PRIVATE KEY-----...",  # pragma: allowlist secret
+        ...     "client_email": "service-account@project.iam.gserviceaccount.com",
+        ...     "token_uri": "https://oauth2.googleapis.com/token"
+        ... })
+        >>> await client.authenticate()
+        >>> messages = await client.list_messages()
+
+        # OAuth 2.0 (User-specific access)
+        >>> client = GmailClient(  # pragma: allowlist secret
+        ...     access_token="ya29...",  # pragma: allowlist secret
+        ...     refresh_token="1//...",  # pragma: allowlist secret
+        ...     client_id="123456.apps.googleusercontent.com",
+        ...     client_secret="secret..."  # pragma: allowlist secret
         ... )
         >>> await client.authenticate()
-        >>> messages = await client.list_messages(query="from:user@example.com")
+        >>> messages = await client.list_messages()
+
+        # Pre-generated Token (Development/testing)
+        >>> client = GmailClient(access_token="ya29...")
+        >>> await client.authenticate()
+        >>> messages = await client.list_messages()
     """
 
     OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -67,28 +104,56 @@ class GmailClient(BaseIntegrationClient):
         max_retries: int = 3,
         retry_base_delay: float = 1.0,
     ) -> None:
-        """Initialize Gmail client with OAuth credentials.
+        """Initialize Gmail client with multiple authentication methods.
+
+        Supports three authentication methods (in order of precedence):
+        1. Service Account (type="service_account") - JWT bearer token flow
+        2. OAuth 2.0 - Access token with optional refresh capability
+        3. Pre-generated Token - Direct access token
 
         Args:
-            access_token: OAuth access token. Defaults to env var GMAIL_ACCESS_TOKEN.
-            refresh_token: OAuth refresh token for token refresh. Defaults to env var GMAIL_REFRESH_TOKEN.
+            access_token: OAuth access token or pre-generated token.
+                         Defaults to env var GMAIL_ACCESS_TOKEN.
+            refresh_token: OAuth refresh token for token refresh.
+                          Defaults to env var GMAIL_REFRESH_TOKEN.
             client_id: OAuth client ID. Defaults to env var GOOGLE_CLIENT_ID.
             client_secret: OAuth client secret. Defaults to env var GOOGLE_CLIENT_SECRET.
-            credentials_json: Full credentials as dict or JSON string.
+            credentials_json: Full credentials as dict or JSON string. Supports:
+                - Service account: {"type": "service_account", "private_key": "...", ...}
+                - OAuth 2.0: {"access_token": "...", "refresh_token": "...", ...}
+                - Pre-generated: {"access_token": "..."}
             timeout: Request timeout in seconds.
             max_retries: Maximum retry attempts for transient errors.
             retry_base_delay: Base delay for exponential backoff in seconds.
 
         Raises:
             GmailError: If credentials cannot be resolved from arguments or environment.
-        """
-        # Parse credentials
-        self.access_token = access_token or os.getenv("GMAIL_ACCESS_TOKEN")
-        self.refresh_token = refresh_token or os.getenv("GMAIL_REFRESH_TOKEN")
-        self.client_id = client_id or os.getenv("GOOGLE_CLIENT_ID")
-        self.client_secret = client_secret or os.getenv("GOOGLE_CLIENT_SECRET")
 
-        # Parse from JSON if provided
+        Example:
+            # Method 1: Service Account (Production)
+            >>> client = GmailClient(credentials_json={  # pragma: allowlist secret
+            ...     "type": "service_account",
+            ...     "private_key": "-----BEGIN RSA PRIVATE KEY-----...",  # pragma: allowlist secret
+            ...     "client_email": "service-account@project.iam.gserviceaccount.com",
+            ...     "token_uri": "https://oauth2.googleapis.com/token"
+            ... })
+
+            # Method 2: OAuth 2.0 (User access)
+            >>> client = GmailClient(  # pragma: allowlist secret
+            ...     access_token="ya29...",  # pragma: allowlist secret
+            ...     refresh_token="1//...",  # pragma: allowlist secret
+            ...     client_id="...",
+            ...     client_secret="..."  # pragma: allowlist secret
+            ... )
+
+            # Method 3: Pre-generated Token (Development)
+            >>> client = GmailClient(access_token="ya29...")
+        """
+        # Store credential type for later use
+        self.auth_method: str = "unknown"
+        self.credentials_dict: dict[str, Any] = {}
+
+        # Parse credentials JSON if provided
         if isinstance(credentials_json, str):
             try:
                 creds = json.loads(credentials_json)
@@ -99,18 +164,57 @@ class GmailClient(BaseIntegrationClient):
         else:
             creds = {}
 
-        # Override from credentials dict if present
-        if "access_token" in creds:
-            self.access_token = creds["access_token"]
-        if "refresh_token" in creds:
-            self.refresh_token = creds["refresh_token"]
-        if "client_id" in creds:
-            self.client_id = creds["client_id"]
-        if "client_secret" in creds:
-            self.client_secret = creds["client_secret"]
+        self.credentials_dict = creds
 
-        # Validate we have at least access token
-        if not self.access_token:
+        # Detect authentication method and extract credentials
+        cred_type = creds.get("type")
+
+        if cred_type == "service_account":
+            # Service Account Authentication
+            self.auth_method = "service_account"
+            self._validate_service_account_credentials(creds)
+            self.access_token = None  # Will be obtained via JWT flow
+            self.refresh_token = None
+            self.client_id = None
+            self.client_secret = None
+            logger.info("Configured Gmail client for Service Account authentication")
+
+        else:
+            # OAuth 2.0 or Pre-generated Token
+            # Parse OAuth parameters from arguments and environment
+            self.access_token = access_token or os.getenv("GMAIL_ACCESS_TOKEN")
+            self.refresh_token = refresh_token or os.getenv("GMAIL_REFRESH_TOKEN")
+            self.client_id = client_id or os.getenv("GOOGLE_CLIENT_ID")
+            self.client_secret = client_secret or os.getenv("GOOGLE_CLIENT_SECRET")
+
+            # Override from credentials dict if present
+            if "access_token" in creds:
+                self.access_token = creds["access_token"]
+            if "refresh_token" in creds:
+                self.refresh_token = creds["refresh_token"]
+            if "client_id" in creds:
+                self.client_id = creds["client_id"]
+            if "client_secret" in creds:
+                self.client_secret = creds["client_secret"]
+
+            # Determine auth method
+            if self.refresh_token and self.client_id and self.client_secret:
+                self.auth_method = "oauth2"
+                logger.info("Configured Gmail client for OAuth 2.0 with refresh token")
+            elif self.access_token:
+                self.auth_method = "pre_generated_token"
+                logger.info("Configured Gmail client for pre-generated token")
+            else:
+                raise GmailError(
+                    "No credentials provided. Use one of:\n"
+                    "1. Service Account: credentials_json with type='service_account'\n"
+                    "2. OAuth 2.0: access_token + refresh_token + client_id + client_secret\n"
+                    "3. Pre-generated Token: access_token only"
+                )
+
+        # For service account, we'll get token in authenticate() method
+        # For others, validate we have access token now
+        if self.auth_method != "service_account" and not self.access_token:
             raise GmailError(
                 "No access_token provided. Pass as argument or set GMAIL_ACCESS_TOKEN env var."
             )
@@ -118,14 +222,74 @@ class GmailClient(BaseIntegrationClient):
         super().__init__(
             name="gmail",
             base_url=self.API_BASE,
-            api_key=self.access_token,
+            api_key=self.access_token or "pending",  # Service account token obtained later
             timeout=timeout,
             max_retries=max_retries,
             retry_base_delay=retry_base_delay,
         )
 
         self.user_id = "me"  # Always use "me" for authenticated user
-        logger.info("Initialized Gmail client")
+        logger.info(f"Initialized Gmail client with {self.auth_method} authentication")
+
+    async def authenticate(self) -> None:
+        """Authenticate with Gmail API using configured credentials.
+
+        Handles all three authentication methods:
+        1. Service Account - Obtains access token via JWT bearer flow
+        2. OAuth 2.0 - Validates refresh token and client credentials
+        3. Pre-generated Token - Validates token is present
+
+        Call this method once before making API requests.
+
+        Raises:
+            GmailAuthError: If authentication fails
+        """
+        try:
+            if self.auth_method == "service_account":
+                await self._authenticate_service_account()
+                logger.info("Gmail service account authenticated")
+
+            elif self.auth_method == "oauth2":
+                # For OAuth 2.0, token is already present from __init__
+                # Validate we can refresh it if needed
+                if not all([self.refresh_token, self.client_id, self.client_secret]):
+                    raise GmailAuthError(
+                        "OAuth 2.0 authentication incomplete: missing refresh_token, client_id, or client_secret"
+                    )
+                logger.info("Gmail OAuth 2.0 authenticated")
+
+            elif self.auth_method == "pre_generated_token":
+                # For pre-generated token, it's already present from __init__
+                if not self.access_token:
+                    raise GmailAuthError("Pre-generated token not found")
+                logger.info("Gmail pre-generated token authenticated")
+
+            else:
+                raise GmailAuthError(f"Unknown authentication method: {self.auth_method}")
+
+        except GmailAuthError:
+            raise
+        except Exception as e:
+            logger.error(f"Authentication failed: {e}")
+            raise GmailAuthError(f"Failed to authenticate: {e}") from e
+
+    def _validate_service_account_credentials(self, creds: dict[str, Any]) -> None:
+        """Validate service account credentials have required fields.
+
+        Args:
+            creds: Service account credentials dict
+
+        Raises:
+            GmailError: If required fields are missing
+        """
+        required_fields = ["private_key", "client_email", "token_uri"]
+        missing = [field for field in required_fields if field not in creds]
+
+        if missing:
+            raise GmailError(
+                f"Service account credentials missing required fields: {missing}. "
+                f"Service account JSON must include: {', '.join(required_fields)}"
+            )
 
     def _get_headers(self) -> dict[str, str]:
         """Get headers for Gmail API requests.
@@ -138,12 +302,103 @@ class GmailClient(BaseIntegrationClient):
             "Content-Type": "application/json",
         }
 
+    async def _authenticate_service_account(self) -> None:
+        """Authenticate using service account credentials with JWT bearer flow.
+
+        Implements Google's JWT bearer token flow for service account authentication.
+        This is the production-ready authentication method with zero user interaction.
+
+        The JWT flow works as follows:
+        1. Create JWT assertion signed with service account private key
+        2. Exchange JWT for access token via Google OAuth2 endpoint
+        3. Use token for API requests
+
+        For implementation, use the google-auth library:
+            pip install google-auth
+
+        Then in code:
+            from google.auth.transport.requests import Request
+            from google.oauth2.service_account import Credentials
+
+            credentials = Credentials.from_service_account_info(
+                self.credentials_dict,
+                scopes=self.DEFAULT_SCOPES
+            )
+            await credentials.refresh(Request())
+            self.access_token = credentials.token
+
+        For now, this method expects the access_token to be pre-generated and
+        included in credentials dict, or uses the google-auth library if available.
+
+        Raises:
+            GmailAuthError: If service account authentication fails
+        """
+        try:
+            # Try to use google-auth library if available
+            try:
+                from google.auth.transport.requests import Request
+                from google.oauth2.service_account import Credentials
+
+                logger.info("Using google-auth library for service account JWT flow")
+
+                credentials = Credentials.from_service_account_info(
+                    self.credentials_dict,
+                    scopes=self.DEFAULT_SCOPES,
+                )
+
+                # Synchronously refresh token (google-auth doesn't have async support)
+                request = Request()
+                credentials.refresh(request)
+                token: str | None = credentials.token
+                if not token:
+                    raise GmailAuthError("Failed to obtain access token from service account")
+                self.access_token = token
+                self.api_key = self.access_token
+
+                logger.info("Service account authenticated successfully via JWT flow")
+
+            except ImportError:
+                # Fallback: expect access_token in credentials dict
+                logger.warning(
+                    "google-auth library not installed. " "Install with: pip install google-auth"
+                )
+
+                if "access_token" in self.credentials_dict:
+                    token = self.credentials_dict["access_token"]
+                    if not isinstance(token, str):
+                        raise GmailAuthError(
+                            "access_token in credentials must be a string"
+                        ) from None
+                    self.access_token = token
+                    self.api_key = self.access_token
+                    logger.info("Using pre-generated access token from credentials")
+                else:
+                    raise GmailAuthError(
+                        "Service account credentials missing access_token. "
+                        "Install google-auth library for automatic JWT token generation: "
+                        "pip install google-auth"
+                    ) from None
+
+        except GmailAuthError:
+            raise
+        except Exception as e:
+            logger.error(f"Service account authentication failed: {e}")
+            raise GmailAuthError(f"Service account auth failed: {e}") from e
+
     async def _refresh_access_token(self) -> None:
-        """Refresh expired access token using refresh token.
+        """Refresh expired access token using refresh token or JWT flow.
+
+        For OAuth 2.0: Uses refresh token to get new access token
+        For Service Account: Regenerates JWT and exchanges for new token
 
         Raises:
             GmailAuthError: If token refresh fails.
         """
+        if self.auth_method == "service_account":
+            # For service account, re-authenticate to get new token
+            await self._authenticate_service_account()
+            return
+
         if not self.refresh_token or not self.client_id or not self.client_secret:
             raise GmailAuthError(
                 "Cannot refresh token: refresh_token, client_id, or client_secret missing"
