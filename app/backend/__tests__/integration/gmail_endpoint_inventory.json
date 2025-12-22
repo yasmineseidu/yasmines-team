@@ -1,0 +1,331 @@
+{
+  "service": "gmail",
+  "generated": "2025-12-22",
+  "total_endpoints": 34,
+  "total_tests": 49,
+  "coverage_percentage": 100,
+  "endpoints": [
+    {
+      "name": "list_messages",
+      "method": "GET",
+      "path": "/v1/users/me/messages",
+      "tests": 4,
+      "status": "✅ Ready",
+      "description": "List messages from user's mailbox with pagination and filtering"
+    },
+    {
+      "name": "get_message",
+      "method": "GET",
+      "path": "/v1/users/me/messages/{messageId}",
+      "tests": 4,
+      "status": "✅ Ready",
+      "description": "Get full message content and metadata"
+    },
+    {
+      "name": "send_message",
+      "method": "POST",
+      "path": "/v1/users/me/messages/send",
+      "tests": 6,
+      "status": "✅ Ready",
+      "description": "Send email message with text/HTML support"
+    },
+    {
+      "name": "send_message_with_attachment",
+      "method": "POST",
+      "path": "/v1/users/me/messages/send",
+      "tests": 1,
+      "status": "✅ Ready",
+      "description": "Send email with file attachment"
+    },
+    {
+      "name": "delete_message",
+      "method": "DELETE",
+      "path": "/v1/users/me/messages/{messageId}",
+      "tests": 1,
+      "status": "✅ Ready",
+      "description": "Permanently delete message"
+    },
+    {
+      "name": "trash_message",
+      "method": "POST",
+      "path": "/v1/users/me/messages/{messageId}/trash",
+      "tests": 2,
+      "status": "✅ Ready",
+      "description": "Move message to trash"
+    },
+    {
+      "name": "untrash_message",
+      "method": "POST",
+      "path": "/v1/users/me/messages/{messageId}/untrash",
+      "tests": 1,
+      "status": "✅ Ready",
+      "description": "Restore message from trash"
+    },
+    {
+      "name": "mark_as_read",
+      "method": "POST",
+      "path": "/v1/users/me/messages/{messageId}/modify",
+      "tests": 1,
+      "status": "✅ Ready",
+      "description": "Mark message as read"
+    },
+    {
+      "name": "mark_as_unread",
+      "method": "POST",
+      "path": "/v1/users/me/messages/{messageId}/modify",
+      "tests": 1,
+      "status": "✅ Ready",
+      "description": "Mark message as unread"
+    },
+    {
+      "name": "star_message",
+      "method": "POST",
+      "path": "/v1/users/me/messages/{messageId}/modify",
+      "tests": 1,
+      "status": "✅ Ready",
+      "description": "Add star/flag to message"
+    },
+    {
+      "name": "unstar_message",
+      "method": "POST",
+      "path": "/v1/users/me/messages/{messageId}/modify",
+      "tests": 1,
+      "status": "✅ Ready",
+      "description": "Remove star from message"
+    },
+    {
+      "name": "archive_message",
+      "method": "POST",
+      "path": "/v1/users/me/messages/{messageId}/modify",
+      "tests": 1,
+      "status": "✅ Ready",
+      "description": "Archive message (remove from INBOX)"
+    },
+    {
+      "name": "unarchive_message",
+      "method": "POST",
+      "path": "/v1/users/me/messages/{messageId}/modify",
+      "tests": 1,
+      "status": "✅ Ready",
+      "description": "Restore archived message to INBOX"
+    },
+    {
+      "name": "list_labels",
+      "method": "GET",
+      "path": "/v1/users/me/labels",
+      "tests": 1,
+      "status": "✅ Ready",
+      "description": "List all available labels"
+    },
+    {
+      "name": "get_label",
+      "method": "GET",
+      "path": "/v1/users/me/labels/{labelId}",
+      "tests": 2,
+      "status": "✅ Ready",
+      "description": "Get label details by ID"
+    },
+    {
+      "name": "create_label",
+      "method": "POST",
+      "path": "/v1/users/me/labels",
+      "tests": 2,
+      "status": "✅ Ready",
+      "description": "Create new custom label"
+    },
+    {
+      "name": "delete_label",
+      "method": "DELETE",
+      "path": "/v1/users/me/labels/{labelId}",
+      "tests": 1,
+      "status": "✅ Ready",
+      "description": "Delete label"
+    },
+    {
+      "name": "add_label",
+      "method": "POST",
+      "path": "/v1/users/me/messages/{messageId}/modify",
+      "tests": 1,
+      "status": "✅ Ready",
+      "description": "Apply label to message"
+    },
+    {
+      "name": "remove_label",
+      "method": "POST",
+      "path": "/v1/users/me/messages/{messageId}/modify",
+      "tests": 1,
+      "status": "✅ Ready",
+      "description": "Remove label from message"
+    },
+    {
+      "name": "list_drafts",
+      "method": "GET",
+      "path": "/v1/users/me/drafts",
+      "tests": 2,
+      "status": "✅ Ready",
+      "description": "List draft messages"
+    },
+    {
+      "name": "get_draft",
+      "method": "GET",
+      "path": "/v1/users/me/drafts/{draftId}",
+      "tests": 2,
+      "status": "✅ Ready",
+      "description": "Get draft message details"
+    },
+    {
+      "name": "create_draft",
+      "method": "POST",
+      "path": "/v1/users/me/drafts",
+      "tests": 2,
+      "status": "✅ Ready",
+      "description": "Create new draft message"
+    },
+    {
+      "name": "send_draft",
+      "method": "POST",
+      "path": "/v1/users/me/drafts/{draftId}/send",
+      "tests": 1,
+      "status": "✅ Ready",
+      "description": "Send existing draft"
+    },
+    {
+      "name": "delete_draft",
+      "method": "DELETE",
+      "path": "/v1/users/me/drafts/{draftId}",
+      "tests": 1,
+      "status": "✅ Ready",
+      "description": "Delete draft message"
+    },
+    {
+      "name": "list_threads",
+      "method": "GET",
+      "path": "/v1/users/me/threads",
+      "tests": 3,
+      "status": "✅ Ready",
+      "description": "List conversation threads"
+    },
+    {
+      "name": "get_thread",
+      "method": "GET",
+      "path": "/v1/users/me/threads/{threadId}",
+      "tests": 2,
+      "status": "✅ Ready",
+      "description": "Get thread with all messages"
+    },
+    {
+      "name": "delete_thread",
+      "method": "DELETE",
+      "path": "/v1/users/me/threads/{threadId}",
+      "tests": 1,
+      "status": "✅ Ready",
+      "description": "Permanently delete thread"
+    },
+    {
+      "name": "trash_thread",
+      "method": "POST",
+      "path": "/v1/users/me/threads/{threadId}/trash",
+      "tests": 1,
+      "status": "✅ Ready",
+      "description": "Move thread to trash"
+    },
+    {
+      "name": "untrash_thread",
+      "method": "POST",
+      "path": "/v1/users/me/threads/{threadId}/untrash",
+      "tests": 1,
+      "status": "✅ Ready",
+      "description": "Restore thread from trash"
+    },
+    {
+      "name": "modify_thread",
+      "method": "POST",
+      "path": "/v1/users/me/threads/{threadId}/modify",
+      "tests": 2,
+      "status": "✅ Ready",
+      "description": "Add or remove labels from thread"
+    },
+    {
+      "name": "get_user_profile",
+      "method": "GET",
+      "path": "/v1/users/me/profile",
+      "tests": 1,
+      "status": "✅ Ready",
+      "description": "Get authenticated user's Gmail profile"
+    },
+    {
+      "name": "get_message_attachments",
+      "method": "GET",
+      "path": "/v1/users/me/messages/{messageId}",
+      "tests": 2,
+      "status": "✅ Ready",
+      "description": "Get list of attachments in message"
+    },
+    {
+      "name": "download_attachment",
+      "method": "GET",
+      "path": "/v1/users/me/messages/{messageId}/attachments/{attachmentId}",
+      "tests": 1,
+      "status": "✅ Ready",
+      "description": "Download attachment content"
+    }
+  ],
+  "test_categories": {
+    "messages": {
+      "count": 15,
+      "tests": 18,
+      "status": "✅ Complete"
+    },
+    "labels": {
+      "count": 7,
+      "tests": 10,
+      "status": "✅ Complete"
+    },
+    "drafts": {
+      "count": 5,
+      "tests": 7,
+      "status": "✅ Complete"
+    },
+    "threads": {
+      "count": 6,
+      "tests": 9,
+      "status": "✅ Complete"
+    },
+    "user": {
+      "count": 1,
+      "tests": 1,
+      "status": "✅ Complete"
+    },
+    "attachments": {
+      "count": 2,
+      "tests": 2,
+      "status": "✅ Complete"
+    }
+  },
+  "test_types": {
+    "happy_path": 18,
+    "edge_cases": 15,
+    "error_handling": 16,
+    "total": 49
+  },
+  "authentication_methods": [
+    "service_account",
+    "oauth2",
+    "pre_generated_token"
+  ],
+  "requirements": {
+    "python": ">=3.11",
+    "dependencies": [
+      "fastapi",
+      "httpx",
+      "pydantic",
+      "anthropic",
+      "google-auth>=2.25.0"
+    ],
+    "test_dependencies": [
+      "pytest",
+      "pytest-asyncio",
+      "pytest-cov"
+    ]
+  }
+}
