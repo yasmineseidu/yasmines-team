@@ -1041,6 +1041,53 @@ class TelegramClient(BaseIntegrationClient):
         """
         return hmac.compare_digest(secret_token, x_token_header)
 
+    async def call_api(
+        self,
+        method_name: str,
+        params: dict[str, Any] | None = None,
+        files: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Call any Telegram Bot API method directly.
+
+        This method is future-proof - it allows calling any existing or future
+        Telegram Bot API endpoint without needing to add new methods to the client.
+
+        Args:
+            method_name: The Telegram Bot API method name (e.g., "getMe", "sendMessage").
+            params: Optional parameters for the API call.
+            files: Optional files to upload (for media methods).
+
+        Returns:
+            The API response data (the 'result' field from Telegram's response).
+
+        Raises:
+            TelegramError: On API error.
+            TelegramRateLimitError: On rate limit.
+
+        Example:
+            # Call any current or future endpoint
+            result = await client.call_api("getMe")
+            result = await client.call_api("sendMessage", {"chat_id": 123, "text": "Hi"})
+
+            # Future endpoint example (hypothetical)
+            result = await client.call_api("createForumTopic", {"chat_id": 123, "name": "Topic"})
+        """
+        endpoint = f"/{method_name}"
+        request_params: dict[str, Any] = {}
+
+        if params:
+            request_params["json"] = params
+
+        if files:
+            # For file uploads, use multipart form
+            request_params["files"] = files
+            if params:
+                request_params["data"] = params
+                del request_params["json"]
+
+        return await self._request_with_retry("POST", endpoint, **request_params)
+
     async def close(self) -> None:
         """Close the HTTP client and release resources."""
         await super().close()

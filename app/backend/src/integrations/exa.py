@@ -916,3 +916,4 @@ class ExaClient(BaseIntegrationClient):
         """Async context manager exit with cache cleanup."""
         self.clear_cache()
         await super().__aexit__(exc_type, exc_val, exc_tb)
+

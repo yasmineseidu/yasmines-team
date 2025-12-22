@@ -219,10 +219,7 @@ class ApprovalService:
             raise ValueError(f"Invalid request data: {'; '.join(errors)}")
 
         # Create database record
-        if isinstance(self.db, InMemoryDatabase):
-            request_id = await self.db.insert_request(create_request.to_dict())
-        else:
-            request_id = str(uuid.uuid4())
+        request_id = await self.db.insert_request(create_request.to_dict())
 
         logger.info(f"Created approval request {request_id}: {create_request.title}")
 
@@ -247,11 +244,10 @@ class ApprovalService:
             )
 
             # Update record with message ID
-            if isinstance(self.db, InMemoryDatabase):
-                await self.db.update_request(
-                    request_id,
-                    {"telegram_message_id": message.message_id},
-                )
+            await self.db.update_request(
+                request_id,
+                {"telegram_message_id": message.message_id},
+            )
 
             logger.info(f"Sent approval request {request_id} as message {message.message_id}")
 
@@ -422,11 +418,7 @@ class ApprovalService:
             True if update succeeded, False otherwise.
         """
         # Get current request
-        if isinstance(self.db, InMemoryDatabase):
-            request_data = await self.db.get_request(request_id)
-        else:
-            request_data = None
-
+        request_data = await self.db.get_request(request_id)
         if not request_data:
             logger.warning(f"Approval request {request_id} not found")
             return False
@@ -447,14 +439,10 @@ class ApprovalService:
             action = ApprovalAction.EXPIRE
 
         # Update request
-        if isinstance(self.db, InMemoryDatabase):
-            success = await self.db.update_request(
-                request_id,
-                {"status": status.value},
-            )
-        else:
-            success = True
-
+        success = await self.db.update_request(
+            request_id,
+            {"status": status.value},
+        )
         if not success:
             logger.error(f"Failed to update approval request {request_id}")
             return False
@@ -472,8 +460,7 @@ class ApprovalService:
             "telegram_callback_query_id": telegram_callback_query_id,
         }
 
-        if isinstance(self.db, InMemoryDatabase):
-            await self.db.insert_history(history_data)
+        await self.db.insert_history(history_data)
 
         logger.info(
             f"Updated approval request {request_id} from {previous_status.value} "
@@ -495,11 +482,7 @@ class ApprovalService:
         Raises:
             ValueError: If request not found.
         """
-        if isinstance(self.db, InMemoryDatabase):
-            request_data = await self.db.get_request(request_id)
-        else:
-            request_data = None
-
+        request_data = await self.db.get_request(request_id)
         if not request_data:
             raise ValueError(f"Approval request {request_id} not found")
 
@@ -515,14 +498,10 @@ class ApprovalService:
         Returns:
             List of pending ApprovalRequest objects, ordered by created_at DESC.
         """
-        if isinstance(self.db, InMemoryDatabase):
-            rows = await self.db.get_pending_by_approver(approver_id)
-        else:
-            rows = []
-
+        rows = await self.db.get_pending_by_approver(approver_id)
         requests = [ApprovalRequest.from_dict(row) for row in rows]
 
-        # Sort by created_at descending
+        # Sort by created_at descending (already ordered by DB, but ensure consistency)
         requests.sort(key=lambda r: r.created_at or datetime.min, reverse=True)
 
         return requests
@@ -545,16 +524,15 @@ class ApprovalService:
         expires_at = datetime.now(UTC) + timedelta(hours=self.edit_token_expiry_hours)
 
         # Update request with token
-        if isinstance(self.db, InMemoryDatabase):
-            success = await self.db.update_request(
-                request_id,
-                {
-                    "edit_token": token,
-                    "edit_token_expires_at": expires_at,
-                },
-            )
-            if not success:
-                raise ValueError(f"Approval request {request_id} not found")
+        success = await self.db.update_request(
+            request_id,
+            {
+                "edit_token": token,
+                "edit_token_expires_at": expires_at,
+            },
+        )
+        if not success:
+            raise ValueError(f"Approval request {request_id} not found")
 
         logger.info(f"Generated edit token for request {request_id}")
 
@@ -675,11 +653,7 @@ class ApprovalService:
         Returns:
             ApprovalRequest if found and token is valid, None otherwise.
         """
-        if isinstance(self.db, InMemoryDatabase):
-            request_data = await self.db.get_request_by_edit_token(token)
-        else:
-            request_data = None
-
+        request_data = await self.db.get_request_by_edit_token(token)
         if not request_data:
             return None
 

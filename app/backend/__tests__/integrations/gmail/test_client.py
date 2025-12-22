@@ -138,7 +138,7 @@ class TestGmailClientAuthentication:
 
     @pytest.mark.asyncio
     async def test_authenticate_service_account_without_google_auth(self):
-        """Service account auth fails gracefully without google-auth lib."""
+        """Service account auth fails gracefully with invalid credentials."""
         creds = {
             "type": "service_account",  # pragma: allowlist secret
             "private_key": "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----",  # pragma: allowlist secret
@@ -146,10 +146,29 @@ class TestGmailClientAuthentication:
             "token_uri": "https://oauth2.googleapis.com/token",
         }
         client = GmailClient(credentials_json=creds)
-        # Without google-auth library and without access_token, should fail
+        # Service account auth with invalid key should fail with appropriate error
         with pytest.raises(GmailAuthError) as exc_info:
             await client.authenticate()
-        assert "google-auth" in str(exc_info.value).lower() or "access_token" in str(exc_info.value)
+        # Error should mention key parsing, google-auth, or access_token
+        error_msg = str(exc_info.value).lower()
+        assert any(
+            phrase in error_msg
+            for phrase in ["google-auth", "access_token", "key", "deserialize", "asn.1"]
+        )
+
+    def test_service_account_with_domain_wide_delegation(self):
+        """Service account stores user_email for domain-wide delegation."""
+        creds = {
+            "type": "service_account",  # pragma: allowlist secret
+            "private_key": "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----",  # pragma: allowlist secret
+            "client_email": "service@project.iam.gserviceaccount.com",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+        user_email = "yasmine@smarterteam.ai"
+        client = GmailClient(credentials_json=creds, user_email=user_email)
+        # User email should be stored for delegation
+        assert client.user_email == user_email
+        assert client.auth_method == "service_account"
 
 
 class TestGmailClientHeaders:

@@ -100,6 +100,7 @@ class GmailClient(BaseIntegrationClient):
         client_id: str | None = None,
         client_secret: str | None = None,
         credentials_json: dict[str, Any] | str | None = None,
+        user_email: str | None = None,
         timeout: float = 30.0,
         max_retries: int = 3,
         retry_base_delay: float = 1.0,
@@ -107,7 +108,7 @@ class GmailClient(BaseIntegrationClient):
         """Initialize Gmail client with multiple authentication methods.
 
         Supports three authentication methods (in order of precedence):
-        1. Service Account (type="service_account") - JWT bearer token flow
+        1. Service Account (type="service_account") - JWT bearer token flow with optional domain-wide delegation
         2. OAuth 2.0 - Access token with optional refresh capability
         3. Pre-generated Token - Direct access token
 
@@ -122,6 +123,8 @@ class GmailClient(BaseIntegrationClient):
                 - Service account: {"type": "service_account", "private_key": "...", ...}
                 - OAuth 2.0: {"access_token": "...", "refresh_token": "...", ...}
                 - Pre-generated: {"access_token": "..."}
+            user_email: For service account with domain-wide delegation, the email to impersonate.
+                       Example: "user@workspace.ai". Defaults to env var GMAIL_USER_EMAIL.
             timeout: Request timeout in seconds.
             max_retries: Maximum retry attempts for transient errors.
             retry_base_delay: Base delay for exponential backoff in seconds.
@@ -130,13 +133,13 @@ class GmailClient(BaseIntegrationClient):
             GmailError: If credentials cannot be resolved from arguments or environment.
 
         Example:
-            # Method 1: Service Account (Production)
+            # Method 1: Service Account with Domain-Wide Delegation (Production)
             >>> client = GmailClient(credentials_json={  # pragma: allowlist secret
             ...     "type": "service_account",
             ...     "private_key": "-----BEGIN RSA PRIVATE KEY-----...",  # pragma: allowlist secret
             ...     "client_email": "service-account@project.iam.gserviceaccount.com",
             ...     "token_uri": "https://oauth2.googleapis.com/token"
-            ... })
+            ... }, user_email="yasmine@smarterteam.ai")
 
             # Method 2: OAuth 2.0 (User access)
             >>> client = GmailClient(  # pragma: allowlist secret
@@ -152,6 +155,7 @@ class GmailClient(BaseIntegrationClient):
         # Store credential type for later use
         self.auth_method: str = "unknown"
         self.credentials_dict: dict[str, Any] = {}
+        self.user_email = user_email or os.getenv("GMAIL_USER_EMAIL")
 
         # Parse credentials JSON if provided
         if isinstance(credentials_json, str):
@@ -308,10 +312,13 @@ class GmailClient(BaseIntegrationClient):
         Implements Google's JWT bearer token flow for service account authentication.
         This is the production-ready authentication method with zero user interaction.
 
+        Optionally supports domain-wide delegation to impersonate workspace users.
+
         The JWT flow works as follows:
         1. Create JWT assertion signed with service account private key
-        2. Exchange JWT for access token via Google OAuth2 endpoint
-        3. Use token for API requests
+        2. (Optional) Set subject to user_email for domain-wide delegation
+        3. Exchange JWT for access token via Google OAuth2 endpoint
+        4. Use token for API requests (accessing delegated user's Gmail)
 
         For implementation, use the google-auth library:
             pip install google-auth
@@ -324,6 +331,10 @@ class GmailClient(BaseIntegrationClient):
                 self.credentials_dict,
                 scopes=self.DEFAULT_SCOPES
             )
+            # For domain-wide delegation:
+            if user_email:
+                credentials = credentials.with_subject(user_email)
+
             await credentials.refresh(Request())
             self.access_token = credentials.token
 
@@ -345,6 +356,11 @@ class GmailClient(BaseIntegrationClient):
                     self.credentials_dict,
                     scopes=self.DEFAULT_SCOPES,
                 )
+
+                # For domain-wide delegation, set the user to impersonate
+                if self.user_email:
+                    credentials = credentials.with_subject(self.user_email)
+                    logger.info(f"Using domain-wide delegation for: {self.user_email}")
 
                 # Synchronously refresh token (google-auth doesn't have async support)
                 request = Request()
@@ -471,7 +487,13 @@ class GmailClient(BaseIntegrationClient):
             raise GmailRateLimitError("Rate limit exceeded", retry_after=retry_after_seconds)
 
         if response.status_code == 404:
-            raise GmailNotFoundError("resource", "unknown")
+            try:
+                error_data = response.json()
+                message = error_data.get("error", {}).get("message", "unknown")
+                resource_type = message.split("'")[0].strip() if "'" in message else "resource"
+                raise GmailNotFoundError(resource_type, message)
+            except Exception:
+                raise GmailNotFoundError("resource", "unknown")
 
         if response.status_code >= 400:
             try:

@@ -161,31 +161,40 @@ class ApprovalBotHandler:
 
         logger.info(f"Processing approval for request {request_id} by user {user_id}")
 
+        # IMMEDIATELY answer callback to show user feedback (must be within 10 seconds)
+        await self._answer_callback(callback_id, "✓ Approving...")
+
         # Get the request
         try:
             request = await self.approval_service.get_approval_request(request_id)
         except ValueError:
-            await self._answer_callback(callback_id, "Request not found", show_alert=True)
             logger.warning(f"Approval request {request_id} not found")
             return
 
         # Verify approver
         if request.approver_id != user_id:
-            await self._answer_callback(
-                callback_id,
-                "You are not authorized to approve this request",
-                show_alert=True,
-            )
             logger.warning(f"User {user_id} not authorized to approve request {request_id}")
             return
 
         # Check if already processed
         if not request.is_pending():
-            await self._answer_callback(
-                callback_id,
-                f"This request has already been {request.status.value}",
-                show_alert=True,
-            )
+            # Already processed - just update message to reflect current status
+            try:
+                original_text = message.get("text", "")
+                if "APPROVED" not in original_text and "DISAPPROVED" not in original_text:
+                    status_message = self.approval_service.format_status_message(
+                        status=request.status,
+                    )
+                    updated_text = f"{original_text}\n\n{'=' * 30}\n\n{status_message}"
+                    await self.telegram_client.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text=updated_text,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=self._build_completed_keyboard(request_id, request.status),
+                    )
+            except TelegramError:
+                pass
             return
 
         # Update status
@@ -198,7 +207,7 @@ class ApprovalBotHandler:
         )
 
         if not success:
-            await self._answer_callback(callback_id, "Failed to update status", show_alert=True)
+            logger.error(f"Failed to update approval request {request_id}")
             return
 
         # Edit the message to show approval status
@@ -216,17 +225,12 @@ class ApprovalBotHandler:
                 message_id=message_id,
                 text=updated_text,
                 parse_mode=ParseMode.HTML,
-                # Remove buttons after action
+                # Remove action buttons after approval
                 reply_markup=self._build_completed_keyboard(request_id, ApprovalStatus.APPROVED),
             )
         except TelegramError as e:
             logger.error(f"Failed to edit message: {e}")
 
-        # Answer callback
-        await self._answer_callback(callback_id, "Approval recorded successfully")
-
-        # Notify requester (if we have their chat_id)
-        # In a real implementation, you'd look up the requester's chat_id
         logger.info(f"Request {request_id} approved by {username or user_id}")
 
     async def handle_disapprove(self, callback_query: dict[str, Any], request_id: str) -> None:
@@ -249,29 +253,21 @@ class ApprovalBotHandler:
 
         logger.info(f"Processing disapproval for request {request_id} by user {user_id}")
 
+        # IMMEDIATELY answer callback to show user feedback
+        await self._answer_callback(callback_id, "✗ Please provide a reason...")
+
         # Get the request
         try:
             request = await self.approval_service.get_approval_request(request_id)
         except ValueError:
-            await self._answer_callback(callback_id, "Request not found", show_alert=True)
             return
 
         # Verify approver
         if request.approver_id != user_id:
-            await self._answer_callback(
-                callback_id,
-                "You are not authorized to disapprove this request",
-                show_alert=True,
-            )
             return
 
         # Check if already processed
         if not request.is_pending():
-            await self._answer_callback(
-                callback_id,
-                f"This request has already been {request.status.value}",
-                show_alert=True,
-            )
             return
 
         # Store pending reason request
@@ -281,15 +277,13 @@ class ApprovalBotHandler:
         await self.telegram_client.send_message(
             chat_id=chat_id,
             text=(
+                "<b>Disapproval requested</b>\n\n"
                 "Please provide a reason for disapproval:\n\n"
-                "<i>Reply to this message with your reason, "
-                "or send 'skip' to disapprove without a reason.</i>"
+                "<i>Reply with your reason, or send 'skip' to disapprove without a reason.</i>"
             ),
             parse_mode=ParseMode.HTML,
             reply_to_message_id=message_id,
         )
-
-        await self._answer_callback(callback_id, "Please provide a reason for disapproval")
 
     async def _complete_disapproval(
         self,
@@ -393,36 +387,27 @@ class ApprovalBotHandler:
 
         logger.info(f"Processing edit request for {request_id} by user {user_id}")
 
+        # IMMEDIATELY answer callback to show user feedback
+        await self._answer_callback(callback_id, "✎ Generating edit link...")
+
         # Get the request
         try:
             request = await self.approval_service.get_approval_request(request_id)
         except ValueError:
-            await self._answer_callback(callback_id, "Request not found", show_alert=True)
             return
 
         # Verify approver
         if request.approver_id != user_id:
-            await self._answer_callback(
-                callback_id,
-                "You are not authorized to edit this request",
-                show_alert=True,
-            )
             return
 
         # Check if actionable
         if not request.is_actionable():
-            await self._answer_callback(
-                callback_id,
-                f"This request has already been {request.status.value}",
-                show_alert=True,
-            )
             return
 
         # Generate edit token
         try:
             token = await self.approval_service.generate_edit_token(request_id)
-        except ValueError as e:
-            await self._answer_callback(callback_id, str(e), show_alert=True)
+        except ValueError:
             return
 
         # Update status to editing
@@ -468,8 +453,6 @@ class ApprovalBotHandler:
             reply_markup=edit_keyboard,
             reply_to_message_id=message_id,
         )
-
-        await self._answer_callback(callback_id, "Edit form link generated")
 
         logger.info(f"Edit token generated for request {request_id}")
 

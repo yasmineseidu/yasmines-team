@@ -160,3 +160,4 @@ SAMPLE_SEARCH_QUERIES = [
     "API documentation",
     "test page",
 ]
+
