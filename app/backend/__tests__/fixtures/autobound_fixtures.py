@@ -287,6 +287,37 @@ TEST_SCENARIOS = {
         "content_type": "custom",
         "custom_prompt": CUSTOM_PROMPTS["pain_point_analysis"]["prompt"],
     },
+    "friendly_email": {
+        "description": "Friendly, warm outreach email",
+        "contact": TEST_CONTACTS["startup_founder"]["email"],
+        "sender": TEST_SENDERS["bdr"],
+        "content_type": "email",
+        "writing_style": "friendly",
+    },
+    "professional_email": {
+        "description": "Professional formal email",
+        "contact": TEST_CONTACTS["sales_leader"]["email"],
+        "sender": TEST_SENDERS["account_exec"],
+        "content_type": "email",
+        "writing_style": "professional",
+    },
+    "sms_message": {
+        "description": "Short SMS message",
+        "contact": TEST_CONTACTS["tech_ceo"]["email"],
+        "sender": TEST_SENDERS["sales_rep"],
+        "content_type": "SMS",
+    },
+    "email_sequence": {
+        "description": "Multi-email outreach sequence",
+        "contact": TEST_CONTACTS["tech_ceo"]["email"],
+        "sender": TEST_SENDERS["founder"],
+        "content_type": "email sequence",
+    },
+    "insights_research": {
+        "description": "Research insights on prospect",
+        "contact": DEFAULT_TEST_CONTACT,
+        "max_insights": 10,
+    },
 }
 
 
