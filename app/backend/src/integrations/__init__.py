@@ -115,6 +115,18 @@ from src.integrations.firecrawl import (
     FirecrawlError,
     ScrapedPage,
 )
+from src.integrations.gohighlevel import (
+    CampaignStatus as GoHighLevelCampaignStatus,
+)
+from src.integrations.gohighlevel import (
+    Contact,
+    ContactSource,
+    ContactStatus,
+    Deal,
+    DealStatus,
+    GoHighLevelClient,
+    GoHighLevelError,
+)
 from src.integrations.icypeas import (
     IcypeasClient,
     IcypeasCreditsInfo,
@@ -461,6 +473,15 @@ __all__ = [
     "FirecrawlError",
     "ScrapedPage",
     "CrawlJob",
+    # GoHighLevel (CRM & Funnel Management)
+    "GoHighLevelClient",
+    "GoHighLevelError",
+    "Contact",
+    "ContactSource",
+    "ContactStatus",
+    "Deal",
+    "DealStatus",
+    "GoHighLevelCampaignStatus",
     # Telegram (Bot API & Notifications)
     "TelegramClient",
     "TelegramError",

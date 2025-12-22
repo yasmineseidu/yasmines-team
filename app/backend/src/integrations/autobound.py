@@ -326,18 +326,37 @@ class AutoboundClient(BaseIntegrationClient):
         endpoint = f"/generate-content/{self.CONTENT_VERSION}"
         response = await self.post(endpoint, json=payload)
 
-        # Parse response
-        content_text = response.get("content", "")
-        if isinstance(content_text, dict):
-            # Some responses wrap content in nested structure
-            content_text = content_text.get("content", str(content_text))
+        # Parse response - API returns contentList with content inside
+        content_text = ""
+        model_used = None
+        insights_used: list[str] = []
+
+        # Handle contentList structure (primary response format)
+        if (
+            "contentList" in response
+            and isinstance(response["contentList"], list)
+            and len(response["contentList"]) > 0
+        ):
+            content_item = response["contentList"][0]
+            content_text = content_item.get("content", "")
+            model_used = content_item.get("modelUsed")
+            # Extract insight names from insightsUsed array
+            if "insightsUsed" in content_item:
+                insights_used = [
+                    insight.get("name", "") for insight in content_item["insightsUsed"]
+                ]
+        # Fallback to direct content field
+        elif "content" in response:
+            content_text = response.get("content", "")
+            model_used = response.get("model")
+            insights_used = response.get("insightsUsed", [])
 
         return AutoboundContent(
             content=content_text,
             content_type=content_type_str,
             contact_email=contact_email,
-            model_used=response.get("model"),
-            insights_used=response.get("insightsUsed", []),
+            model_used=model_used,
+            insights_used=insights_used,
             raw=response,
         )
 
@@ -566,50 +585,3 @@ class AutoboundClient(BaseIntegrationClient):
                 "api_url": self.API_BASE_URL,
                 "note": f"API reachable but test failed: {e}",
             }
-
-    async def call_endpoint(
-        self,
-        endpoint: str,
-        method: str = "POST",
-        **kwargs: Any,
-    ) -> dict[str, Any]:
-        """
-        Call any Autobound API endpoint directly.
-
-        This method provides future-proofing for new endpoints that may be
-        added to the Autobound API. Use this for endpoints not yet wrapped
-        by specific methods.
-
-        Args:
-            endpoint: API endpoint path (e.g., "/generate-content/v3.6").
-            method: HTTP method (GET, POST, PUT, DELETE). Default: POST.
-            **kwargs: Additional arguments passed to the request (json, params, etc.).
-
-        Returns:
-            Raw API response as dictionary.
-
-        Raises:
-            AutoboundError: If API request fails.
-
-        Example:
-            >>> # Call a future endpoint
-            >>> result = await client.call_endpoint(
-            ...     "/new-feature/v1",
-            ...     method="POST",
-            ...     json={"param": "value"}
-            ... )
-        """
-        method = method.upper()
-
-        if method == "GET":
-            return await self.get(endpoint, **kwargs)
-        elif method == "POST":
-            return await self.post(endpoint, **kwargs)
-        elif method == "PUT":
-            return await self.put(endpoint, **kwargs)
-        elif method == "DELETE":
-            return await self.delete(endpoint, **kwargs)
-        elif method == "PATCH":
-            return await self.patch(endpoint, **kwargs)
-        else:
-            raise ValueError(f"Unsupported HTTP method: {method}")
