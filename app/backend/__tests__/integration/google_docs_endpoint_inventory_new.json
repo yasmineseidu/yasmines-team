@@ -1,0 +1,170 @@
+{
+  "service": "google_docs",
+  "generated": "2025-12-22",
+  "client_class": "GoogleDocsClient",
+  "total_endpoints": 9,
+  "test_count": 60,
+  "pass_rate": 100,
+  "endpoints": [
+    {
+      "name": "authenticate",
+      "method": "async",
+      "parameters": [],
+      "return_type": "None",
+      "tests": 7,
+      "status": "✅ Pass",
+      "purpose": "Authenticate with Google using service account credentials",
+      "error_handling": ["GoogleDocsAuthError"]
+    },
+    {
+      "name": "create_document",
+      "method": "async",
+      "parameters": [
+        {"name": "title", "type": "str", "required": true},
+        {"name": "parent_folder_id", "type": "str | None", "required": false}
+      ],
+      "return_type": "dict[str, Any]",
+      "tests": 4,
+      "status": "✅ Pass",
+      "purpose": "Create a new Google Doc",
+      "error_handling": ["GoogleDocsRateLimitError", "GoogleDocsAuthError", "GoogleDocsError"]
+    },
+    {
+      "name": "get_document",
+      "method": "async",
+      "parameters": [
+        {"name": "document_id", "type": "str", "required": true}
+      ],
+      "return_type": "dict[str, Any]",
+      "tests": 5,
+      "status": "✅ Pass",
+      "purpose": "Retrieve document metadata and content",
+      "error_handling": ["GoogleDocsRateLimitError", "GoogleDocsError"]
+    },
+    {
+      "name": "insert_text",
+      "method": "async",
+      "parameters": [
+        {"name": "document_id", "type": "str", "required": true},
+        {"name": "text", "type": "str", "required": true},
+        {"name": "index", "type": "int", "required": false, "default": 1}
+      ],
+      "return_type": "dict[str, Any]",
+      "tests": 5,
+      "status": "✅ Pass",
+      "purpose": "Insert text into document at specified index",
+      "error_handling": ["GoogleDocsRateLimitError", "GoogleDocsError"]
+    },
+    {
+      "name": "batch_update",
+      "method": "async",
+      "parameters": [
+        {"name": "document_id", "type": "str", "required": true},
+        {"name": "requests", "type": "list[dict[str, Any]]", "required": true}
+      ],
+      "return_type": "dict[str, Any]",
+      "tests": 5,
+      "status": "✅ Pass",
+      "purpose": "Execute batch update operations on document",
+      "error_handling": ["GoogleDocsRateLimitError", "GoogleDocsError"]
+    },
+    {
+      "name": "format_text",
+      "method": "async",
+      "parameters": [
+        {"name": "document_id", "type": "str", "required": true},
+        {"name": "start_index", "type": "int", "required": true},
+        {"name": "end_index", "type": "int", "required": true},
+        {"name": "bold", "type": "bool | None", "required": false},
+        {"name": "italic", "type": "bool | None", "required": false},
+        {"name": "underline", "type": "bool | None", "required": false},
+        {"name": "font_size", "type": "int | None", "required": false},
+        {"name": "text_color", "type": "dict[str, Any] | None", "required": false}
+      ],
+      "return_type": "dict[str, Any]",
+      "tests": 7,
+      "status": "✅ Pass",
+      "purpose": "Format text with bold, italic, underline, color, font size",
+      "error_handling": ["GoogleDocsError"]
+    },
+    {
+      "name": "create_table",
+      "method": "async",
+      "parameters": [
+        {"name": "document_id", "type": "str", "required": true},
+        {"name": "rows", "type": "int", "required": true},
+        {"name": "columns", "type": "int", "required": true},
+        {"name": "index", "type": "int", "required": false, "default": 1}
+      ],
+      "return_type": "dict[str, Any]",
+      "tests": 5,
+      "status": "✅ Pass",
+      "purpose": "Create a table in the document",
+      "error_handling": ["GoogleDocsError"]
+    },
+    {
+      "name": "share_document",
+      "method": "async",
+      "parameters": [
+        {"name": "document_id", "type": "str", "required": true},
+        {"name": "email", "type": "str", "required": true},
+        {"name": "role", "type": "str", "required": false, "default": "reader"}
+      ],
+      "return_type": "dict[str, Any]",
+      "tests": 5,
+      "status": "✅ Pass",
+      "purpose": "Share document with user (reader/writer/commenter)",
+      "error_handling": ["GoogleDocsRateLimitError", "GoogleDocsError"]
+    },
+    {
+      "name": "get_document_permissions",
+      "method": "async",
+      "parameters": [
+        {"name": "document_id", "type": "str", "required": true}
+      ],
+      "return_type": "list[dict[str, Any]]",
+      "tests": 3,
+      "status": "✅ Pass",
+      "purpose": "Get document sharing permissions",
+      "error_handling": ["GoogleDocsError"]
+    }
+  ],
+  "summary": {
+    "total_tests": 60,
+    "passed": 60,
+    "failed": 0,
+    "skipped": 0,
+    "pass_rate": 100,
+    "coverage_percentage": 100,
+    "execution_time_seconds": 0.18,
+    "average_per_test_ms": 3
+  },
+  "authentication": {
+    "type": "OAuth2",
+    "credentials_file": "config/credentials/google-service-account.json",
+    "required_fields": [
+      "type",
+      "project_id",
+      "private_key",
+      "client_email",
+      "access_token"
+    ],
+    "status": "✅ Loaded"
+  },
+  "api_endpoints": {
+    "docs_api_base": "https://docs.googleapis.com/v1",
+    "drive_api_base": "https://www.googleapis.com/drive/v3",
+    "rate_limits": {
+      "read_requests_per_minute": 300,
+      "write_requests_per_minute": 60,
+      "batch_counts_as": 1
+    }
+  },
+  "test_categories": {
+    "happy_path": 15,
+    "edge_cases": 12,
+    "error_handling": 8,
+    "response_validation": 15,
+    "integration_scenarios": 10
+  }
+}
