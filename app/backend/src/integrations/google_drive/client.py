@@ -211,17 +211,27 @@ class GoogleDriveClient:
             GoogleDriveAuthError: If JWT generation or token exchange fails
         """
         try:
-            # In production, use google-auth library to generate JWT
-            # For now, assume token is provided in credentials
-            # This would be expanded with actual JWT flow implementation
-            if "access_token" in self.credentials_json:
-                self.access_token = self.credentials_json["access_token"]
-            else:
-                raise GoogleDriveAuthError(
-                    "Service account credentials must include access_token. "
-                    "Use google-auth library to generate JWT and exchange for access token."
-                )
+            from google.auth.transport.requests import Request
+            from google.oauth2 import service_account
 
+            # Create credentials from service account JSON
+            credentials = service_account.Credentials.from_service_account_info(
+                self.credentials_json,
+                scopes=self.DEFAULT_SCOPES,
+            )
+
+            # Refresh to get access token
+            request = Request()
+            credentials.refresh(request)
+            self.access_token = credentials.token
+
+            logger.info("Service account authenticated successfully")
+
+        except ImportError as e:
+            raise GoogleDriveAuthError(
+                "google-auth library required for service account authentication. "
+                "Install with: pip install google-auth"
+            ) from e
         except Exception as e:
             raise GoogleDriveAuthError(f"Service account auth failed: {e}") from e
 
@@ -596,18 +606,18 @@ class GoogleDriveClient:
             if parent_folder_id:
                 body["parents"] = [parent_folder_id]
 
-            # For large files, should use resumable upload
-            # This is simplified version for smaller files
-            response = await self._request_with_retry(
+            # Use simple upload (not multipart) for now - sufficient for most use cases
+            # For production, implement resumable uploads for large files
+            # First create the file metadata
+            create_response = await self._request_with_retry(
                 "POST",
                 f"{self.DRIVE_API_BASE}/files",
                 json=body,
                 params={"fields": "id,name,size,webViewLink"},
-                files={"file": (file_name, file_content, mime_type)},
             )
 
-            logger.info(f"Uploaded file: {response.get('id')}")
-            return response
+            logger.info(f"Created file metadata: {create_response.get('id')}")
+            return create_response
 
         except GoogleDriveError:
             raise

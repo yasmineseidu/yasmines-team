@@ -36,23 +36,19 @@ Success Criteria:
 """
 
 import os
-import pytest
-from typing import Any
 
+import pytest
+
+from __tests__.fixtures.google_drive_fixtures import (
+    MIME_TYPES,
+    SAMPLE_DATA,
+    get_test_access_token,
+    get_test_credentials,
+)
 from src.integrations.google_drive.client import GoogleDriveClient
 from src.integrations.google_drive.exceptions import (
-    GoogleDriveError,
     GoogleDriveAuthError,
-    GoogleDriveQuotaExceeded,
-    GoogleDriveRateLimitError,
-)
-from __tests__.fixtures.google_drive_fixtures import (
-    SAMPLE_DATA,
-    RESPONSE_SCHEMAS,
-    SAMPLE_RESPONSES,
-    MIME_TYPES,
-    get_test_credentials,
-    get_test_access_token,
+    GoogleDriveError,
 )
 
 
@@ -105,8 +101,13 @@ class TestGoogleDriveAuthentication:
     def test_client_requires_credentials_or_token(self) -> None:
         """Test client requires either credentials or access token."""
         # Missing both should raise
-        with pytest.raises(GoogleDriveAuthError):
-            GoogleDriveClient(credentials_json=None, access_token=None)
+        old_env = os.environ.pop("GOOGLE_DRIVE_CREDENTIALS_JSON", None)
+        try:
+            with pytest.raises(GoogleDriveAuthError):
+                GoogleDriveClient(credentials_json=None, access_token=None)
+        finally:
+            if old_env:
+                os.environ["GOOGLE_DRIVE_CREDENTIALS_JSON"] = old_env
 
     def test_invalid_credentials_format(self) -> None:
         """Test client rejects credentials without 'type' field."""
@@ -114,6 +115,7 @@ class TestGoogleDriveAuthentication:
         client = GoogleDriveClient(credentials_json={"invalid": "format"})
 
         import asyncio
+
         with pytest.raises(GoogleDriveAuthError):
             asyncio.run(client.authenticate())
 
@@ -235,7 +237,7 @@ class TestGoogleDriveFileMetadata:
     async def teardown_method(self) -> None:
         """Clean up test file and client."""
         if self.test_file_id:
-            try:
+            try:  # noqa: SIM105
                 await self.client.delete_file(self.test_file_id, permanently=True)
             except Exception:
                 pass  # Ignore cleanup errors
@@ -295,7 +297,7 @@ class TestGoogleDriveDocumentCreation:
     async def teardown_method(self) -> None:
         """Clean up created documents."""
         for file_id in self.created_files:
-            try:
+            try:  # noqa: SIM105
                 await self.client.delete_file(file_id, permanently=True)
             except Exception:
                 pass
@@ -386,7 +388,7 @@ class TestGoogleDriveFileUpload:
     async def teardown_method(self) -> None:
         """Clean up uploaded files."""
         for file_id in self.uploaded_files:
-            try:
+            try:  # noqa: SIM105
                 await self.client.delete_file(file_id, permanently=True)
             except Exception:
                 pass
@@ -467,7 +469,7 @@ class TestGoogleDriveFileSharing:
     async def teardown_method(self) -> None:
         """Clean up test file."""
         if self.test_file_id:
-            try:
+            try:  # noqa: SIM105
                 await self.client.delete_file(self.test_file_id, permanently=True)
             except Exception:
                 pass
@@ -547,7 +549,7 @@ class TestGoogleDriveExport:
     async def teardown_method(self) -> None:
         """Clean up test document."""
         if self.test_file_id:
-            try:
+            try:  # noqa: SIM105
                 await self.client.delete_file(self.test_file_id, permanently=True)
             except Exception:
                 pass
@@ -712,17 +714,13 @@ class TestGoogleDriveHealthCheck:
 
     def test_health_check_not_authenticated(self) -> None:
         """Test health check without authentication."""
-        client = GoogleDriveClient(
+        unauthenticated_client = GoogleDriveClient(
             credentials_json={"type": "dummy"},
             access_token=None,
         )
 
-        # Get health check synchronously (doesn't require auth)
-        result = {
-            "name": "google_drive",
-            "healthy": False,
-            "message": "Not authenticated",
-        }
+        # Health check should return not healthy without authentication
+        result = unauthenticated_client.health_check()
 
         assert result["healthy"] is False
 
@@ -825,7 +823,7 @@ class TestGoogleDriveIntegration:
     async def teardown_method(self) -> None:
         """Clean up created items."""
         for item_id in self.created_items:
-            try:
+            try:  # noqa: SIM105
                 await self.client.delete_file(item_id, permanently=True)
             except Exception:
                 pass
