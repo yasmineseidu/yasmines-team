@@ -133,7 +133,7 @@ __tests__/unit/integrations/test_clickup.py ............................ [100%]
 ## API Key Status
 
 ### Current Situation
-- **Key in .env:** `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`
+- **Key in .env:** Invalid (not a valid ClickUp token)
 - **Status:** ❌ Invalid (returns 401 authentication error)
 - **Impact:** Integration tests skip gracefully, unit tests unaffected
 - **Action Required:** Replace with valid ClickUp personal token

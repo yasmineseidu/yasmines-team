@@ -3,7 +3,7 @@
 ## Current Status
 
 ✅ **Implementation:** Complete and tested
-❌ **Current .env Key:** Invalid (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 is not a valid ClickUp token)
+❌ **Current .env Key:** Invalid (not a valid ClickUp token - use personal API token instead)
 ✅ **Client Design:** Future-proof and production-ready
 ✅ **Tests:** 34 unit tests + error handling tests passing
 

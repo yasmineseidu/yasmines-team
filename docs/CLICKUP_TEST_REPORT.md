@@ -43,7 +43,7 @@ __tests__/unit/integrations/test_clickup.py ............................ [100%]
 
 **Status:** ⚠️ **SKIPPED - Invalid API Key in .env**
 
-Current .env key (`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`) returns 401 authentication errors.
+Current .env key (not a valid ClickUp token) returns 401 authentication errors.
 
 **Available Tests (will pass with valid key):**
 
