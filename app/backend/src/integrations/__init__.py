@@ -115,6 +115,15 @@ from src.integrations.firecrawl import (
     FirecrawlError,
     ScrapedPage,
 )
+from src.integrations.gamma import (
+    GammaAuthError,
+    GammaClient,
+    GammaError,
+    GammaPresentation,
+    GammaRateLimitError,
+    GammaSlide,
+    GammaTheme,
+)
 from src.integrations.gohighlevel import (
     CampaignStatus as GoHighLevelCampaignStatus,
 )
@@ -473,6 +482,14 @@ __all__ = [
     "FirecrawlError",
     "ScrapedPage",
     "CrawlJob",
+    # Gamma (AI Presentation Generation)
+    "GammaClient",
+    "GammaError",
+    "GammaAuthError",
+    "GammaRateLimitError",
+    "GammaPresentation",
+    "GammaSlide",
+    "GammaTheme",
     # GoHighLevel (CRM & Funnel Management)
     "GoHighLevelClient",
     "GoHighLevelError",
