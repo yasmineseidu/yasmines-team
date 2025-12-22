@@ -818,6 +818,7 @@ class GoHighLevelClient(BaseIntegrationClient):
                 "name": self.name,
                 "healthy": False,
                 "message": f"Health check failed: {e}",
+                "location_id": self.location_id,
                 "error": str(e),
             }
 
