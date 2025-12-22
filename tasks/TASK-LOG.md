@@ -13,6 +13,7 @@ Chronological record of completed tasks.
 | 2025-12-21 | backend | 017-setup-brave-search-integration | COMPLETED | Brave Search privacy-focused web search client |
 | 2025-12-21 | backend | 017-create-serp-api-integration | COMPLETED | SerpApi search engine results client |
 | 2025-12-21 | backend | 017-setup-exa-semantic-search-integration | COMPLETED | Exa semantic/neural search client |
+| 2025-12-21 | backend | 017-setup-firecrawl-scraping-integration | COMPLETED | Firecrawl web scraping and crawling client |
 
 ---
 
@@ -204,3 +205,25 @@ Chronological record of completed tasks.
 - **Tests:** 41 unit tests (100% pass rate)
 - **Quality gates:** All passed (ruff, mypy, pytest)
 - **Commit:** `bf24b3e`
+
+### Completed: 017-setup-firecrawl-scraping-integration
+- **Implemented:** Firecrawl.dev web scraping and crawling client
+- **Files created:**
+  - `app/backend/src/integrations/firecrawl.py` - Firecrawl client (400+ lines)
+  - `app/backend/__tests__/unit/integrations/test_firecrawl.py` - Unit tests (36 tests)
+- **Features:**
+  - Single page scraping with JavaScript rendering support
+  - Full website crawling with URL filtering and patterns
+  - Crawl job status tracking and monitoring
+  - Search-based page discovery
+  - Content extraction (text, markdown, HTML, images, links)
+  - Metadata extraction (title, description, author)
+  - Configurable scraping options (include/exclude tags, selectors, main content only)
+  - Crawl configuration (max pages, depth, path filtering, backward links)
+  - Health check implementation
+  - ScrapedPage and CrawlJob dataclasses with computed properties
+  - Comprehensive error handling with base exception propagation
+  - Future-proof design for API evolution
+- **Tests:** 36 unit tests (100% pass rate, >80% coverage)
+- **Quality gates:** All passed (ruff, mypy, pytest, bandit, semgrep, detect-secrets)
+- **Commit:** `bf4aef6`
