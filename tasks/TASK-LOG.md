@@ -12,6 +12,7 @@ Chronological record of completed tasks.
 | 2025-12-21 | backend | 017-setup-perplexity-research-integration | COMPLETED | Perplexity AI research client |
 | 2025-12-21 | backend | 017-setup-brave-search-integration | COMPLETED | Brave Search privacy-focused web search client |
 | 2025-12-21 | backend | 017-create-serp-api-integration | COMPLETED | SerpApi search engine results client |
+| 2025-12-21 | backend | 017-setup-exa-semantic-search-integration | COMPLETED | Exa semantic/neural search client |
 
 ---
 
@@ -179,3 +180,27 @@ Chronological record of completed tasks.
 - **Tests:** 49 unit tests (100% pass rate)
 - **Quality gates:** All passed (ruff, mypy, pytest, bandit, semgrep, detect-secrets)
 - **Commit:** `7fc9f06`
+
+### Completed: 017-setup-exa-semantic-search-integration
+- **Implemented:** Exa AI semantic/neural search client (exa.ai API)
+- **Files created:**
+  - `app/backend/src/integrations/exa.py` - Exa client (900+ lines)
+  - `app/backend/__tests__/unit/integrations/test_exa.py` - Unit tests (41 tests)
+  - `app/backend/__tests__/fixtures/exa_fixtures.py` - Test fixtures
+- **Features:**
+  - Semantic search using neural embeddings (understands meaning, not just keywords)
+  - Find similar content by URL
+  - Content extraction (full text, highlights, AI summary)
+  - Combined search+contents API for efficiency
+  - Convenience methods: search_companies(), search_research_papers(), search_news()
+  - Domain filtering (include/exclude)
+  - Date filtering (crawl date, published date)
+  - Category filtering (company, research paper, news, github, linkedin profile, etc.)
+  - Result caching with configurable TTL (24h default)
+  - Livecrawl option for real-time content retrieval
+  - Autoprompt for query enhancement
+  - 10+ typed dataclasses for structured responses
+  - Future-proof `call_endpoint()` for new API releases
+- **Tests:** 41 unit tests (100% pass rate)
+- **Quality gates:** All passed (ruff, mypy, pytest)
+- **Commit:** `bf24b3e`
