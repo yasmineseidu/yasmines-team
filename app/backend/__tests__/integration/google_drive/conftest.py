@@ -4,6 +4,7 @@ Provides fixtures for OAuth token management and test data configuration.
 """
 
 import asyncio
+import json
 import os
 
 # Add parent directory to path for oauth_helper
@@ -13,7 +14,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from oauth_helper import get_access_token_for_testing
+from oauth_helper import get_access_token_for_testing  # pragma: allowlist secret
 
 
 @pytest.fixture(scope="session")
@@ -38,23 +39,58 @@ def google_redirect_uri() -> str:
 def google_access_token() -> str:
     """Get Google access token for integration tests.
 
-    Attempts to:
-    1. Load from .google_drive_token.json if it exists
-    2. Refresh using refresh_token if available
-    3. Raise error with instructions if none available
+    Supports three authentication methods:
+    1. Service Account JSON file (GOOGLE_SERVICE_ACCOUNT_FILE env var)
+    2. Pre-generated token from .google_drive_token.json
+    3. OAuth flow with refresh token
     """
+    # Method 1: Check for service account JSON file
+    sa_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
+    if sa_file and os.path.exists(sa_file):
+        try:
+            from google.auth.transport.requests import Request
+            from google.oauth2.service_account import Credentials
+
+            with open(sa_file) as f:
+                sa_info = json.load(f)
+
+            credentials = Credentials.from_service_account_info(
+                sa_info,
+                scopes=[
+                    "https://www.googleapis.com/auth/drive",
+                    "https://www.googleapis.com/auth/drive.file",
+                ],
+            )
+            request = Request()
+            credentials.refresh(request)
+            return credentials.token
+        except Exception as e:
+            pytest.skip(
+                f"Service account authentication failed: {e}\n\n"
+                "Ensure GOOGLE_SERVICE_ACCOUNT_FILE points to a valid JSON file"
+            )
+
+    # Method 2: Try to load pre-generated token
     try:
         token = asyncio.run(get_access_token_for_testing())
         return token
     except Exception as e:
         pytest.skip(
-            f"Google Drive integration tests skipped: {str(e)}\n\n"
-            "To run live API tests, obtain a Google OAuth token:\n"
-            "1. Visit: https://accounts.google.com/o/oauth2/v2/auth?client_id=${GOOGLE_CLIENT_ID}&redirect_uri=http://localhost:8000/api/google/callback&response_type=code&scope=https://www.googleapis.com/auth/drive%20https://www.googleapis.com/auth/drive.file&access_type=offline\n"
-            "2. Grant permissions\n"
-            "3. Copy the 'code' from the redirect URL\n"
-            "4. Run: python3 app/backend/scripts/exchange_oauth_code.py <code>\n"
-            "5. Or manually create .google_drive_token.json with access_token"
+            f"Google Drive authentication skipped: {str(e)}\n\n"
+            "To run live API tests, choose one option:\n\n"
+            "OPTION 1: Service Account (Recommended for Production)\n"
+            "  1. Create service account in Google Cloud Console\n"
+            "  2. Download JSON key file\n"
+            "  3. Set: export GOOGLE_SERVICE_ACCOUNT_FILE=/path/to/key.json\n"
+            "  4. Run tests\n\n"
+            "OPTION 2: OAuth 2.0 (User Authorization)\n"
+            "  1. Visit: https://accounts.google.com/o/oauth2/v2/auth?client_id=${GOOGLE_CLIENT_ID}&redirect_uri=http://localhost:8000/api/google/callback&response_type=code&scope=https://www.googleapis.com/auth/drive%20https://www.googleapis.com/auth/drive.file&access_type=offline\n"
+            "  2. Grant permissions\n"
+            "  3. Copy the code\n"
+            "  4. Run: python3 app/backend/scripts/exchange_oauth_code.py <code>\n\n"
+            "OPTION 3: Pre-generated Token\n"
+            "  1. Generate token using either method above\n"
+            "  2. Create .google_drive_token.json with access_token field"
         )
 
 
