@@ -235,6 +235,20 @@ from src.integrations.tavily import (
     TavilyTopic,
     TavilyUsageResponse,
 )
+from src.integrations.telegram import (
+    Chat,
+    ChatType,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    MessageEntityType,
+    ParseMode,
+    TelegramClient,
+    TelegramError,
+    TelegramRateLimitError,
+    Update,
+    User,
+)
 from src.integrations.tomba import (
     TombaAccountInfo,
     TombaClient,
@@ -447,4 +461,17 @@ __all__ = [
     "FirecrawlError",
     "ScrapedPage",
     "CrawlJob",
+    # Telegram (Bot API & Notifications)
+    "TelegramClient",
+    "TelegramError",
+    "TelegramRateLimitError",
+    "User",
+    "Chat",
+    "ChatType",
+    "Message",
+    "Update",
+    "ParseMode",
+    "MessageEntityType",
+    "InlineKeyboardButton",
+    "InlineKeyboardMarkup",
 ]
