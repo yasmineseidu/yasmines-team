@@ -1,4 +1,4 @@
-.PHONY: help install dev test lint format type type-fast security check clean run migrate
+.PHONY: help install dev setup test lint format type type-fast security check clean run migrate
 
 help:
 	@echo "Smarter Team Backend - Development Commands"
@@ -6,6 +6,7 @@ help:
 	@echo "Setup:"
 	@echo "  make install       Install dependencies"
 	@echo "  make dev           Install dev dependencies"
+	@echo "  make setup         Install pre-commit hooks (REQUIRED for new developers)"
 	@echo ""
 	@echo "Development:"
 	@echo "  make run           Run development server (localhost:8000)"
@@ -40,6 +41,12 @@ install:
 
 dev:
 	pip install -e ".[dev,test]"
+
+setup:
+	@echo "Installing pre-commit hooks..."
+	pip install pre-commit
+	cd ../.. && pre-commit install
+	@echo "✓ Pre-commit hooks installed - secrets will be blocked automatically"
 
 # ============================================================================
 # Development

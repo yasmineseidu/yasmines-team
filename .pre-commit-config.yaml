@@ -79,7 +79,16 @@ repos:
       - id: detect-secrets
         name: Detect secrets
         args: [--baseline, .secrets.baseline]
-        exclude: \.md$
+        # NOTE: .md files ARE scanned - secrets in docs are still secrets!
+
+  # Google OAuth specific detection (catches GOCSPX-* and client IDs)
+  - repo: local
+    hooks:
+      - id: google-oauth-secrets
+        name: Detect Google OAuth secrets
+        entry: bash -c 'if git diff --cached --diff-filter=ACM | grep -qE "(GOCSPX-[A-Za-z0-9_-]+|[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com)"; then echo "❌ Google OAuth credentials detected! Use \${GOOGLE_CLIENT_ID} or \${GOOGLE_CLIENT_SECRET} placeholders."; exit 1; fi'
+        language: system
+        types: [text]
 
 # Configuration options
 default_language_version:
