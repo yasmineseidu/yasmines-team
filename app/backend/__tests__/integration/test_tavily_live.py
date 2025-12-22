@@ -8,10 +8,16 @@ from dotenv import load_dotenv
 
 from src.integrations.tavily import (
     TavilyClient,
+    TavilyCrawlResponse,
+    TavilyError,
+    TavilyMapResponse,
+    TavilyResearchModel,
+    TavilyResearchTask,
     TavilySearchDepth,
     TavilySearchResponse,
     TavilyTimeRange,
     TavilyTopic,
+    TavilyUsageResponse,
 )
 
 # Load .env from project root
@@ -371,3 +377,163 @@ class TestTavilyClientLiveFutureProof:
         # Should return valid search response
         assert isinstance(result, dict)
         assert "results" in result or "error" not in result
+
+
+class TestTavilyClientLiveCrawl:
+    """Live API tests for crawl functionality."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.live_api
+    async def test_basic_crawl_success(self, client: TavilyClient) -> None:
+        """Test basic crawl with real API - MUST PASS."""
+        result = await client.crawl(
+            url="https://docs.python.org",
+            max_depth=1,
+            limit=3,
+        )
+
+        assert isinstance(result, TavilyCrawlResponse)
+        assert result.base_url is not None
+        assert len(result.results) >= 1
+        assert result.response_time >= 0.0
+
+        # Verify first result structure
+        first_result = result.results[0]
+        assert first_result.url.startswith("http")
+
+
+class TestTavilyClientLiveMap:
+    """Live API tests for map functionality."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.live_api
+    async def test_basic_map_success(self, client: TavilyClient) -> None:
+        """Test basic site mapping with real API - MUST PASS."""
+        result = await client.map(
+            url="https://docs.python.org",
+            max_depth=1,
+            limit=5,
+        )
+
+        assert isinstance(result, TavilyMapResponse)
+        assert result.base_url is not None
+        assert len(result.results) >= 1
+        assert result.response_time >= 0.0
+
+        # Results should be list of URLs
+        for url in result.results:
+            assert isinstance(url, str)
+            assert url.startswith("http")
+
+
+class TestTavilyClientLiveResearchAsync:
+    """Live API tests for async research functionality."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.live_api
+    async def test_create_research_task_success(self, client: TavilyClient) -> None:
+        """Test creating async research task with real API - MUST PASS."""
+        try:
+            result = await client.create_research(
+                input_text="What are the benefits of TypeScript?",
+                model=TavilyResearchModel.MINI,
+            )
+
+            assert isinstance(result, TavilyResearchTask)
+            assert result.request_id is not None and len(result.request_id) > 0
+            assert result.status in ["pending", "processing", "completed"]
+            assert result.input == "What are the benefits of TypeScript?"
+            assert result.model in ["mini", "pro", "auto"]
+        except TavilyError as e:
+            # Research endpoint is beta - may not be available on all plans
+            if e.status_code == 401:
+                pytest.skip("Research endpoint not available on this API plan (beta feature)")
+            raise
+
+    @pytest.mark.asyncio
+    @pytest.mark.live_api
+    async def test_get_research_status_success(self, client: TavilyClient) -> None:
+        """Test getting research task status with real API - MUST PASS."""
+        try:
+            # First create a research task
+            create_result = await client.create_research(
+                input_text="Explain Python async/await",
+                model=TavilyResearchModel.MINI,
+            )
+
+            # Then get its status
+            status_result = await client.get_research_status(create_result.request_id)
+
+            assert isinstance(status_result, TavilyResearchTask)
+            assert status_result.request_id == create_result.request_id
+            assert status_result.status in ["pending", "processing", "completed", "failed"]
+        except TavilyError as e:
+            # Research endpoint is beta - may not be available on all plans
+            if e.status_code == 401:
+                pytest.skip("Research endpoint not available on this API plan (beta feature)")
+            raise
+
+
+class TestTavilyClientLiveUsage:
+    """Live API tests for usage endpoint."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.live_api
+    async def test_get_usage_success(self, client: TavilyClient) -> None:
+        """Test getting API usage stats with real API - MUST PASS."""
+        result = await client.get_usage()
+
+        assert isinstance(result, TavilyUsageResponse)
+        assert result.credits_used >= 0
+        # credits_remaining may be None for some plan types
+        if result.credits_remaining is not None:
+            assert result.credits_remaining >= 0
+
+
+class TestTavilyClientLiveAllEndpointsFutureProof:
+    """Live API tests for future-proof endpoint calling."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.live_api
+    async def test_call_endpoint_crawl(self, client: TavilyClient) -> None:
+        """Test calling /crawl endpoint directly - MUST PASS."""
+        result = await client.call_endpoint(
+            "/crawl",
+            method="POST",
+            json={
+                "url": "https://docs.python.org",
+                "max_depth": 1,
+                "limit": 2,
+            },
+        )
+
+        assert isinstance(result, dict)
+        assert "base_url" in result
+        assert "results" in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.live_api
+    async def test_call_endpoint_map(self, client: TavilyClient) -> None:
+        """Test calling /map endpoint directly - MUST PASS."""
+        result = await client.call_endpoint(
+            "/map",
+            method="POST",
+            json={
+                "url": "https://docs.python.org",
+                "max_depth": 1,
+                "limit": 3,
+            },
+        )
+
+        assert isinstance(result, dict)
+        assert "base_url" in result
+        assert "results" in result
+
+    @pytest.mark.asyncio
+    @pytest.mark.live_api
+    async def test_call_endpoint_usage(self, client: TavilyClient) -> None:
+        """Test calling /usage endpoint directly - MUST PASS."""
+        result = await client.call_endpoint("/usage", method="GET")
+
+        assert isinstance(result, dict)
+        assert "credits_used" in result or "error" not in result

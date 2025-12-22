@@ -81,6 +81,37 @@ class TavilyTimeRange(str, Enum):
     Y = "y"
 
 
+class TavilyExtractDepth(str, Enum):
+    """Extract depth options for crawl/map."""
+
+    BASIC = "basic"
+    ADVANCED = "advanced"
+
+
+class TavilyContentFormat(str, Enum):
+    """Content format options."""
+
+    MARKDOWN = "markdown"
+    TEXT = "text"
+
+
+class TavilyResearchModel(str, Enum):
+    """Research model options."""
+
+    MINI = "mini"  # Targeted, efficient research
+    PRO = "pro"  # Comprehensive, multi-angle research
+    AUTO = "auto"  # Automatic model selection
+
+
+class TavilyCitationFormat(str, Enum):
+    """Citation format options for research."""
+
+    NUMBERED = "numbered"
+    MLA = "mla"
+    APA = "apa"
+    CHICAGO = "chicago"
+
+
 class TavilyError(IntegrationError):
     """Tavily-specific error."""
 
@@ -128,6 +159,63 @@ class TavilySearchResponse:
     response_time: float = 0.0
     credits_used: int = 1
     request_id: str | None = None
+    raw_response: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class TavilyCrawlResult:
+    """Single crawl result from Tavily."""
+
+    url: str
+    raw_content: str | None = None
+    favicon: str | None = None
+
+
+@dataclass
+class TavilyCrawlResponse:
+    """Complete crawl response from Tavily."""
+
+    base_url: str
+    results: list[TavilyCrawlResult] = field(default_factory=list)
+    response_time: float = 0.0
+    credits_used: int = 1
+    request_id: str | None = None
+    raw_response: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class TavilyMapResponse:
+    """Complete map response from Tavily."""
+
+    base_url: str
+    results: list[str] = field(default_factory=list)  # List of URLs
+    response_time: float = 0.0
+    credits_used: int = 1
+    request_id: str | None = None
+    raw_response: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class TavilyUsageResponse:
+    """API usage response from Tavily."""
+
+    credits_used: int
+    credits_remaining: int | None = None
+    reset_date: str | None = None
+    raw_response: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class TavilyResearchTask:
+    """Research task status from Tavily."""
+
+    request_id: str
+    status: str  # pending, processing, completed, failed
+    input: str
+    model: str
+    created_at: str
+    response_time: float = 0.0
+    result: dict[str, Any] | None = None
     raw_response: dict[str, Any] = field(default_factory=dict)
 
 
@@ -404,31 +492,406 @@ class TavilyClient(BaseIntegrationClient):
         """
         Perform deep research on a topic with multiple iterations.
 
-        Uses advanced search depth for comprehensive research.
+        Uses advanced search depth for comprehensive research. Performs multiple
+        search iterations and aggregates unique results to provide comprehensive
+        coverage of the research topic.
 
         Args:
             query: Research topic or question
-            max_iterations: Maximum research iterations (default 5)
+            max_iterations: Maximum research iterations (1-10, default 5)
             include_images: Include related images
 
         Returns:
-            TavilySearchResponse with comprehensive research results
+            TavilySearchResponse with comprehensive research results aggregated
+            from all iterations
 
         Raises:
             TavilyError: If research fails
+            ValueError: If max_iterations is out of range
         """
         if not 1 <= max_iterations <= 10:
             raise ValueError("max_iterations must be between 1 and 10")
 
-        # Use advanced search depth for research
-        return await self.search(
+        # Aggregate results from multiple iterations
+        all_results: list[TavilySearchResult] = []
+        seen_urls: set[str] = set()
+        all_images: list[TavilyImage] = []
+        seen_image_urls: set[str] = set()
+        best_answer: TavilyAnswer | None = None
+        total_credits_used = 0
+        total_response_time = 0.0
+        last_request_id: str | None = None
+
+        # Perform multiple search iterations
+        for iteration in range(max_iterations):
+            try:
+                # Use advanced search depth for research
+                result = await self.search(
+                    query=query,
+                    search_depth=TavilySearchDepth.ADVANCED,
+                    max_results=10,
+                    include_answer="advanced",
+                    include_raw_content="markdown",
+                    include_images=include_images,
+                )
+
+                # Aggregate unique results (deduplicate by URL)
+                for search_result in result.results:
+                    if search_result.url not in seen_urls:
+                        seen_urls.add(search_result.url)
+                        all_results.append(search_result)
+
+                # Aggregate unique images
+                for image in result.images:
+                    if image.url not in seen_image_urls:
+                        seen_image_urls.add(image.url)
+                        all_images.append(image)
+
+                # Keep the best answer (prefer "advanced" over "basic")
+                if result.answer and (
+                    not best_answer
+                    or (
+                        best_answer.answer_type == "basic"
+                        and result.answer.answer_type == "advanced"
+                    )
+                ):
+                    best_answer = result.answer
+
+                # Accumulate metrics
+                total_credits_used += result.credits_used
+                total_response_time += result.response_time
+                if result.request_id:
+                    last_request_id = result.request_id
+
+            except TavilyError:
+                # If an iteration fails, continue with remaining iterations
+                # but log the failure
+                logger.warning(
+                    f"[{self.name}] Research iteration {iteration + 1}/{max_iterations} failed, continuing"
+                )
+                continue
+
+        # Sort results by score (highest first) and limit to top results
+        all_results.sort(key=lambda r: r.score, reverse=True)
+        # Limit to reasonable number of results (top 20)
+        all_results = all_results[:20]
+
+        # Build aggregated response
+        aggregated_response = TavilySearchResponse(
             query=query,
-            search_depth=TavilySearchDepth.ADVANCED,
-            max_results=10,
-            include_answer="advanced",
-            include_raw_content="markdown",
-            include_images=include_images,
+            results=all_results,
+            answer=best_answer,
+            images=all_images,
+            response_time=total_response_time,
+            credits_used=total_credits_used,
+            request_id=last_request_id,
+            raw_response={
+                "iterations": max_iterations,
+                "unique_results": len(all_results),
+                "total_credits_used": total_credits_used,
+            },
         )
+
+        return aggregated_response
+
+    async def crawl(
+        self,
+        url: str,
+        *,
+        instructions: str | None = None,
+        chunks_per_source: int = 3,
+        max_depth: int = 1,
+        max_breadth: int = 20,
+        limit: int = 50,
+        select_paths: list[str] | None = None,
+        select_domains: list[str] | None = None,
+        exclude_paths: list[str] | None = None,
+        exclude_domains: list[str] | None = None,
+        allow_external: bool = True,
+        include_images: bool = False,
+        extract_depth: TavilyExtractDepth | str = TavilyExtractDepth.BASIC,
+        content_format: TavilyContentFormat | str = TavilyContentFormat.MARKDOWN,
+        include_favicon: bool = False,
+        timeout: float = 150.0,
+        include_usage: bool = False,
+    ) -> TavilyCrawlResponse:
+        """
+        Crawl a website with intelligent discovery and content extraction.
+
+        Args:
+            url: Root URL to begin the crawl
+            instructions: Natural language guidance for crawler (increases cost to 2 credits/10 pages)
+            chunks_per_source: Max relevant content snippets per source (1-5, default 3)
+            max_depth: How far from base URL to explore (1-5, default 1)
+            max_breadth: Links to follow per page level (default 20)
+            limit: Total links to process before stopping (default 50)
+            select_paths: Regex patterns to include specific URL paths
+            select_domains: Regex patterns to include specific domains
+            exclude_paths: Regex patterns to exclude certain paths
+            exclude_domains: Regex patterns to exclude domains
+            allow_external: Include external domain links (default True)
+            include_images: Incorporate images in results (default False)
+            extract_depth: "basic" or "advanced" (default basic)
+            content_format: "markdown" or "text" (default markdown)
+            include_favicon: Include favicon URLs (default False)
+            timeout: Max operation duration in seconds (10-150, default 150)
+            include_usage: Include credit usage in response (default False)
+
+        Returns:
+            TavilyCrawlResponse with crawled pages and content
+
+        Raises:
+            TavilyError: If crawl fails
+            ValueError: If parameters are invalid
+        """
+        if not url or not url.strip():
+            raise ValueError("url is required")
+
+        if not 1 <= chunks_per_source <= 5:
+            raise ValueError("chunks_per_source must be between 1 and 5")
+
+        if not 1 <= max_depth <= 5:
+            raise ValueError("max_depth must be between 1 and 5")
+
+        if not 10.0 <= timeout <= 150.0:
+            raise ValueError("timeout must be between 10 and 150 seconds")
+
+        payload: dict[str, Any] = {
+            "url": url.strip(),
+            "chunks_per_source": chunks_per_source,
+            "max_depth": max_depth,
+            "max_breadth": max_breadth,
+            "limit": limit,
+            "allow_external": allow_external,
+            "include_images": include_images,
+            "extract_depth": (
+                extract_depth.value
+                if isinstance(extract_depth, TavilyExtractDepth)
+                else extract_depth
+            ),
+            "format": (
+                content_format.value
+                if isinstance(content_format, TavilyContentFormat)
+                else content_format
+            ),
+            "include_favicon": include_favicon,
+            "timeout": timeout,
+            "include_usage": include_usage,
+        }
+
+        if instructions:
+            payload["instructions"] = instructions
+
+        if select_paths:
+            payload["select_paths"] = select_paths
+
+        if select_domains:
+            payload["select_domains"] = select_domains
+
+        if exclude_paths:
+            payload["exclude_paths"] = exclude_paths
+
+        if exclude_domains:
+            payload["exclude_domains"] = exclude_domains
+
+        try:
+            response = await self.post("/crawl", json=payload)
+            return self._parse_crawl_response(response)
+
+        except IntegrationError as e:
+            raise TavilyError(
+                message=f"Crawl failed: {e.message}",
+                status_code=e.status_code,
+                response_data=e.response_data,
+            ) from e
+
+    async def map(
+        self,
+        url: str,
+        *,
+        instructions: str | None = None,
+        max_depth: int = 1,
+        max_breadth: int = 20,
+        limit: int = 50,
+        select_paths: list[str] | None = None,
+        select_domains: list[str] | None = None,
+        exclude_paths: list[str] | None = None,
+        exclude_domains: list[str] | None = None,
+        allow_external: bool = True,
+        timeout: float = 150.0,
+        include_usage: bool = False,
+    ) -> TavilyMapResponse:
+        """
+        Generate a comprehensive site map of a website.
+
+        Args:
+            url: Root URL to begin the mapping
+            instructions: Natural language guidance for crawler (increases cost to 2 credits/10 pages)
+            max_depth: How far from base URL to explore (1-5, default 1)
+            max_breadth: Links to follow per page level (default 20)
+            limit: Total links to process before stopping (default 50)
+            select_paths: Regex patterns to include specific URL paths
+            select_domains: Regex patterns to include specific domains
+            exclude_paths: Regex patterns to exclude certain paths
+            exclude_domains: Regex patterns to exclude domains
+            allow_external: Include external domain links (default True)
+            timeout: Max operation duration in seconds (10-150, default 150)
+            include_usage: Include credit usage in response (default False)
+
+        Returns:
+            TavilyMapResponse with list of discovered URLs
+
+        Raises:
+            TavilyError: If mapping fails
+            ValueError: If parameters are invalid
+        """
+        if not url or not url.strip():
+            raise ValueError("url is required")
+
+        if not 1 <= max_depth <= 5:
+            raise ValueError("max_depth must be between 1 and 5")
+
+        if not 10.0 <= timeout <= 150.0:
+            raise ValueError("timeout must be between 10 and 150 seconds")
+
+        payload: dict[str, Any] = {
+            "url": url.strip(),
+            "max_depth": max_depth,
+            "max_breadth": max_breadth,
+            "limit": limit,
+            "allow_external": allow_external,
+            "timeout": timeout,
+            "include_usage": include_usage,
+        }
+
+        if instructions:
+            payload["instructions"] = instructions
+
+        if select_paths:
+            payload["select_paths"] = select_paths
+
+        if select_domains:
+            payload["select_domains"] = select_domains
+
+        if exclude_paths:
+            payload["exclude_paths"] = exclude_paths
+
+        if exclude_domains:
+            payload["exclude_domains"] = exclude_domains
+
+        try:
+            response = await self.post("/map", json=payload)
+            return self._parse_map_response(response)
+
+        except IntegrationError as e:
+            raise TavilyError(
+                message=f"Map failed: {e.message}",
+                status_code=e.status_code,
+                response_data=e.response_data,
+            ) from e
+
+    async def create_research(
+        self,
+        input_text: str,
+        *,
+        model: TavilyResearchModel | str = TavilyResearchModel.AUTO,
+        stream: bool = False,
+        output_schema: dict[str, Any] | None = None,
+        citation_format: TavilyCitationFormat | str = TavilyCitationFormat.NUMBERED,
+    ) -> TavilyResearchTask:
+        """
+        Create an async research task (beta).
+
+        Args:
+            input_text: The research task or question to investigate
+            model: "mini" (targeted), "pro" (comprehensive), or "auto" (default)
+            stream: Whether to return Server-Sent Events stream (default False)
+            output_schema: JSON Schema defining response structure
+            citation_format: "numbered", "mla", "apa", or "chicago" (default numbered)
+
+        Returns:
+            TavilyResearchTask with request_id for status checking
+
+        Raises:
+            TavilyError: If research creation fails
+            ValueError: If parameters are invalid
+        """
+        if not input_text or not input_text.strip():
+            raise ValueError("input_text is required")
+
+        payload: dict[str, Any] = {
+            "input": input_text.strip(),
+            "model": model.value if isinstance(model, TavilyResearchModel) else model,
+            "stream": stream,
+            "citation_format": (
+                citation_format.value
+                if isinstance(citation_format, TavilyCitationFormat)
+                else citation_format
+            ),
+        }
+
+        if output_schema:
+            payload["output_schema"] = output_schema
+
+        try:
+            response = await self.post("/research", json=payload)
+            return self._parse_research_task(response)
+
+        except IntegrationError as e:
+            raise TavilyError(
+                message=f"Research creation failed: {e.message}",
+                status_code=e.status_code,
+                response_data=e.response_data,
+            ) from e
+
+    async def get_research_status(self, request_id: str) -> TavilyResearchTask:
+        """
+        Get the status and results of a research task.
+
+        Args:
+            request_id: The unique identifier from create_research()
+
+        Returns:
+            TavilyResearchTask with current status and results (if completed)
+
+        Raises:
+            TavilyError: If status check fails
+            ValueError: If request_id is empty
+        """
+        if not request_id or not request_id.strip():
+            raise ValueError("request_id is required")
+
+        try:
+            response = await self.get(f"/research/{request_id.strip()}")
+            return self._parse_research_task(response)
+
+        except IntegrationError as e:
+            raise TavilyError(
+                message=f"Research status check failed: {e.message}",
+                status_code=e.status_code,
+                response_data=e.response_data,
+            ) from e
+
+    async def get_usage(self) -> TavilyUsageResponse:
+        """
+        Get API key and account usage statistics.
+
+        Returns:
+            TavilyUsageResponse with credits used and remaining
+
+        Raises:
+            TavilyError: If usage check fails
+        """
+        try:
+            response = await self.get("/usage")
+            return self._parse_usage_response(response)
+
+        except IntegrationError as e:
+            raise TavilyError(
+                message=f"Usage check failed: {e.message}",
+                status_code=e.status_code,
+                response_data=e.response_data,
+            ) from e
 
     async def health_check(self) -> dict[str, Any]:
         """
@@ -564,6 +1027,69 @@ class TavilyClient(BaseIntegrationClient):
                 )
 
         return result
+
+    def _parse_crawl_response(self, response: dict[str, Any]) -> TavilyCrawlResponse:
+        """Parse crawl API response into TavilyCrawlResponse."""
+        result = TavilyCrawlResponse(
+            base_url=response.get("base_url", ""),
+            response_time=response.get("response_time", 0.0),
+            request_id=response.get("request_id"),
+            raw_response=response,
+        )
+
+        # Parse usage if present
+        usage = response.get("usage", {})
+        result.credits_used = usage.get("credits", 1)
+
+        # Parse crawl results
+        for item in response.get("results", []):
+            result.results.append(
+                TavilyCrawlResult(
+                    url=item.get("url", ""),
+                    raw_content=item.get("raw_content"),
+                    favicon=item.get("favicon"),
+                )
+            )
+
+        return result
+
+    def _parse_map_response(self, response: dict[str, Any]) -> TavilyMapResponse:
+        """Parse map API response into TavilyMapResponse."""
+        result = TavilyMapResponse(
+            base_url=response.get("base_url", ""),
+            results=response.get("results", []),
+            response_time=response.get("response_time", 0.0),
+            request_id=response.get("request_id"),
+            raw_response=response,
+        )
+
+        # Parse usage if present
+        usage = response.get("usage", {})
+        result.credits_used = usage.get("credits", 1)
+
+        return result
+
+    def _parse_usage_response(self, response: dict[str, Any]) -> TavilyUsageResponse:
+        """Parse usage API response into TavilyUsageResponse."""
+        return TavilyUsageResponse(
+            credits_used=response.get("credits_used", 0),
+            credits_remaining=response.get("credits_remaining"),
+            reset_date=response.get("reset_date"),
+            raw_response=response,
+        )
+
+    def _parse_research_task(self, response: dict[str, Any]) -> TavilyResearchTask:
+        """Parse research task response into TavilyResearchTask."""
+        return TavilyResearchTask(
+            request_id=response.get("request_id", ""),
+            status=response.get("status", "unknown"),
+            input=response.get("input", ""),
+            model=response.get("model", "auto"),
+            created_at=response.get("created_at", ""),
+            response_time=response.get("response_time", 0.0),
+            result=response.get("result"),
+            raw_response=response,
+        )
 
     def clear_cache(self) -> int:
         """
