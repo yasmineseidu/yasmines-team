@@ -32,9 +32,12 @@ Example:
 
 import json
 import logging
+import os
 from typing import Any
 
-from src.integrations.base import BaseIntegrationClient, IntegrationError
+import httpx
+
+from src.integrations.base import IntegrationError
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +88,7 @@ class GoogleDocsQuotaError(GoogleDocsError):
 # ============================================================================
 
 
-class GoogleDocsClient(BaseIntegrationClient):
+class GoogleDocsClient:
     """
     Async client for Google Docs API v1.
 
@@ -102,12 +105,20 @@ class GoogleDocsClient(BaseIntegrationClient):
     DOCS_API_BASE = "https://docs.googleapis.com/v1"
     DRIVE_API_BASE = "https://www.googleapis.com/drive/v3"
 
+    # Required OAuth2 scopes
+    DEFAULT_SCOPES = [
+        "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/drive.file",
+    ]
+
     def __init__(
         self,
         credentials_json: dict[str, Any] | None = None,
         credentials_str: str | None = None,
+        access_token: str | None = None,
         timeout: float = 30.0,
         max_retries: int = 3,
+        retry_base_delay: float = 1.0,
     ) -> None:
         """
         Initialize Google Docs client.
@@ -115,42 +126,63 @@ class GoogleDocsClient(BaseIntegrationClient):
         Args:
             credentials_json: Service account credentials as dictionary
             credentials_str: Service account credentials as JSON string
+            access_token: Pre-obtained OAuth2 access token (optional)
             timeout: Request timeout in seconds (default: 30)
             max_retries: Maximum retry attempts (default: 3)
+            retry_base_delay: Base delay for exponential backoff (default: 1.0)
 
         Raises:
             GoogleDocsAuthError: If credentials are invalid or missing
         """
-        super().__init__(
-            name="google_docs",
-            base_url=self.DOCS_API_BASE,
-            api_key="",  # OAuth2 doesn't use simple API key
-            timeout=timeout,
-            max_retries=max_retries,
-        )
-
         # Parse credentials
         if credentials_str and not credentials_json:
             credentials_json = json.loads(credentials_str)
 
-        if not credentials_json:
-            raise GoogleDocsAuthError("Credentials JSON is required")
+        if not credentials_json and not access_token:
+            # Try to load from environment
+            env_creds = os.getenv("GOOGLE_DOCS_CREDENTIALS_JSON")
+            if env_creds:
+                # Check if it's a file path or JSON string
+                if env_creds.startswith("{"):
+                    credentials_json = json.loads(env_creds)
+                elif os.path.exists(env_creds):
+                    with open(env_creds) as f:
+                        credentials_json = json.load(f)
+                else:
+                    raise GoogleDocsAuthError(f"Credentials file not found: {env_creds}")
+            else:
+                raise GoogleDocsAuthError(
+                    "Credentials JSON or access token required. "
+                    "Set GOOGLE_DOCS_CREDENTIALS_JSON environment variable or pass credentials."
+                )
 
-        # Validate required credentials fields
-        if "type" not in credentials_json:
-            raise GoogleDocsAuthError("Credentials must include 'type' field")
-        if "access_token" not in credentials_json:
-            raise GoogleDocsAuthError("Credentials must include 'access_token' field")
-
-        self.credentials_json = credentials_json
-        self.access_token: str | None = credentials_json.get("access_token")
-        self.project_id = credentials_json.get("project_id")
-        self.scopes = [
-            "https://www.googleapis.com/auth/documents",
-            "https://www.googleapis.com/auth/drive.file",
-        ]
+        self.name = "google_docs"
+        self.base_url = self.DOCS_API_BASE
+        self.credentials_json = credentials_json or {}
+        self.access_token = access_token
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.retry_base_delay = retry_base_delay
+        self._client: httpx.AsyncClient | None = None
+        self.scopes = self.DEFAULT_SCOPES
+        self.project_id = self.credentials_json.get("project_id")
 
         logger.info(f"Initialized {self.name} client (project: {self.project_id})")
+
+    @property
+    def client(self) -> httpx.AsyncClient:
+        """
+        Lazy HTTP client creation with connection pooling.
+
+        Returns:
+            Configured httpx.AsyncClient instance
+        """
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(self.timeout),
+                limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+            )
+        return self._client
 
     def _get_headers(self) -> dict[str, str]:
         """Get request headers with OAuth2 bearer token.
@@ -168,27 +200,206 @@ class GoogleDocsClient(BaseIntegrationClient):
 
     async def authenticate(self) -> None:
         """
-        Authenticate with Google using service account credentials.
+        Authenticate with Google using credentials.
 
-        Uses service account private key to obtain OAuth2 access token.
+        For service account: obtains OAuth2 access token using JWT flow.
+        For user credentials: uses existing token or refresh token.
 
         Raises:
             GoogleDocsAuthError: If authentication fails
         """
         try:
-            # In production, use google-auth library
-            # For now, assume token is provided in credentials
-            # This would be expanded with actual JWT flow
-            if "access_token" in self.credentials_json:
+            if "type" not in self.credentials_json and not self.access_token:
+                raise GoogleDocsAuthError(
+                    "Credentials must include 'type' field or access_token must be provided"
+                )
+
+            cred_type = self.credentials_json.get("type")
+
+            if cred_type == "service_account":
+                # Service account JWT flow
+                await self._authenticate_service_account()
+            elif "access_token" in self.credentials_json:
+                # Use provided access token
                 self.access_token = self.credentials_json["access_token"]
+            elif self.access_token:
+                # Already have access token
+                pass
             else:
-                # Would implement JWT bearer flow here
-                raise GoogleDocsAuthError("No access_token in credentials")
+                raise GoogleDocsAuthError("Missing access_token or incomplete credentials")
 
             logger.info("Successfully authenticated with Google Docs API")
+
+        except GoogleDocsAuthError:
+            raise
         except Exception as e:
             logger.error(f"Authentication failed: {e}")
             raise GoogleDocsAuthError(f"Failed to authenticate: {e}") from e
+
+    async def _authenticate_service_account(self) -> None:
+        """
+        Authenticate using service account credentials.
+
+        Implements JWT bearer token flow for service account authentication.
+
+        Raises:
+            GoogleDocsAuthError: If JWT generation or token exchange fails
+        """
+        try:
+            from google.auth.transport.requests import Request
+            from google.oauth2 import service_account
+
+            # Create credentials from service account JSON
+            credentials = service_account.Credentials.from_service_account_info(
+                self.credentials_json,
+                scopes=self.DEFAULT_SCOPES,
+            )
+
+            # Refresh to get access token
+            request = Request()
+            credentials.refresh(request)
+            self.access_token = credentials.token
+
+            logger.info("Service account authenticated successfully")
+
+        except ImportError as e:
+            raise GoogleDocsAuthError(
+                "google-auth library required for service account authentication. "
+                "Install with: pip install google-auth"
+            ) from e
+        except Exception as e:
+            raise GoogleDocsAuthError(f"Service account auth failed: {e}") from e
+
+    async def _request_with_retry(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """
+        Make HTTP request with exponential backoff retry logic.
+
+        Implements truncated exponential backoff with jitter for rate limiting.
+        Detects 403 (quota exceeded) and 429 (rate limited) errors specifically.
+
+        Args:
+            method: HTTP method (GET, POST, PUT, DELETE)
+            url: Full URL for the request
+            headers: Custom headers (merged with default headers)
+            **kwargs: Additional arguments for httpx request
+
+        Returns:
+            Parsed JSON response
+
+        Raises:
+            GoogleDocsError: After all retries exhausted
+        """
+        import asyncio
+        import random
+        from typing import cast
+
+        if headers is None:
+            headers = {}
+        headers.update(self._get_headers())
+
+        last_error: Exception | None = None
+
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = await self.client.request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    **kwargs,
+                )
+
+                # Handle response
+                try:
+                    data = response.json()
+                except Exception:
+                    data = {"raw_response": response.text}
+
+                # Specific error handling for Google Docs
+                if response.status_code == 401:
+                    raise GoogleDocsAuthError(
+                        f"Authentication failed: {data.get('error', 'Unknown')}",
+                    )
+
+                if response.status_code == 403:
+                    # Check if it's quota exceeded or permission error
+                    error_msg = data.get("error", {})
+                    if isinstance(error_msg, dict):
+                        error_reason = error_msg.get("message", "")
+                    else:
+                        error_reason = str(error_msg)
+
+                    if "quota" in error_reason.lower() or "limit" in error_reason.lower():
+                        raise GoogleDocsQuotaError(
+                            f"Quota exceeded: {error_reason}",
+                        )
+                    raise GoogleDocsError(f"Permission denied: {error_reason}")
+
+                if response.status_code == 429:
+                    retry_after = response.headers.get("Retry-After")
+                    raise GoogleDocsRateLimitError(
+                        message=f"Rate limited: {data.get('error', 'Too many requests')}",
+                        retry_after=int(retry_after) if retry_after else None,
+                    )
+
+                if response.status_code == 404:
+                    raise GoogleDocsError(f"Not found: {data.get('error', 'Resource not found')}")
+
+                if response.status_code >= 400:
+                    error_msg = data.get("error", "Unknown error")
+                    raise GoogleDocsError(f"API error ({response.status_code}): {error_msg}")
+
+                return cast(dict[str, Any], data)
+
+            except (GoogleDocsAuthError, GoogleDocsQuotaError):
+                # Don't retry auth or quota errors
+                raise
+            except Exception as error:
+                last_error = error
+
+                # Check if retryable
+                is_retryable = isinstance(
+                    error,
+                    httpx.TimeoutException | httpx.NetworkError | GoogleDocsRateLimitError,
+                )
+
+                if not is_retryable or attempt >= self.max_retries:
+                    logger.error(
+                        f"[google_docs] Request failed: {error}",
+                        extra={
+                            "method": method,
+                            "url": url,
+                            "attempt": attempt + 1,
+                            "retryable": is_retryable,
+                        },
+                    )
+                    raise
+
+                # Exponential backoff with jitter
+                delay = self.retry_base_delay * (2**attempt)
+                jitter = random.uniform(0, delay * 0.1)  # 0-10% jitter
+                delay += jitter
+
+                logger.warning(
+                    f"[google_docs] Request failed (attempt {attempt + 1}), "
+                    f"retrying in {delay:.2f}s: {error}",
+                    extra={
+                        "method": method,
+                        "url": url,
+                        "attempt": attempt + 1,
+                        "delay": delay,
+                    },
+                )
+                await asyncio.sleep(delay)
+
+        if last_error:
+            raise last_error
+        raise GoogleDocsError(f"Request failed after {self.max_retries} retries")
 
     async def create_document(
         self,
@@ -209,18 +420,19 @@ class GoogleDocsClient(BaseIntegrationClient):
             GoogleDocsError: If document creation fails
             GoogleDocsRateLimitError: If rate limited
         """
-        headers = self._get_headers()
-
         try:
             # Use Drive API to create document
-            response = await self.post(
+            body: dict[str, Any] = {
+                "name": title,
+                "mimeType": "application/vnd.google-apps.document",
+            }
+            if parent_folder_id:
+                body["parents"] = [parent_folder_id]
+
+            response = await self._request_with_retry(
+                "POST",
                 f"{self.DRIVE_API_BASE}/files",
-                headers=headers,
-                json={
-                    "name": title,
-                    "mimeType": "application/vnd.google-apps.document",
-                    "parents": [parent_folder_id] if parent_folder_id else [],
-                },
+                json=body,
             )
 
             document_id = response.get("id")
@@ -232,11 +444,9 @@ class GoogleDocsClient(BaseIntegrationClient):
                 "mimeType": "application/vnd.google-apps.document",
             }
 
-        except IntegrationError as e:
-            if e.status_code == 429:
-                raise GoogleDocsRateLimitError(str(e)) from e
-            if e.status_code == 401:
-                raise GoogleDocsAuthError(str(e)) from e
+        except (GoogleDocsError, GoogleDocsAuthError, GoogleDocsRateLimitError):
+            raise
+        except Exception as e:
             raise GoogleDocsError(f"Failed to create document: {e}") from e
 
     async def get_document(
@@ -256,22 +466,18 @@ class GoogleDocsClient(BaseIntegrationClient):
             GoogleDocsError: If retrieval fails
             GoogleDocsRateLimitError: If rate limited
         """
-        headers = self._get_headers()
-
         try:
-            response = await self.get(
-                f"/documents/{document_id}",
-                headers=headers,
+            response = await self._request_with_retry(
+                "GET",
+                f"{self.DOCS_API_BASE}/documents/{document_id}",
             )
 
             logger.info(f"Retrieved document: {document_id}")
             return response
 
-        except IntegrationError as e:
-            if e.status_code == 429:
-                raise GoogleDocsRateLimitError(str(e)) from e
-            if e.status_code == 404:
-                raise GoogleDocsError(f"Document not found: {document_id}") from e
+        except (GoogleDocsError, GoogleDocsAuthError, GoogleDocsRateLimitError):
+            raise
+        except Exception as e:
             raise GoogleDocsError(f"Failed to get document: {e}") from e
 
     async def insert_text(
@@ -304,17 +510,9 @@ class GoogleDocsClient(BaseIntegrationClient):
             }
         ]
 
-        try:
-            response = await self.batch_update(document_id, requests)
-            logger.info(f"Inserted {len(text)} characters into {document_id}")
-            return response
-
-        except (GoogleDocsError, GoogleDocsRateLimitError):
-            raise
-        except IntegrationError as e:
-            if e.status_code == 429:
-                raise GoogleDocsRateLimitError(str(e)) from e
-            raise GoogleDocsError(f"Failed to insert text: {e}") from e
+        response = await self.batch_update(document_id, requests)
+        logger.info(f"Inserted {len(text)} characters into {document_id}")
+        return response
 
     async def batch_update(
         self,
@@ -360,21 +558,19 @@ class GoogleDocsClient(BaseIntegrationClient):
             ... ]
             >>> result = await client.batch_update(doc_id, requests)
         """
-        headers = self._get_headers()
-
         try:
-            response = await self.post(
-                f"/documents/{document_id}:batchUpdate",
-                headers=headers,
+            response = await self._request_with_retry(
+                "POST",
+                f"{self.DOCS_API_BASE}/documents/{document_id}:batchUpdate",
                 json={"requests": requests},
             )
 
             logger.info(f"Executed {len(requests)} batch operations on {document_id}")
             return response
 
-        except IntegrationError as e:
-            if e.status_code == 429:
-                raise GoogleDocsRateLimitError(str(e)) from e
+        except (GoogleDocsError, GoogleDocsAuthError, GoogleDocsRateLimitError):
+            raise
+        except Exception as e:
             raise GoogleDocsError(f"Batch update failed ({len(requests)} operations): {e}") from e
 
     async def format_text(
@@ -495,12 +691,10 @@ class GoogleDocsClient(BaseIntegrationClient):
         Raises:
             GoogleDocsError: If sharing fails
         """
-        headers = self._get_headers()
-
         try:
-            response = await self.post(
+            response = await self._request_with_retry(
+                "POST",
                 f"{self.DRIVE_API_BASE}/files/{document_id}/permissions",
-                headers=headers,
                 json={
                     "type": "user",
                     "emailAddress": email,
@@ -511,9 +705,9 @@ class GoogleDocsClient(BaseIntegrationClient):
             logger.info(f"Shared document {document_id} with {email} ({role})")
             return response
 
-        except IntegrationError as e:
-            if e.status_code == 429:
-                raise GoogleDocsRateLimitError(str(e)) from e
+        except (GoogleDocsError, GoogleDocsAuthError, GoogleDocsRateLimitError):
+            raise
+        except Exception as e:
             raise GoogleDocsError(f"Failed to share document: {e}") from e
 
     async def get_document_permissions(
@@ -532,17 +726,111 @@ class GoogleDocsClient(BaseIntegrationClient):
         Raises:
             GoogleDocsError: If retrieval fails
         """
-        headers = self._get_headers()
-
         try:
-            response = await self.get(
+            response = await self._request_with_retry(
+                "GET",
                 f"{self.DRIVE_API_BASE}/files/{document_id}/permissions",
-                headers=headers,
             )
 
             permissions_data: list[dict[str, Any]] = response.get("permissions", [])
             logger.info(f"Retrieved {len(permissions_data)} permissions")
             return permissions_data
 
-        except IntegrationError as e:
+        except (GoogleDocsError, GoogleDocsAuthError, GoogleDocsRateLimitError):
+            raise
+        except Exception as e:
             raise GoogleDocsError(f"Failed to get permissions: {e}") from e
+
+    async def delete_document(
+        self,
+        document_id: str,
+        permanently: bool = False,
+    ) -> None:
+        """
+        Delete document from Google Drive.
+
+        By default, moves to trash. Set permanently=True to delete permanently.
+
+        Args:
+            document_id: Google Doc ID
+            permanently: If True, delete permanently; if False, move to trash
+
+        Raises:
+            GoogleDocsError: If deletion fails
+        """
+        try:
+            if permanently:
+                # Permanent deletion
+                await self._request_with_retry(
+                    "DELETE",
+                    f"{self.DRIVE_API_BASE}/files/{document_id}",
+                )
+                logger.info(f"Permanently deleted document: {document_id}")
+            else:
+                # Soft delete (trash)
+                await self._request_with_retry(
+                    "PATCH",
+                    f"{self.DRIVE_API_BASE}/files/{document_id}",
+                    json={"trashed": True},
+                )
+                logger.info(f"Moved document to trash: {document_id}")
+
+        except (GoogleDocsError, GoogleDocsAuthError, GoogleDocsRateLimitError):
+            raise
+        except Exception as e:
+            raise GoogleDocsError(f"Failed to delete document: {e}") from e
+
+    async def health_check(self) -> dict[str, Any]:
+        """
+        Check Google Docs API connectivity and authentication.
+
+        Returns:
+            Health check status
+
+        Raises:
+            GoogleDocsError: If health check fails
+        """
+        try:
+            if not self.access_token:
+                return {
+                    "name": "google_docs",
+                    "healthy": False,
+                    "message": "Not authenticated",
+                }
+
+            # Simple about API call to verify auth
+            response = await self._request_with_retry(
+                "GET",
+                f"{self.DRIVE_API_BASE}/about",
+                params={"fields": "user"},
+            )
+
+            return {
+                "name": "google_docs",
+                "healthy": True,
+                "message": "Google Docs API is accessible",
+                "user": response.get("user", {}).get("emailAddress", "unknown"),
+            }
+
+        except Exception as e:
+            logger.error(f"Health check failed: {e}")
+            return {
+                "name": "google_docs",
+                "healthy": False,
+                "message": f"Health check failed: {e}",
+            }
+
+    async def close(self) -> None:
+        """Close the HTTP client and release resources."""
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+            self._client = None
+            logger.debug("[google_docs] HTTP client closed")
+
+    async def __aenter__(self) -> "GoogleDocsClient":
+        """Async context manager entry."""
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Async context manager exit with cleanup."""
+        await self.close()

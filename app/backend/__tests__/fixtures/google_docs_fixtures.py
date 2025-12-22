@@ -4,6 +4,8 @@ Provides sample data, expected response schemas, and fixture utilities
 for comprehensive integration testing of the Google Docs API client.
 """
 
+import json
+import os
 from typing import Any
 
 # ============================================================================
@@ -15,27 +17,22 @@ SAMPLE_DATA = {
     "doc_title": "Integration Test Document",
     "doc_title_special": "Test Document with Special Chars: @#$%",
     "parent_folder_id": "1234567890abcdefg",
-
     # Text operations
     "text_to_insert": "Hello, World!",
     "long_text": "This is a longer text that will be inserted into the document for testing purposes.",
     "text_with_unicode": "Unicode test: café, 日本語, emoji 🚀",
-
     # Formatting
     "format_start_index": 1,
     "format_end_index": 5,
     "font_size": 12,
-
     # Table operations
     "table_rows": 3,
     "table_columns": 2,
-
     # Sharing
     "share_email": "test@example.com",
     "share_role": "reader",
     "share_email_writer": "writer@example.com",
     "share_role_writer": "writer",
-
     # Colors (RGB format 0.0-1.0)
     "text_color_red": {"red": 1.0, "green": 0.0, "blue": 0.0},
     "text_color_blue": {"red": 0.0, "green": 0.0, "blue": 1.0},
@@ -198,7 +195,7 @@ def create_mock_credentials(access_token: str = "test-access-token") -> dict[str
         "type": "service_account",
         "project_id": "smarter-team",
         "private_key_id": "test-key-id",
-        "private_key": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----",
+        "private_key": "MOCK_KEY_NOT_REAL",  # pragma: allowlist secret
         "client_email": "smarterteam@smarter-team.iam.gserviceaccount.com",
         "client_id": "123456789",
         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
@@ -264,3 +261,143 @@ ERROR_SCENARIOS = {
         "type": "TypeError",
     },
 }
+
+
+# ============================================================================
+# CREDENTIAL LOADING FUNCTIONS
+# ============================================================================
+
+
+def get_test_credentials() -> dict[str, Any]:
+    """Load test credentials from environment.
+
+    Supports loading from:
+    1. GOOGLE_DOCS_CREDENTIALS_JSON env var (as JSON string or file path)
+    2. GOOGLE_DOCS_CREDENTIALS_PATH env var (file path)
+    3. Default service account location
+
+    Returns:
+        Dictionary with service account credentials
+
+    Raises:
+        ValueError: If credentials not found in environment
+    """
+    creds_json = os.getenv("GOOGLE_DOCS_CREDENTIALS_JSON")
+    if creds_json:
+        # Check if it's a file path or JSON string
+        if creds_json.startswith("{"):
+            # It's JSON
+            try:
+                return json.loads(creds_json)
+            except json.JSONDecodeError as e:
+                raise ValueError("GOOGLE_DOCS_CREDENTIALS_JSON is not valid JSON") from e
+        else:
+            # It's a file path - try multiple locations
+            cred_paths = [
+                creds_json,  # As-is from env
+                os.path.join(os.getcwd(), creds_json),  # Relative to cwd
+                os.path.join(
+                    os.path.dirname(__file__),
+                    "..",
+                    "..",
+                    creds_json.replace("app/backend/", ""),
+                ),  # Without duplicate prefix
+            ]
+            for path in cred_paths:
+                if os.path.exists(path):
+                    with open(path) as f:
+                        return json.load(f)
+            raise ValueError(f"Credentials file not found at: {cred_paths}")
+
+    creds_path = os.getenv("GOOGLE_DOCS_CREDENTIALS_PATH")
+    if creds_path and os.path.exists(creds_path):
+        with open(creds_path) as f:
+            return json.load(f)
+
+    raise ValueError(
+        "No Google Docs credentials found. Set GOOGLE_DOCS_CREDENTIALS_JSON "
+        "or GOOGLE_DOCS_CREDENTIALS_PATH in .env"
+    )
+
+
+def get_test_access_token() -> str | None:
+    """Get pre-generated access token from environment.
+
+    Returns:
+        Access token if available, None otherwise
+    """
+    return os.getenv("GOOGLE_DOCS_ACCESS_TOKEN")
+
+
+# ============================================================================
+# ENDPOINTS TO TEST (for auto-discovery)
+# ============================================================================
+
+ENDPOINTS_TO_TEST = [
+    {
+        "name": "authenticate",
+        "method": "POST",
+        "description": "Authenticate with Google using service account credentials",
+        "required_auth": False,
+    },
+    {
+        "name": "create_document",
+        "method": "POST",
+        "description": "Create a new Google Doc",
+        "required_auth": True,
+    },
+    {
+        "name": "get_document",
+        "method": "GET",
+        "description": "Retrieve document metadata and content",
+        "required_auth": True,
+    },
+    {
+        "name": "insert_text",
+        "method": "POST",
+        "description": "Insert text into document",
+        "required_auth": True,
+    },
+    {
+        "name": "batch_update",
+        "method": "POST",
+        "description": "Execute batch update operations on document",
+        "required_auth": True,
+    },
+    {
+        "name": "format_text",
+        "method": "POST",
+        "description": "Format text in document (bold, italic, etc)",
+        "required_auth": True,
+    },
+    {
+        "name": "create_table",
+        "method": "POST",
+        "description": "Create a table in document",
+        "required_auth": True,
+    },
+    {
+        "name": "share_document",
+        "method": "POST",
+        "description": "Share document with user",
+        "required_auth": True,
+    },
+    {
+        "name": "get_document_permissions",
+        "method": "GET",
+        "description": "Get document sharing permissions",
+        "required_auth": True,
+    },
+    {
+        "name": "delete_document",
+        "method": "DELETE",
+        "description": "Delete document (trash or permanently)",
+        "required_auth": True,
+    },
+    {
+        "name": "health_check",
+        "method": "GET",
+        "description": "Check API connectivity and authentication",
+        "required_auth": False,
+    },
+]
