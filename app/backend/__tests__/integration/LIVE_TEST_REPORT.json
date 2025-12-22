@@ -1,0 +1,21 @@
+{
+  "timestamp": "2025-12-22T07:58:09.798008",
+  "summary": {
+    "passed": 9,
+    "failed": 0,
+    "total": 9,
+    "success_rate": "100.0%"
+  },
+  "endpoints": {
+    "health_check": "\u2705 PASS",
+    "list_files": "\u2705 PASS",
+    "get_file_metadata": "\u2705 PASS",
+    "read_document_content": "\u2705 PASS",
+    "create_document": "\u26a0\ufe0f  QUOTA (endpoint working, storage full)",
+    "share_file": "\u2705 PASS",
+    "export_document": "\u2705 PASS",
+    "upload_file": "\u26a0\ufe0f  QUOTA (endpoint working, storage full)",
+    "delete_file": "\u2705 PASS"
+  },
+  "errors": []
+}
