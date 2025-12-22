@@ -2,6 +2,20 @@
 .env
 .env.local
 .env.*.local
+# Exception: .env.example is a template meant to be shared
+!.env.example
+!**/.env.example
+
+# Service Account & Credentials (Google Cloud, AWS, etc.)
+*-service-account.json
+*-credentials.json
+service-account.json
+credentials.json
+google-service-account.json
+gmail-service-account.json
+gcp-key.json
+aws-credentials.json
+**/config/credentials/*.json
 
 # Python
 __pycache__/
