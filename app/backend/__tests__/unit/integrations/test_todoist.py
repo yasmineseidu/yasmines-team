@@ -89,7 +89,7 @@ class TestTodoistClientProjects:
     @pytest.fixture
     def client(self) -> TodoistClient:
         """Create test client instance."""
-        return TodoistClient(api_key="test-api-key")
+        return TodoistClient(api_key="test-api-key")  # pragma: allowlist secret
 
     @pytest.mark.asyncio
     async def test_get_projects_success(self, client: TodoistClient) -> None:
@@ -150,7 +150,7 @@ class TestTodoistClientTasks:
     @pytest.fixture
     def client(self) -> TodoistClient:
         """Create test client instance."""
-        return TodoistClient(api_key="test-api-key")
+        return TodoistClient(api_key="test-api-key")  # pragma: allowlist secret
 
     @pytest.mark.asyncio
     async def test_get_tasks_success(self, client: TodoistClient) -> None:
@@ -304,7 +304,7 @@ class TestTodoistClientSections:
     @pytest.fixture
     def client(self) -> TodoistClient:
         """Create test client instance."""
-        return TodoistClient(api_key="test-api-key")
+        return TodoistClient(api_key="test-api-key")  # pragma: allowlist secret
 
     @pytest.mark.asyncio
     async def test_get_sections_success(self, client: TodoistClient) -> None:
@@ -344,7 +344,7 @@ class TestTodoistClientErrors:
     @pytest.fixture
     def client(self) -> TodoistClient:
         """Create test client instance."""
-        return TodoistClient(api_key="test-api-key")
+        return TodoistClient(api_key="test-api-key")  # pragma: allowlist secret
 
     @pytest.mark.asyncio
     async def test_get_projects_raises_on_error(self, client: TodoistClient) -> None:
