@@ -39,9 +39,25 @@ async def google_docs_client(
     """Create Google Docs client with live credentials.
 
     Returns None if credentials not configured (tests will be skipped).
+    If GOOGLE_DOCS_CREDENTIALS not available, tries to build from GOOGLE_CLIENT_ID/SECRET.
     """
     if not google_docs_credentials:
-        return None
+        # Try to build credentials from GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET
+        client_id = os.getenv("GOOGLE_CLIENT_ID")
+        client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
+
+        if client_id and client_secret:
+            # Create test credentials with OAuth2 tokens
+            google_docs_credentials = {
+                "type": "service_account",
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "project_id": "smarter-team",
+                "private_key": "test-key",  # pragma: allowlist secret
+                "access_token": f"test_access_token_for_{client_id}",  # pragma: allowlist secret
+            }
+        else:
+            return None
 
     return GoogleDocsClient(credentials_json=google_docs_credentials)
 
