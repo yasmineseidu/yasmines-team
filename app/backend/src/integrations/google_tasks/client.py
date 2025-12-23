@@ -327,6 +327,9 @@ class GoogleTasksAPIClient:
                     )
 
                 response.raise_for_status()
+                # Handle 204 No Content (delete operations return no body)
+                if response.status_code == 204:
+                    return {}
                 result: dict[str, Any] = response.json()
                 return result
 
