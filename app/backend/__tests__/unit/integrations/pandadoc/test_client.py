@@ -12,7 +12,7 @@ from src.integrations.pandadoc.exceptions import (
     PandaDocNotFoundError,
     PandaDocRateLimitError,
 )
-from src.integrations.pandadoc.models import Recipient, Signature
+from src.integrations.pandadoc.models import Document, Recipient, Signature
 
 
 class TestPandaDocClientInitialization:
@@ -20,16 +20,16 @@ class TestPandaDocClientInitialization:
 
     def test_client_initialization_with_api_key(self) -> None:
         """Client should initialize with provided API key."""
-        client = PandaDocClient(api_key="test-api-key")
-        assert client.api_key == "test-api-key"
+        client = PandaDocClient(api_key="test-api-key")  # pragma: allowlist secret
+        assert client.api_key == "test-api-key"  # pragma: allowlist secret
         assert client.name == "pandadoc"
         assert client.base_url == "https://api.pandadoc.com/public/v1"
 
-    @patch.dict("os.environ", {"PANDADOC_API_KEY": "env-api-key"})
+    @patch.dict("os.environ", {"PANDADOC_API_KEY": "env-api-key"})  # pragma: allowlist secret
     def test_client_initialization_with_env_var(self) -> None:
         """Client should use PANDADOC_API_KEY from environment."""
         client = PandaDocClient()
-        assert client.api_key == "env-api-key"
+        assert client.api_key == "env-api-key"  # pragma: allowlist secret
 
     @patch.dict("os.environ", {}, clear=True)
     def test_client_initialization_missing_api_key(self) -> None:
@@ -44,8 +44,8 @@ class TestPandaDocClientInitialization:
 
     def test_client_initialization_with_retry_config(self) -> None:
         """Client should accept custom retry configuration."""
-        client = PandaDocClient(
-            api_key="test",
+        client = PandaDocClient(  # pragma: allowlist secret
+            api_key="test",  # pragma: allowlist secret
             max_retries=5,
             retry_base_delay=2.0,
         )
@@ -72,7 +72,7 @@ class TestPandaDocClientTemplates:
     @pytest.fixture
     def client(self) -> PandaDocClient:
         """Create client for testing."""
-        return PandaDocClient(api_key="test-api-key")
+        return PandaDocClient(api_key="test-api-key")  # pragma: allowlist secret
 
     @pytest.mark.asyncio
     async def test_list_templates(self, client: PandaDocClient) -> None:
@@ -132,7 +132,7 @@ class TestPandaDocClientDocuments:
     @pytest.fixture
     def client(self) -> PandaDocClient:
         """Create client for testing."""
-        return PandaDocClient(api_key="test-api-key")
+        return PandaDocClient(api_key="test-api-key")  # pragma: allowlist secret
 
     @pytest.mark.asyncio
     async def test_create_document(self, client: PandaDocClient) -> None:
@@ -225,16 +225,39 @@ class TestPandaDocClientDocuments:
 
     @pytest.mark.asyncio
     async def test_get_document_status(self, client: PandaDocClient) -> None:
-        """Should get document status."""
+        """Should get document status (redirects to get_document)."""
         with patch.object(client, "_request", new_callable=AsyncMock) as mock:
             mock.return_value = {
-                "status": "sent",
-                "sent_at": "2025-01-01T12:30:00",
+                "id": "doc_123",
+                "name": "Test Document",
+                "status": "document.sent",
+                "date_created": "2025-01-01T10:00:00Z",
             }
 
-            status = await client.get_document_status("doc_123")
+            doc = await client.get_document_status("doc_123")
 
-            assert status["status"] == "sent"
+            assert isinstance(doc, Document)
+            assert doc.id == "doc_123"
+            assert doc.status == "document.sent"
+
+    @pytest.mark.asyncio
+    async def test_get_document_details(self, client: PandaDocClient) -> None:
+        """Should get detailed document content."""
+        with patch.object(client, "_request", new_callable=AsyncMock) as mock:
+            mock.return_value = {
+                "approval_execution": {},
+                "content_date_modified": "2025-01-01T12:30:00Z",
+                "tables": [],
+                "images": [],
+                "texts": [],
+            }
+
+            details = await client.get_document_details("doc_123")
+
+            assert isinstance(details, dict)
+            assert "approval_execution" in details
+            assert "texts" in details
+            mock.assert_called_once_with("GET", "/documents/doc_123/details")
 
 
 class TestPandaDocClientRecipients:
@@ -243,12 +266,17 @@ class TestPandaDocClientRecipients:
     @pytest.fixture
     def client(self) -> PandaDocClient:
         """Create client for testing."""
-        return PandaDocClient(api_key="test-api-key")
+        return PandaDocClient(api_key="test-api-key")  # pragma: allowlist secret
 
     @pytest.mark.asyncio
     async def test_add_recipient(self, client: PandaDocClient) -> None:
-        """Should add recipient to document."""
+        """Should attempt to add recipient (limited public API support).
+
+        Note: The public API requires template-based recipient structure.
+        Recipients should be specified at document creation time instead.
+        """
         with patch.object(client, "_request", new_callable=AsyncMock) as mock:
+            # Mock the API call that would succeed with proper template structure
             mock.return_value = {
                 "email": "john@example.com",
                 "name": "John Doe",
@@ -257,10 +285,18 @@ class TestPandaDocClientRecipients:
             result = await client.add_recipient(
                 "doc_123",
                 "john@example.com",
-                "John Doe",
+                name="John Doe",
             )
 
             assert result["email"] == "john@example.com"
+            mock.assert_called_once_with(
+                "POST",
+                "/documents/doc_123/recipients",
+                json={
+                    "email": "john@example.com",
+                    "name": "John Doe",
+                },
+            )
 
     @pytest.mark.asyncio
     async def test_get_recipient_status(self, client: PandaDocClient) -> None:
@@ -294,7 +330,7 @@ class TestPandaDocClientWebhooks:
     @pytest.fixture
     def client(self) -> PandaDocClient:
         """Create client for testing."""
-        return PandaDocClient(api_key="test-api-key")
+        return PandaDocClient(api_key="test-api-key")  # pragma: allowlist secret
 
     @pytest.mark.asyncio
     async def test_create_webhook(self, client: PandaDocClient) -> None:
@@ -348,7 +384,7 @@ class TestPandaDocClientErrorHandling:
     @pytest.fixture
     def client(self) -> PandaDocClient:
         """Create client for testing."""
-        return PandaDocClient(api_key="test-api-key")
+        return PandaDocClient(api_key="test-api-key")  # pragma: allowlist secret
 
     @pytest.mark.asyncio
     async def test_request_auth_error(self, client: PandaDocClient) -> None:
@@ -394,6 +430,6 @@ class TestPandaDocClientContextManager:
     @pytest.mark.asyncio
     async def test_async_context_manager(self) -> None:
         """Client should work as async context manager."""
-        async with PandaDocClient(api_key="test") as client:
+        async with PandaDocClient(api_key="test") as client:  # pragma: allowlist secret
             assert client is not None
-            assert client.api_key == "test"
+            assert client.api_key == "test"  # pragma: allowlist secret

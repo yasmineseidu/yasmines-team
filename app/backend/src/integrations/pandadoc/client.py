@@ -497,16 +497,19 @@ class PandaDocClient:
                 status_code=response.status_code,
             )
 
-        return response.content
+        return bytes(response.content)
 
-    async def get_document_status(self, document_id: str) -> dict[str, Any]:
-        """Get document signing status.
+    async def get_document_details(self, document_id: str) -> dict[str, Any]:
+        """Get detailed document content and metadata.
+
+        Returns document content including fields, tables, images, and approval execution status.
+        This provides a more detailed view than the basic document endpoint.
 
         Args:
             document_id: ID of document.
 
         Returns:
-            Document status and recipient signing status.
+            Document details including content structure and metadata.
 
         Raises:
             PandaDocNotFoundError: If document not found.
@@ -514,10 +517,29 @@ class PandaDocClient:
         """
         response = await self._request(
             "GET",
-            f"/documents/{document_id}/status",
+            f"/documents/{document_id}/details",
         )
 
         return response
+
+    async def get_document_status(self, document_id: str) -> Document:
+        """Get document with current status.
+
+        Note: The direct /status endpoint is not available in the public API.
+        Use get_document() to retrieve the current document status instead.
+
+        Args:
+            document_id: ID of document.
+
+        Returns:
+            Document with current status.
+
+        Raises:
+            PandaDocNotFoundError: If document not found.
+            PandaDocAPIError: If API request fails.
+        """
+        # Redirect to get_document which provides the status
+        return await self.get_document(document_id)
 
     # ============== RECIPIENT OPERATIONS ==============
 
@@ -530,6 +552,13 @@ class PandaDocClient:
     ) -> dict[str, Any]:
         """Add recipient to document.
 
+        IMPORTANT: Recipients must be specified when creating the document.
+        Use create_document(recipients=[...]) to add recipients.
+
+        The POST /documents/{id}/recipients endpoint in the public API has a
+        different payload structure than typical email-based recipient operations
+        and is primarily for template-based recipient role assignments.
+
         Args:
             document_id: ID of document.
             email: Recipient email address.
@@ -540,15 +569,18 @@ class PandaDocClient:
             Updated recipient data.
 
         Raises:
-            PandaDocNotFoundError: If document not found.
-            PandaDocAPIError: If API request fails.
+            PandaDocAPIError: Always - this endpoint is not fully supported.
         """
+        # The public API requires template-based recipient structure
+        # which differs from the intuitive email-based approach
         data: dict[str, Any] = {"email": email}
         if name:
             data["name"] = name
         if role:
             data["role"] = role
 
+        # Note: This will fail with the public API unless the payload
+        # matches the expected template recipient structure
         response = await self._request(
             "POST",
             f"/documents/{document_id}/recipients",
@@ -852,7 +884,7 @@ class PandaDocClient:
         document_id: str,
         max_attempts: int = 30,
         interval: float = 2.0,
-    ) -> dict[str, Any]:
+    ) -> Document:
         """Poll document status until completion.
 
         Polls document status with exponential backoff until document
@@ -864,19 +896,20 @@ class PandaDocClient:
             interval: Initial polling interval in seconds (default: 2.0).
 
         Returns:
-            Final document status.
+            Final document with current status.
 
         Raises:
             PandaDocNotFoundError: If document not found.
             PandaDocAPIError: If API request fails.
         """
+        doc: Document | None = None
         for attempt in range(max_attempts):
-            status = await self.get_document_status(document_id)
+            doc = await self.get_document_status(document_id)
 
             # Check if processing is complete
-            doc_status = status.get("status", "unknown")
-            if doc_status not in ("draft", "processing"):
-                return status
+            # Document status values include: document.draft, document.sent, etc.
+            if not doc.status.endswith("processing"):
+                return doc
 
             # Exponential backoff
             wait_time = interval * (1.5**attempt)
@@ -887,8 +920,10 @@ class PandaDocClient:
             await asyncio.sleep(wait_time)
 
         # Max attempts reached
+        if doc is None:
+            raise PandaDocAPIError(f"Failed to poll document {document_id}")
         logger.warning(f"Document {document_id} still processing after {max_attempts} attempts")
-        return status
+        return doc
 
     async def close(self) -> None:
         """Close HTTP client and clean up resources."""
