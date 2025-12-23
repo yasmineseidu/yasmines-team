@@ -4,7 +4,6 @@ SQLAlchemy models for database tables.
 Defines ORM models for approval workflow and other database entities.
 """
 
-from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (

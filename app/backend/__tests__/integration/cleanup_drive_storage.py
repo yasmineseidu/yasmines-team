@@ -6,7 +6,6 @@ Safely deletes old test files to free up storage.
 
 import asyncio
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -29,8 +28,8 @@ async def cleanup_drive() -> None:
         credentials = json.load(f)
 
     # Generate token
-    from google.oauth2 import service_account
     from google.auth.transport.requests import Request
+    from google.oauth2 import service_account
 
     creds = service_account.Credentials.from_service_account_info(
         credentials,
@@ -67,7 +66,7 @@ async def cleanup_drive() -> None:
 
     # Calculate storage usage
     total_size = sum(int(f.get("size", 0)) for f in all_files)
-    total_gb = total_size / (1024 ** 3)
+    total_gb = total_size / (1024**3)
     print(f"   Total storage: {total_gb:.2f} GB")
 
     # Delete test files (keep important ones)
@@ -81,7 +80,7 @@ async def cleanup_drive() -> None:
     deleted_count = 0
     freed_space = 0
 
-    print(f"\n🗑️  Deleting test files...")
+    print("\n🗑️  Deleting test files...")
 
     for file in all_files:
         name = file.get("name", "")
@@ -100,8 +99,8 @@ async def cleanup_drive() -> None:
             except Exception as e:
                 print(f"   ⚠️  Failed to delete {name}: {e}")
 
-    freed_gb = freed_space / (1024 ** 3)
-    print(f"\n✅ Cleanup complete!")
+    freed_gb = freed_space / (1024**3)
+    print("\n✅ Cleanup complete!")
     print(f"   Files deleted: {deleted_count}")
     print(f"   Space freed: {freed_gb:.2f} GB")
 

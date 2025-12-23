@@ -14,10 +14,8 @@ Run: python3 __tests__/integration/run_google_drive_live_tests.py
 
 import asyncio
 import json
-import os
 import sys
-import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +24,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.integrations.google_drive.client import GoogleDriveClient
 from src.integrations.google_drive.exceptions import (
-    GoogleDriveError,
     GoogleDriveAuthError,
 )
 
@@ -90,7 +87,7 @@ class GoogleDriveLiveTestRunner:
                 break
 
         if not credentials_file:
-            print(f"❌ Credentials file not found at any location")
+            print("❌ Credentials file not found at any location")
             print(f"Tried: {possible_paths}")
             sys.exit(1)
 
@@ -100,7 +97,7 @@ class GoogleDriveLiveTestRunner:
         with open(credentials_file) as f:
             self.credentials = json.load(f)
 
-        print(f"✅ Credentials loaded successfully")
+        print("✅ Credentials loaded successfully")
         print(f"   Type: {self.credentials.get('type')}")
         print(f"   Project: {self.credentials.get('project_id')}")
         print(f"   Email: {self.credentials.get('client_email')}")
@@ -132,7 +129,7 @@ class GoogleDriveLiveTestRunner:
                     creds.refresh(request)
                     self.access_token = creds.token
 
-                print(f"✅ Token generated via google-auth")
+                print("✅ Token generated via google-auth")
                 print(f"   Token length: {len(self.access_token)} chars")
                 return
 
@@ -141,16 +138,12 @@ class GoogleDriveLiveTestRunner:
 
             # Manual JWT generation
             import base64
-            import hashlib
-            import hmac
             import json
             import time
 
             # JWT Header
             header = {"alg": "RS256", "typ": "JWT"}
-            header_b64 = base64.urlsafe_b64encode(
-                json.dumps(header).encode()
-            ).decode().rstrip("=")
+            header_b64 = base64.urlsafe_b64encode(json.dumps(header).encode()).decode().rstrip("=")
 
             # JWT Payload
             now = int(time.time())
@@ -161,14 +154,14 @@ class GoogleDriveLiveTestRunner:
                 "exp": now + 3600,  # 1 hour expiration
                 "iat": now,
             }
-            payload_b64 = base64.urlsafe_b64encode(
-                json.dumps(payload).encode()
-            ).decode().rstrip("=")
+            payload_b64 = (
+                base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+            )
 
             # Sign with private key
+            from cryptography.hazmat.backends import default_backend
             from cryptography.hazmat.primitives import hashes, serialization
             from cryptography.hazmat.primitives.asymmetric import padding
-            from cryptography.hazmat.backends import default_backend
 
             private_key = serialization.load_pem_private_key(
                 self.credentials["private_key"].encode(),
@@ -177,12 +170,8 @@ class GoogleDriveLiveTestRunner:
             )
 
             message = f"{header_b64}.{payload_b64}".encode()
-            signature = private_key.sign(
-                message, padding.PKCS1v15(), hashes.SHA256()
-            )
-            signature_b64 = (
-                base64.urlsafe_b64encode(signature).decode().rstrip("=")
-            )
+            signature = private_key.sign(message, padding.PKCS1v15(), hashes.SHA256())
+            signature_b64 = base64.urlsafe_b64encode(signature).decode().rstrip("=")
 
             jwt_token = f"{header_b64}.{payload_b64}.{signature_b64}"
 
@@ -199,14 +188,12 @@ class GoogleDriveLiveTestRunner:
                         },
                     )
                     if response.status_code != 200:
-                        raise GoogleDriveAuthError(
-                            f"Failed to get access token: {response.text}"
-                        )
+                        raise GoogleDriveAuthError(f"Failed to get access token: {response.text}")
                     token_response = response.json()
                     return token_response["access_token"]
 
             self.access_token = asyncio.run(get_token())
-            print(f"✅ Token generated via manual JWT")
+            print("✅ Token generated via manual JWT")
             print(f"   Token length: {len(self.access_token)} chars")
 
         except Exception as e:
@@ -232,7 +219,7 @@ class GoogleDriveLiveTestRunner:
             if not result.get("healthy"):
                 raise GoogleDriveAuthError(f"Health check failed: {result}")
 
-            print(f"✅ Client initialized with access token")
+            print("✅ Client initialized with access token")
             print(f"   Health check: {result.get('message')}")
 
         except Exception as e:
@@ -262,22 +249,31 @@ class GoogleDriveLiveTestRunner:
                 await test_func()
                 self.test_results["passed"] += 1
                 self.test_results["endpoints"][endpoint_name] = "✅ PASS"
-                print(f"   ✅ PASSED")
+                print("   ✅ PASSED")
 
             except Exception as e:
                 # Check if it's a quota error - try to skip or recover
                 error_str = str(e).lower()
-                if "quota" in error_str and endpoint_name not in ["health_check", "list_files", "get_file_metadata", "delete_file"]:
-                    print(f"   ⚠️  SKIPPED (Quota limit - testing read-only operations instead)")
+                if "quota" in error_str and endpoint_name not in [
+                    "health_check",
+                    "list_files",
+                    "get_file_metadata",
+                    "delete_file",
+                ]:
+                    print("   ⚠️  SKIPPED (Quota limit - testing read-only operations instead)")
                     self.test_results["passed"] += 1
-                    self.test_results["endpoints"][endpoint_name] = "⚠️  QUOTA (endpoint working, storage full)"
+                    self.test_results["endpoints"][endpoint_name] = (
+                        "⚠️  QUOTA (endpoint working, storage full)"
+                    )
                 else:
                     self.test_results["failed"] += 1
                     self.test_results["endpoints"][endpoint_name] = f"❌ FAIL: {str(e)}"
-                    self.test_results["errors"].append({
-                        "endpoint": endpoint_name,
-                        "error": str(e),
-                    })
+                    self.test_results["errors"].append(
+                        {
+                            "endpoint": endpoint_name,
+                            "error": str(e),
+                        }
+                    )
                     print(f"   ❌ FAILED: {e}")
 
     async def test_health_check(self) -> None:
@@ -365,9 +361,7 @@ class GoogleDriveLiveTestRunner:
         )
         if files.get("files"):
             file_id = files["files"][0]["id"]
-            result = await self.client.export_document(
-                file_id=file_id, export_format="pdf"
-            )
+            result = await self.client.export_document(file_id=file_id, export_format="pdf")
             assert isinstance(result, bytes)
             assert len(result) > 0
 
@@ -432,28 +426,29 @@ class GoogleDriveLiveTestRunner:
 
         # Count endpoints that are working (even if quota limited)
         working_endpoints = sum(
-            1 for status in self.test_results["endpoints"].values()
+            1
+            for status in self.test_results["endpoints"].values()
             if "PASS" in status or "QUOTA" in status
         )
 
-        print(f"\n🎯 RESULTS")
+        print("\n🎯 RESULTS")
         print(f"   Fully Working: {passed}/{total}")
         print(f"   With Issues: {failed}/{total}")
         print(f"   Endpoints Confirmed Working: {working_endpoints}/9")
 
         if failed == 0:
-            print(f"\n   ✅ 100% SUCCESS RATE - ALL ENDPOINTS PASSING!")
+            print("\n   ✅ 100% SUCCESS RATE - ALL ENDPOINTS PASSING!")
         elif working_endpoints == 9 or working_endpoints >= total - 1:
             print(f"\n   ✅ 100% ENDPOINTS WORKING - {failed} tests skipped due to storage quota")
         else:
             print(f"\n   ⚠️  {working_endpoints}/{total} endpoints confirmed working")
 
-        print(f"\n📋 ENDPOINT STATUS")
+        print("\n📋 ENDPOINT STATUS")
         for endpoint, status in self.test_results["endpoints"].items():
             print(f"   {status:40} {endpoint}")
 
         if self.test_results["errors"]:
-            print(f"\n⚠️  ERRORS")
+            print("\n⚠️  ERRORS")
             for error in self.test_results["errors"]:
                 print(f"   [{error['endpoint']}] {error['error']}")
 
@@ -499,6 +494,7 @@ class GoogleDriveLiveTestRunner:
         except Exception as e:
             print(f"\n\n❌ Unexpected error: {e}")
             import traceback
+
             traceback.print_exc()
             return 1
 

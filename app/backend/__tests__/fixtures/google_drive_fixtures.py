@@ -12,27 +12,22 @@ SAMPLE_DATA = {
     "page_size": 10,
     "query": "name contains 'test'",
     "order_by": "modifiedTime desc",
-
     # File operations
     "file_id": "test-file-123",
     "file_name": "test-document.txt",
     "file_content": "This is test content for Google Drive",
     "file_content_bytes": b"This is test content as bytes",
-
     # Document operations
     "doc_title": "Test Document",
     "sheet_title": "Test Spreadsheet",
     "folder_title": "Test Folder",
-
     # Folder operations
     "parent_folder_id": "parent-folder-123",
     "folder_id": "folder-456",
-
     # Sharing
     "share_email": "test-user@example.com",
     "share_role": "editor",
     "share_type": "user",
-
     # Export formats
     "export_formats": ["pdf", "docx", "xlsx", "csv", "json", "txt"],
 }
@@ -143,6 +138,7 @@ MIME_TYPES = {
     "json": "application/json",
 }
 
+
 # Test credentials (will be loaded from .env)
 def get_test_credentials() -> dict[str, Any]:
     """Load test credentials from environment.
@@ -169,7 +165,9 @@ def get_test_credentials() -> dict[str, Any]:
             cred_paths = [
                 creds_json,  # As-is from env
                 os.path.join(os.getcwd(), creds_json),  # Relative to cwd
-                os.path.join(os.path.dirname(__file__), "..", "..", creds_json.replace("app/backend/", "")),  # Without duplicate prefix
+                os.path.join(
+                    os.path.dirname(__file__), "..", "..", creds_json.replace("app/backend/", "")
+                ),  # Without duplicate prefix
             ]
             for path in cred_paths:
                 if os.path.exists(path):
@@ -195,6 +193,7 @@ def get_test_access_token() -> str | None:
         Access token if available, None otherwise
     """
     import os
+
     return os.getenv("GOOGLE_DRIVE_ACCESS_TOKEN")
 
 

@@ -26,7 +26,6 @@ from typing import Any
 import pytest
 
 from src.integrations.google_docs import (
-    GoogleDocsAuthError,
     GoogleDocsClient,
 )
 
@@ -64,9 +63,7 @@ def credentials_dict(credentials_path: str) -> dict[str, Any]:
     """
     with open(credentials_path) as f:
         creds = json.load(f)
-    logger.info(
-        f"✅ Loaded credentials: {creds.get('type')} for {creds.get('project_id')}"
-    )
+    logger.info(f"✅ Loaded credentials: {creds.get('type')} for {creds.get('project_id')}")
     return creds
 
 
@@ -92,9 +89,7 @@ def access_token() -> str:
 
 
 @pytest.fixture
-def authenticated_client(
-    credentials_dict: dict[str, Any], access_token: str
-) -> GoogleDocsClient:
+def authenticated_client(credentials_dict: dict[str, Any], access_token: str) -> GoogleDocsClient:
     """Create authenticated GoogleDocsClient with real credentials.
 
     Args:
@@ -107,7 +102,7 @@ def authenticated_client(
     # Merge credentials with access token
     full_creds = {**credentials_dict, "access_token": access_token}
     client = GoogleDocsClient(credentials_json=full_creds)
-    logger.info(f"✅ Initialized GoogleDocsClient")
+    logger.info("✅ Initialized GoogleDocsClient")
     return client
 
 
@@ -170,9 +165,7 @@ class TestCredentialsAndInitialization:
         assert "client_email" in credentials_dict
         logger.info(f"✅ Credentials valid: {credentials_dict['type']}")
 
-    def test_credentials_service_account(
-        self, credentials_dict: dict[str, Any]
-    ) -> None:
+    def test_credentials_service_account(self, credentials_dict: dict[str, Any]) -> None:
         """Verify this is a service account."""
         assert credentials_dict["type"] == "service_account"
         assert "smarter-team" in credentials_dict.get("project_id", "")
@@ -247,9 +240,7 @@ class TestEndpointDiscovery:
         },
     }
 
-    def test_all_endpoints_exist(
-        self, authenticated_client: GoogleDocsClient
-    ) -> None:
+    def test_all_endpoints_exist(self, authenticated_client: GoogleDocsClient) -> None:
         """Verify all expected endpoints exist on client."""
         missing = []
         for endpoint_name in self.EXPECTED_ENDPOINTS.keys():
@@ -261,9 +252,7 @@ class TestEndpointDiscovery:
         ), f"Missing endpoints: {missing}. Expected: {list(self.EXPECTED_ENDPOINTS.keys())}"
         logger.info(f"✅ All {len(self.EXPECTED_ENDPOINTS)} endpoints found")
 
-    def test_all_endpoints_callable(
-        self, authenticated_client: GoogleDocsClient
-    ) -> None:
+    def test_all_endpoints_callable(self, authenticated_client: GoogleDocsClient) -> None:
         """Verify all endpoints are callable methods."""
         not_callable = []
         for endpoint_name in self.EXPECTED_ENDPOINTS.keys():
@@ -272,7 +261,7 @@ class TestEndpointDiscovery:
                 not_callable.append(endpoint_name)
 
         assert not not_callable, f"Not callable: {not_callable}"
-        logger.info(f"✅ All endpoints callable")
+        logger.info("✅ All endpoints callable")
 
     def test_endpoint_signatures(self, authenticated_client: GoogleDocsClient) -> None:
         """Verify endpoint signatures match expectations - future-proof for new endpoints."""
@@ -352,9 +341,7 @@ class TestSampleData:
 class TestEndpointBehavior:
     """Test endpoint behavior and error handling."""
 
-    def test_create_document_signature(
-        self, authenticated_client: GoogleDocsClient
-    ) -> None:
+    def test_create_document_signature(self, authenticated_client: GoogleDocsClient) -> None:
         """Verify create_document has correct signature."""
         import inspect
 
@@ -364,9 +351,7 @@ class TestEndpointBehavior:
         assert "parent_folder_id" in params
         logger.info("✅ create_document signature correct")
 
-    def test_insert_text_signature(
-        self, authenticated_client: GoogleDocsClient
-    ) -> None:
+    def test_insert_text_signature(self, authenticated_client: GoogleDocsClient) -> None:
         """Verify insert_text has correct signature."""
         import inspect
 
@@ -376,9 +361,7 @@ class TestEndpointBehavior:
         assert "text" in params
         logger.info("✅ insert_text signature correct")
 
-    def test_format_text_signature(
-        self, authenticated_client: GoogleDocsClient
-    ) -> None:
+    def test_format_text_signature(self, authenticated_client: GoogleDocsClient) -> None:
         """Verify format_text has correct signature."""
         import inspect
 
@@ -389,9 +372,7 @@ class TestEndpointBehavior:
         assert "end_index" in params
         logger.info("✅ format_text signature correct")
 
-    def test_batch_update_signature(
-        self, authenticated_client: GoogleDocsClient
-    ) -> None:
+    def test_batch_update_signature(self, authenticated_client: GoogleDocsClient) -> None:
         """Verify batch_update has correct signature."""
         import inspect
 
@@ -401,9 +382,7 @@ class TestEndpointBehavior:
         assert "requests" in params
         logger.info("✅ batch_update signature correct")
 
-    def test_create_table_signature(
-        self, authenticated_client: GoogleDocsClient
-    ) -> None:
+    def test_create_table_signature(self, authenticated_client: GoogleDocsClient) -> None:
         """Verify create_table has correct signature."""
         import inspect
 
@@ -414,9 +393,7 @@ class TestEndpointBehavior:
         assert "columns" in params
         logger.info("✅ create_table signature correct")
 
-    def test_share_document_signature(
-        self, authenticated_client: GoogleDocsClient
-    ) -> None:
+    def test_share_document_signature(self, authenticated_client: GoogleDocsClient) -> None:
         """Verify share_document has correct signature."""
         import inspect
 

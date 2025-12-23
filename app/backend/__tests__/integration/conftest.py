@@ -3,10 +3,9 @@
 Handles setup of environment variables, fixtures, and test database.
 """
 
-import os
-import pytest
 from pathlib import Path
 
+import pytest
 from dotenv import load_dotenv
 
 

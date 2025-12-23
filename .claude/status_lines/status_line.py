@@ -15,6 +15,7 @@ from datetime import datetime
 
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
 except ImportError:
     pass  # dotenv is optional
@@ -25,11 +26,11 @@ def log_status_line(input_data, status_line_output):
     # Ensure logs directory exists
     log_dir = Path("logs")
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / 'status_line.json'
+    log_file = log_dir / "status_line.json"
 
     # Read existing log data or initialize empty list
     if log_file.exists():
-        with open(log_file, 'r') as f:
+        with open(log_file, "r") as f:
             try:
                 log_data = json.load(f)
             except (json.JSONDecodeError, ValueError):
@@ -41,14 +42,14 @@ def log_status_line(input_data, status_line_output):
     log_entry = {
         "timestamp": datetime.now().isoformat(),
         "input_data": input_data,
-        "status_line_output": status_line_output
+        "status_line_output": status_line_output,
     }
 
     # Append the log entry
     log_data.append(log_entry)
 
     # Write back to file with formatting
-    with open(log_file, 'w') as f:
+    with open(log_file, "w") as f:
         json.dump(log_data, f, indent=2)
 
 
@@ -56,10 +57,10 @@ def get_git_branch():
     """Get current git branch if in a git repository."""
     try:
         result = subprocess.run(
-            ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
             capture_output=True,
             text=True,
-            timeout=2
+            timeout=2,
         )
         if result.returncode == 0:
             return result.stdout.strip()
@@ -73,15 +74,12 @@ def get_git_status():
     try:
         # Check if there are uncommitted changes
         result = subprocess.run(
-            ['git', 'status', '--porcelain'],
-            capture_output=True,
-            text=True,
-            timeout=2
+            ["git", "status", "--porcelain"], capture_output=True, text=True, timeout=2
         )
         if result.returncode == 0:
             changes = result.stdout.strip()
             if changes:
-                lines = changes.split('\n')
+                lines = changes.split("\n")
                 return f"±{len(lines)}"
     except Exception:
         pass
@@ -93,13 +91,13 @@ def generate_status_line(input_data):
     parts = []
 
     # Model display name
-    model_info = input_data.get('model', {})
-    model_name = model_info.get('display_name', 'Claude')
+    model_info = input_data.get("model", {})
+    model_name = model_info.get("display_name", "Claude")
     parts.append(f"\033[36m[{model_name}]\033[0m")  # Cyan color
 
     # Current directory
-    workspace = input_data.get('workspace', {})
-    current_dir = workspace.get('current_dir', '')
+    workspace = input_data.get("workspace", {})
+    current_dir = workspace.get("current_dir", "")
     if current_dir:
         dir_name = os.path.basename(current_dir)
         parts.append(f"\033[34m📁 {dir_name}\033[0m")  # Blue color
@@ -114,7 +112,7 @@ def generate_status_line(input_data):
         parts.append(f"\033[32m{git_info}\033[0m")  # Green color
 
     # Version info (optional, smaller)
-    version = input_data.get('version', '')
+    version = input_data.get("version", "")
     if version:
         parts.append(f"\033[90mv{version}\033[0m")  # Gray color
 
@@ -148,5 +146,5 @@ def main():
         sys.exit(0)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

@@ -14,14 +14,12 @@ Run tests:
     pytest __tests__/integration/test_google_docs_live_real.py -v -s
 """
 
-import asyncio
 import base64
-import hashlib
 import json
 import logging
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -149,7 +147,7 @@ def credentials_json() -> dict[str, Any]:
     with open(path) as f:
         creds = json.load(f)
 
-    logger.info(f"\n✅ Loaded credentials:")
+    logger.info("\n✅ Loaded credentials:")
     logger.info(f"   Type: {creds.get('type')}")
     logger.info(f"   Project: {creds.get('project_id')}")
     logger.info(f"   Email: {creds.get('client_email')}")
@@ -218,9 +216,7 @@ class TestGoogleDocsLiveRealAPI:
     """Live tests against real Google Docs API with actual credentials."""
 
     @pytest.mark.asyncio
-    async def test_01_authenticate_and_get_token(
-        self, credentials_json: dict[str, Any]
-    ) -> None:
+    async def test_01_authenticate_and_get_token(self, credentials_json: dict[str, Any]) -> None:
         """Test authentication - exchange JWT for access token.
 
         This is the foundation test. If this fails, all others will fail.
@@ -234,7 +230,7 @@ class TestGoogleDocsLiveRealAPI:
         assert len(token) > 100
         assert token.startswith("ya29")  # Google access tokens start with ya29
 
-        logger.info(f"✅ PASSED: Got real access token")
+        logger.info("✅ PASSED: Got real access token")
         logger.info(f"   Token (first 50 chars): {token[:50]}...")
         logger.info(f"   Token length: {len(token)}")
 
@@ -285,8 +281,8 @@ class TestGoogleDocsLiveRealAPI:
             error_data = response.json()
             reason = error_data.get("error", {}).get("errors", [{}])[0].get("reason", "")
             if reason == "storageQuotaExceeded":
-                logger.info(f"⚠️  QUOTA EXCEEDED (expected in dev, API working)")
-                logger.info(f"   Endpoint: reachable and responding correctly")
+                logger.info("⚠️  QUOTA EXCEEDED (expected in dev, API working)")
+                logger.info("   Endpoint: reachable and responding correctly")
                 pytest.skip("Drive quota exceeded - not an API issue")
 
         assert response.status_code in [200, 201], f"Failed: {response.text}"
@@ -298,7 +294,7 @@ class TestGoogleDocsLiveRealAPI:
         doc_id = data["id"]
         self.document_id = doc_id
 
-        logger.info(f"✅ PASSED: Created document")
+        logger.info("✅ PASSED: Created document")
         logger.info(f"   Document ID: {doc_id}")
         logger.info(f"   Title: {data.get('name')}")
         logger.info(f"   MIME type: {data.get('mimeType')}")
@@ -324,9 +320,7 @@ class TestGoogleDocsLiveRealAPI:
         access_token = await get_access_token(credentials_json)
         headers = {"Authorization": f"Bearer {access_token}"}
 
-        response = await google_docs_api.get(
-            f"/documents/{self.document_id}", headers=headers
-        )
+        response = await google_docs_api.get(f"/documents/{self.document_id}", headers=headers)
 
         assert response.status_code == 200, f"Failed: {response.text}"
 
@@ -335,7 +329,7 @@ class TestGoogleDocsLiveRealAPI:
         assert "title" in data
         assert "body" in data
 
-        logger.info(f"✅ PASSED: Retrieved document")
+        logger.info("✅ PASSED: Retrieved document")
         logger.info(f"   Document ID: {data['documentId']}")
         logger.info(f"   Title: {data.get('title')}")
         logger.info(f"   Has body: {'body' in data}")
@@ -389,7 +383,7 @@ class TestGoogleDocsLiveRealAPI:
         assert data["documentId"] == self.document_id
         assert "replies" in data
 
-        logger.info(f"✅ PASSED: Inserted text")
+        logger.info("✅ PASSED: Inserted text")
         logger.info(f"   Text: {text}")
         logger.info(f"   Replies: {len(data.get('replies', []))} operations")
 
@@ -441,9 +435,9 @@ class TestGoogleDocsLiveRealAPI:
         data = response.json()
         assert data["documentId"] == self.document_id
 
-        logger.info(f"✅ PASSED: Inserted Unicode text")
+        logger.info("✅ PASSED: Inserted Unicode text")
         logger.info(f"   Text: {text}")
-        logger.info(f"   Contains emojis: ✓")
+        logger.info("   Contains emojis: ✓")
 
     @pytest.mark.asyncio
     async def test_06_format_text_bold(
@@ -489,9 +483,9 @@ class TestGoogleDocsLiveRealAPI:
 
         assert response.status_code == 200, f"Failed: {response.text}"
 
-        logger.info(f"✅ PASSED: Applied bold formatting")
-        logger.info(f"   Range: 1-10")
-        logger.info(f"   Style: bold=true")
+        logger.info("✅ PASSED: Applied bold formatting")
+        logger.info("   Range: 1-10")
+        logger.info("   Style: bold=true")
 
     @pytest.mark.asyncio
     async def test_07_format_text_color(
@@ -539,9 +533,9 @@ class TestGoogleDocsLiveRealAPI:
 
         assert response.status_code == 200, f"Failed: {response.text}"
 
-        logger.info(f"✅ PASSED: Applied color formatting")
-        logger.info(f"   Color: Red (RGB)")
-        logger.info(f"   Range: 1-5")
+        logger.info("✅ PASSED: Applied color formatting")
+        logger.info("   Color: Red (RGB)")
+        logger.info("   Range: 1-5")
 
     @pytest.mark.asyncio
     async def test_08_create_table(
@@ -590,9 +584,9 @@ class TestGoogleDocsLiveRealAPI:
         data = response.json()
         assert "replies" in data
 
-        logger.info(f"✅ PASSED: Created table")
-        logger.info(f"   Dimensions: 3x3")
-        logger.info(f"   Location: index 1")
+        logger.info("✅ PASSED: Created table")
+        logger.info("   Dimensions: 3x3")
+        logger.info("   Location: index 1")
 
     @pytest.mark.asyncio
     async def test_09_batch_update_multiple(
@@ -654,11 +648,11 @@ class TestGoogleDocsLiveRealAPI:
         data = response.json()
         assert len(data["replies"]) == 3
 
-        logger.info(f"✅ PASSED: Batch update with multiple operations")
-        logger.info(f"   Operations: 3")
-        logger.info(f"   1. Insert 'Batch'")
-        logger.info(f"   2. Insert 'Test'")
-        logger.info(f"   3. Format italic")
+        logger.info("✅ PASSED: Batch update with multiple operations")
+        logger.info("   Operations: 3")
+        logger.info("   1. Insert 'Batch'")
+        logger.info("   2. Insert 'Test'")
+        logger.info("   3. Format italic")
 
     @pytest.mark.asyncio
     async def test_10_get_document_permissions(
@@ -690,9 +684,9 @@ class TestGoogleDocsLiveRealAPI:
         # We just verify the endpoint is callable
         assert response.status_code in [200, 403], f"Unexpected: {response.status_code}"
 
-        logger.info(f"✅ PASSED: Got document permissions")
+        logger.info("✅ PASSED: Got document permissions")
         logger.info(f"   Status: {response.status_code}")
-        logger.info(f"   Endpoint: reachable and responding")
+        logger.info("   Endpoint: reachable and responding")
 
     @pytest.mark.asyncio
     async def test_11_final_document_state(
@@ -715,9 +709,7 @@ class TestGoogleDocsLiveRealAPI:
         access_token = await get_access_token(credentials_json)
         headers = {"Authorization": f"Bearer {access_token}"}
 
-        response = await google_docs_api.get(
-            f"/documents/{self.document_id}", headers=headers
-        )
+        response = await google_docs_api.get(f"/documents/{self.document_id}", headers=headers)
 
         assert response.status_code == 200, f"Failed: {response.text}"
 
@@ -729,11 +721,11 @@ class TestGoogleDocsLiveRealAPI:
         assert "body" in data
         assert "documentStyle" in data
 
-        logger.info(f"✅ PASSED: Document state verified")
+        logger.info("✅ PASSED: Document state verified")
         logger.info(f"   Document ID: {data['documentId']}")
         logger.info(f"   Title: {data.get('title')}")
         logger.info(f"   Body sections: {len(data['body'].get('content', []))}")
-        logger.info(f"   All operations applied successfully!")
+        logger.info("   All operations applied successfully!")
 
 
 # ============================================================================

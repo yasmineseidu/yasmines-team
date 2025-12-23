@@ -1045,8 +1045,8 @@ I solemnly swear:
 12. I will REJECT code missing inventory check documentation - MANDATORY
 13. Claude Agent SDK is the ONLY approved framework
 
-Every review. SDK compliance verified. Resilience verified. 
-Tool inventory verified. Database coordination verified. 
+Every review. SDK compliance verified. Resilience verified.
+Tool inventory verified. Database coordination verified.
 Component reusability verified. No exceptions.
 ```
 

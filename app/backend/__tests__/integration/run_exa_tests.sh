@@ -37,4 +37,3 @@ fi
 echo "Running Exa live integration tests..."
 cd "$(dirname "$0")/../.."
 uv run pytest __tests__/integration/test_exa_live.py -v --tb=short
-

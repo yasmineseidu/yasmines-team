@@ -12,7 +12,6 @@ Then visit the authorization URL in your browser:
 """
 
 import asyncio
-from urllib.parse import urlparse, parse_qs
 
 from aiohttp import web
 
@@ -88,7 +87,9 @@ async def main():
     print()
     print("📍 STEP 1: Click link or paste URL in browser:")
     print()
-    print("https://accounts.google.com/o/oauth2/v2/auth?client_id=${GOOGLE_CLIENT_ID}&redirect_uri=http://localhost:8000/api/google/callback&response_type=code&scope=https://www.googleapis.com/auth/drive%20https://www.googleapis.com/auth/drive.file&access_type=offline")
+    print(
+        "https://accounts.google.com/o/oauth2/v2/auth?client_id=${GOOGLE_CLIENT_ID}&redirect_uri=http://localhost:8000/api/google/callback&response_type=code&scope=https://www.googleapis.com/auth/drive%20https://www.googleapis.com/auth/drive.file&access_type=offline"
+    )
     print()
     print("📍 STEP 2: Grant permission when prompted")
     print()

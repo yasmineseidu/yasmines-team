@@ -149,7 +149,7 @@ async def main() -> None:
             subject="🤖 Gmail Integration Test - Automated",
             body="This is an automated test email from Gmail API integration.\n\nIf you see this, the tests are working! ✅",
         )
-        print(f"✅ Email sent successfully!")
+        print("✅ Email sent successfully!")
         print(f"   Message ID: {test_email.get('id')}")
         print("   📧 CHECK YOUR GMAIL - You should see this email in your Sent folder!")
     except GmailError as e:
@@ -165,7 +165,7 @@ async def main() -> None:
             subject="🤖 Draft Test Email",
             body="This is a test draft email.",
         )
-        print(f"✅ Draft created successfully!")
+        print("✅ Draft created successfully!")
         print(f"   Draft ID: {draft.get('id')}")
         print("   📧 CHECK YOUR GMAIL - Look for drafts in the left sidebar!")
     except GmailError as e:
@@ -181,7 +181,7 @@ async def main() -> None:
             label_list_visibility="labelShow",
             message_list_visibility="show",
         )
-        print(f"✅ Label created successfully!")
+        print("✅ Label created successfully!")
         print(f"   Label ID: {label.get('id')}")
         print(f"   Label Name: {label.get('name')}")
         print("   📧 CHECK YOUR GMAIL - Look for this label in the left sidebar!")

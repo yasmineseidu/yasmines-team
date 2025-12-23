@@ -94,7 +94,11 @@ class ApprovalBotRunner:
 
         # Verify bot connection
         me = await self.telegram_client.get_me()
-        username = getattr(me, 'username', None) or me.get('username', 'unknown') if isinstance(me, dict) else getattr(me, 'username', 'unknown')
+        username = (
+            getattr(me, "username", None) or me.get("username", "unknown")
+            if isinstance(me, dict)
+            else getattr(me, "username", "unknown")
+        )
         logger.info(f"Bot connected: @{username}")
 
         # Initialize approval service with database
@@ -176,7 +180,7 @@ class ApprovalBotRunner:
                     break
 
                 # Exponential backoff
-                wait_time = min(2 ** consecutive_errors, 60)
+                wait_time = min(2**consecutive_errors, 60)
                 logger.info(f"Waiting {wait_time}s before retry...")
                 await asyncio.sleep(wait_time)
 
@@ -224,10 +228,7 @@ async def run_approval_bot() -> None:
         logger.critical("DATABASE_URL environment variable is required")
         sys.exit(1)
 
-    edit_form_base_url = os.getenv(
-        "APPROVAL_FORM_BASE_URL",
-        "https://app.example.com/approvals"
-    )
+    edit_form_base_url = os.getenv("APPROVAL_FORM_BASE_URL", "https://app.example.com/approvals")
 
     # Create runner
     runner = ApprovalBotRunner(

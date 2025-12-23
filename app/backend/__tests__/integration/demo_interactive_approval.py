@@ -12,16 +12,13 @@ Press Ctrl+C to stop.
 import asyncio
 import os
 import signal
-import sys
 
 from src.integrations.telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    Message,
     ParseMode,
     TelegramClient,
     TelegramError,
-    Update,
 )
 
 
@@ -51,24 +48,17 @@ class InteractiveApprovalDemo:
         """Send a demo approval request."""
         buttons = [
             [
-                InlineKeyboardButton(
-                    text="✅ Approve",
-                    callback_data=f"approve_{callback_prefix}"
-                ),
-                InlineKeyboardButton(
-                    text="❌ Reject",
-                    callback_data=f"reject_{callback_prefix}"
-                ),
+                InlineKeyboardButton(text="✅ Approve", callback_data=f"approve_{callback_prefix}"),
+                InlineKeyboardButton(text="❌ Reject", callback_data=f"reject_{callback_prefix}"),
             ],
         ]
 
         if include_edit:
-            buttons.append([
-                InlineKeyboardButton(
-                    text="✏️ Edit",
-                    callback_data=f"edit_{callback_prefix}"
-                ),
-            ])
+            buttons.append(
+                [
+                    InlineKeyboardButton(text="✏️ Edit", callback_data=f"edit_{callback_prefix}"),
+                ]
+            )
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -112,9 +102,7 @@ class InteractiveApprovalDemo:
         # Check if this is one of our demo requests
         if prefix not in self.demo_requests:
             await self.client.answer_callback_query(
-                callback_id,
-                "Demo request not found",
-                show_alert=True
+                callback_id, "Demo request not found", show_alert=True
             )
             return
 
@@ -173,10 +161,7 @@ Status: Complete"""
             reply_markup=status_keyboard,
         )
 
-        await self.client.answer_callback_query(
-            callback_id,
-            "✅ Approved successfully!"
-        )
+        await self.client.answer_callback_query(callback_id, "✅ Approved successfully!")
 
         print(f"   ✅ {request['title']} approved by @{username}")
 
@@ -281,19 +266,12 @@ Status: Awaiting edits..."""
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="📝 Make Changes (Demo)",
-                        callback_data=f"changes_{prefix}"
+                        text="📝 Make Changes (Demo)", callback_data=f"changes_{prefix}"
                     ),
                 ],
                 [
-                    InlineKeyboardButton(
-                        text="✅ Submit Edits",
-                        callback_data=f"submit_{prefix}"
-                    ),
-                    InlineKeyboardButton(
-                        text="❌ Cancel",
-                        callback_data=f"cancel_{prefix}"
-                    ),
+                    InlineKeyboardButton(text="✅ Submit Edits", callback_data=f"submit_{prefix}"),
+                    InlineKeyboardButton(text="❌ Cancel", callback_data=f"cancel_{prefix}"),
                 ],
             ]
         )
@@ -453,14 +431,12 @@ Status: Awaiting edits..."""
                                 await self.handle_edit_actions(update.callback_query)
                             elif callback_data == "noop":
                                 await self.client.answer_callback_query(
-                                    callback_id,
-                                    "This request has been processed."
+                                    callback_id, "This request has been processed."
                                 )
                             else:
                                 # Unknown callback - just acknowledge it
                                 await self.client.answer_callback_query(
-                                    callback_id,
-                                    "Button from old demo - ignored"
+                                    callback_id, "Button from old demo - ignored"
                                 )
                         except TelegramError as e:
                             # Ignore "query is too old" errors from old buttons
@@ -468,8 +444,8 @@ Status: Awaiting edits..."""
                                 print(f"   ⚠️ Callback error: {e}")
 
                     elif update.message:
-                        msg_data = update.message.raw if hasattr(update.message, 'raw') else {}
-                        if not msg_data and hasattr(update.message, '__dict__'):
+                        msg_data = update.message.raw if hasattr(update.message, "raw") else {}
+                        if not msg_data and hasattr(update.message, "__dict__"):
                             msg_data = {
                                 "from": update.message.from_user,
                                 "text": update.message.text,

@@ -7,13 +7,13 @@
 # ///
 
 import json
-import os
 import sys
 from pathlib import Path
 from datetime import datetime
 
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
 except ImportError:
     pass  # dotenv is optional
@@ -24,11 +24,11 @@ def log_status_line(input_data, status_line_output, error_message=None):
     # Ensure logs directory exists
     log_dir = Path("logs")
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = log_dir / 'status_line.json'
+    log_file = log_dir / "status_line.json"
 
     # Read existing log data or initialize empty list
     if log_file.exists():
-        with open(log_file, 'r') as f:
+        with open(log_file, "r") as f:
             try:
                 log_data = json.load(f)
             except (json.JSONDecodeError, ValueError):
@@ -51,7 +51,7 @@ def log_status_line(input_data, status_line_output, error_message=None):
     log_data.append(log_entry)
 
     # Write back to file with formatting
-    with open(log_file, 'w') as f:
+    with open(log_file, "w") as f:
         json.dump(log_data, f, indent=2)
 
 
@@ -64,7 +64,7 @@ def get_last_prompt(session_id):
         return None, f"Session file {session_file} does not exist"
 
     try:
-        with open(session_file, 'r') as f:
+        with open(session_file, "r") as f:
             session_data = json.load(f)
             prompts = session_data.get("prompts", [])
             if prompts:
@@ -77,11 +77,11 @@ def get_last_prompt(session_id):
 def generate_status_line(input_data):
     """Generate the status line showing the last prompt."""
     # Extract session ID from input data
-    session_id = input_data.get('session_id', 'unknown')
+    session_id = input_data.get("session_id", "unknown")
 
     # Get model name for prefix
-    model_info = input_data.get('model', {})
-    model_name = model_info.get('display_name', 'Claude')
+    model_info = input_data.get("model", {})
+    model_name = model_info.get("display_name", "Claude")
 
     # Get the last prompt
     prompt, error = get_last_prompt(session_id)
@@ -93,26 +93,29 @@ def generate_status_line(input_data):
 
     # Format the prompt for status line
     # Remove newlines and excessive whitespace
-    prompt = ' '.join(prompt.split())
+    prompt = " ".join(prompt.split())
 
     # Color coding based on prompt type
-    if prompt.startswith('/'):
+    if prompt.startswith("/"):
         # Command prompt - yellow
         prompt_color = "\033[33m"
         icon = "⚡"
-    elif '?' in prompt:
+    elif "?" in prompt:
         # Question - blue
         prompt_color = "\033[34m"
         icon = "❓"
-    elif any(word in prompt.lower() for word in ['create', 'write', 'add', 'implement', 'build']):
+    elif any(
+        word in prompt.lower()
+        for word in ["create", "write", "add", "implement", "build"]
+    ):
         # Creation task - green
         prompt_color = "\033[32m"
         icon = "💡"
-    elif any(word in prompt.lower() for word in ['fix', 'debug', 'error', 'issue']):
+    elif any(word in prompt.lower() for word in ["fix", "debug", "error", "issue"]):
         # Fix/debug task - red
         prompt_color = "\033[31m"
         icon = "🐛"
-    elif any(word in prompt.lower() for word in ['refactor', 'improve', 'optimize']):
+    elif any(word in prompt.lower() for word in ["refactor", "improve", "optimize"]):
         # Refactor task - magenta
         prompt_color = "\033[35m"
         icon = "♻️"
@@ -154,5 +157,5 @@ def main():
         sys.exit(0)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

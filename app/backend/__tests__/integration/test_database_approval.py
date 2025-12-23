@@ -98,16 +98,16 @@ async def test_database_integration():
 
     # Verify history record was created
     print("\n9. Verifying history record in database...")
-    from sqlalchemy import select, text
+    from uuid import UUID
+
+    from sqlalchemy import select
+
     from src.database import get_session
     from src.database.models import ApprovalHistoryModel
-    from uuid import UUID
 
     async with get_session() as session:
         result = await session.execute(
-            select(ApprovalHistoryModel).where(
-                ApprovalHistoryModel.request_id == UUID(request_id)
-            )
+            select(ApprovalHistoryModel).where(ApprovalHistoryModel.request_id == UUID(request_id))
         )
         history = result.scalars().all()
         print(f"   ✓ Found {len(history)} history record(s)")

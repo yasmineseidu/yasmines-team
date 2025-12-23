@@ -491,7 +491,7 @@ class GmailClient(BaseIntegrationClient):
                 logger.error(f"Gmail 404 error - Full response: {error_data}")
                 resource_type = message.split("'")[0].strip() if "'" in message else "resource"
                 raise GmailNotFoundError(resource_type, message)
-            except Exception as e:
+            except Exception:
                 logger.error(f"Failed to parse 404 error: {response.text}")
                 raise GmailNotFoundError("resource", response.text or "unknown")
 

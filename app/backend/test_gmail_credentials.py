@@ -14,7 +14,7 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config.credentials_loader import load_gmail_service_account, get_gmail_client_config
+from config.credentials_loader import get_gmail_client_config, load_gmail_service_account
 from src.integrations.gmail import GmailClient
 
 
@@ -32,7 +32,9 @@ async def test_credentials():
     if not creds:
         print("❌ FAILED: No credentials found")
         print("   Check:")
-        print("   - Is service account JSON at: app/backend/config/credentials/gmail-service-account.json?")
+        print(
+            "   - Is service account JSON at: app/backend/config/credentials/gmail-service-account.json?"
+        )
         print("   - Or is GMAIL_SERVICE_ACCOUNT_JSON environment variable set?")
         return False
 
@@ -49,7 +51,7 @@ async def test_credentials():
         return False
 
     print("✅ Configuration ready")
-    print(f"   Auth Method: service_account")
+    print("   Auth Method: service_account")
 
     # Step 3: Initialize Gmail client
     print("\n[Step 3] Initializing Gmail client...")
@@ -66,10 +68,14 @@ async def test_credentials():
     try:
         await client.authenticate()
         print("✅ Authentication successful")
-        print(f"   Access Token: {client.access_token[:20]}..." if client.access_token else "   Access Token: (using service account JWT)")
+        print(
+            f"   Access Token: {client.access_token[:20]}..."
+            if client.access_token
+            else "   Access Token: (using service account JWT)"
+        )
     except Exception as e:
         print(f"❌ FAILED: Authentication error: {e}")
-        print(f"   Tip: Make sure google-auth library is installed: pip install google-auth")
+        print("   Tip: Make sure google-auth library is installed: pip install google-auth")
         return False
 
     # Step 5: Test API call

@@ -63,7 +63,9 @@ class TestGmailIntegration:
                 # Get the project root (yasmines-team/)
                 test_file = os.path.abspath(__file__)
                 # Go up 5 levels: integration -> __tests__ -> backend -> app -> yasmines-team
-                project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(test_file)))))
+                project_root = os.path.dirname(
+                    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(test_file))))
+                )
                 full_path = os.path.join(project_root, credentials_json_path)
             else:
                 full_path = credentials_json_path

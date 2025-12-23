@@ -7,7 +7,6 @@ via domain-wide delegation (JWT bearer token flow).
 
 import asyncio
 import json
-import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -55,7 +54,7 @@ class GmailDelegationLiveTestRunner:
                 break
 
         if not credentials_file:
-            print(f"❌ Credentials file not found in any of:")
+            print("❌ Credentials file not found in any of:")
             for path in cred_paths:
                 print(f"   - {path}")
             return False
@@ -64,7 +63,7 @@ class GmailDelegationLiveTestRunner:
             with open(credentials_file) as f:
                 self.credentials = json.load(f)
 
-            print(f"✅ Credentials loaded successfully")
+            print("✅ Credentials loaded successfully")
             print(f"   Type: {self.credentials.get('type')}")
             print(f"   Project: {self.credentials.get('project_id')}")
             print(f"   Email: {self.credentials.get('client_email')}")
@@ -93,34 +92,32 @@ class GmailDelegationLiveTestRunner:
 
         try:
             # Create client with delegation
-            self.client = GmailClient(
-                credentials_json=self.credentials, user_email=user_email
-            )
+            self.client = GmailClient(credentials_json=self.credentials, user_email=user_email)
 
             # Authenticate (this will use domain-wide delegation)
             await self.client.authenticate()
-            print(f"   ✅ Authentication successful with delegation")
+            print("   ✅ Authentication successful with delegation")
 
             # Test 1: Get user profile
-            print(f"   📧 Getting user profile...")
+            print("   📧 Getting user profile...")
             profile = await self.client.get_user_profile()
 
             if not profile:
-                print(f"   ❌ Failed to get user profile")
+                print("   ❌ Failed to get user profile")
                 return False
 
-            print(f"   ✅ Profile retrieved:")
+            print("   ✅ Profile retrieved:")
             print(f"      Email: {profile.get('emailAddress', 'N/A')}")
             print(f"      Messages: {profile.get('messagesTotal', 0)}")
             print(f"      Threads: {profile.get('threadsTotal', 0)}")
 
             # Test 2: List messages
-            print(f"   📬 Listing messages...")
+            print("   📬 Listing messages...")
             messages = await self.client.list_messages(max_results=5)
             print(f"   ✅ Listed {len(messages)} messages")
 
             # Test 3: Get labels
-            print(f"   🏷️  Getting labels...")
+            print("   🏷️  Getting labels...")
             labels = await self.client.get_labels()
             print(f"   ✅ Found {len(labels)} labels")
 
@@ -135,9 +132,9 @@ class GmailDelegationLiveTestRunner:
             if "not found" in error_msg.lower():
                 print(f"   💡 Hint: User '{user_email}' may not exist in workspace")
             elif "insufficient permissions" in error_msg.lower():
-                print(f"   💡 Hint: Service account may lack necessary scopes")
+                print("   💡 Hint: Service account may lack necessary scopes")
             elif "invalid" in error_msg.lower():
-                print(f"   💡 Hint: Email format or delegation setup may be invalid")
+                print("   💡 Hint: Email format or delegation setup may be invalid")
 
             self.test_results["errors"].append(
                 f"Delegation test failed for {user_email}: {error_msg}"
@@ -158,16 +155,14 @@ class GmailDelegationLiveTestRunner:
 
         try:
             # Create client with delegation
-            self.client = GmailClient(
-                credentials_json=self.credentials, user_email=user_email
-            )
+            self.client = GmailClient(credentials_json=self.credentials, user_email=user_email)
 
             # Authenticate
             await self.client.authenticate()
-            print(f"   ✅ Authenticated with delegation")
+            print("   ✅ Authenticated with delegation")
 
             # Feature 1: Get raw message
-            print(f"   📬 Testing message retrieval...")
+            print("   📬 Testing message retrieval...")
             messages = await self.client.list_messages(max_results=1)
 
             if messages:
@@ -176,10 +171,10 @@ class GmailDelegationLiveTestRunner:
                 if message:
                     print(f"   ✅ Retrieved message: {msg_id[:20]}...")
                 else:
-                    print(f"   ⚠️  Message retrieval returned empty")
+                    print("   ⚠️  Message retrieval returned empty")
 
             # Feature 2: Get label
-            print(f"   🏷️  Testing label retrieval...")
+            print("   🏷️  Testing label retrieval...")
             labels = await self.client.get_labels()
             if labels:
                 label_id = labels[0].get("id")
@@ -188,12 +183,12 @@ class GmailDelegationLiveTestRunner:
                     print(f"   ✅ Retrieved label: {label.get('name', 'N/A')}")
 
             # Feature 3: Draft operations
-            print(f"   📝 Testing draft operations...")
+            print("   📝 Testing draft operations...")
             drafts = await self.client.list_drafts(max_results=1)
             print(f"   ✅ Listed {len(drafts)} drafts")
 
             # Feature 4: Thread operations
-            print(f"   🧵 Testing thread operations...")
+            print("   🧵 Testing thread operations...")
             threads = await self.client.list_threads(max_results=1)
             print(f"   ✅ Listed {len(threads)} threads")
 
@@ -220,7 +215,7 @@ class GmailDelegationLiveTestRunner:
             # Add more workspace users here as needed
         ]
 
-        print(f"\n🔄 TESTING MULTIPLE DELEGATIONS")
+        print("\n🔄 TESTING MULTIPLE DELEGATIONS")
         print("=" * 60)
 
         success_count = 0
@@ -275,7 +270,7 @@ class GmailDelegationLiveTestRunner:
             passed = self.test_results["summary"]["passed"]
             failed = self.test_results["summary"]["failed"]
 
-            print(f"\n📈 RESULTS")
+            print("\n📈 RESULTS")
             print(f"   Passed: {passed}/{total}")
             print(f"   Failed: {failed}/{total}")
 

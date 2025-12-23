@@ -17,7 +17,7 @@ sys.stderr.reconfigure(line_buffering=True)
 
 # Suppress ALL logging from telegram module completely
 logging.disable(logging.CRITICAL)
-for logger_name in ['telegram', 'src.integrations.telegram', 'httpx', 'httpcore']:
+for logger_name in ["telegram", "src.integrations.telegram", "httpx", "httpcore"]:
     logging.getLogger(logger_name).setLevel(logging.CRITICAL)
     logging.getLogger(logger_name).disabled = True
 
@@ -28,7 +28,6 @@ from src.integrations.telegram import (
     TelegramClient,
     TelegramError,
 )
-
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8566771806:AAG_DzGw5H6cSeK7RsHS2CQAP9qWAb2Iu9o")
 CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID", "7233821403"))
@@ -76,15 +75,21 @@ Budget allocation for Q4 marketing campaigns.
 
 <i>👇 Click a button below to respond</i>""",
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Approve", callback_data="approve_budget"),
-                InlineKeyboardButton(text="❌ Reject", callback_data="reject_budget"),
-            ],
-            [InlineKeyboardButton(text="✏️ Edit", callback_data="edit_budget")],
-        ]),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Approve", callback_data="approve_budget"),
+                    InlineKeyboardButton(text="❌ Reject", callback_data="reject_budget"),
+                ],
+                [InlineKeyboardButton(text="✏️ Edit", callback_data="edit_budget")],
+            ]
+        ),
     )
-    demo_messages["budget"] = {"id": msg1.message_id, "title": "Q4 Marketing Budget", "status": "pending"}
+    demo_messages["budget"] = {
+        "id": msg1.message_id,
+        "title": "Q4 Marketing Budget",
+        "status": "pending",
+    }
     print(f"   ✅ Budget approval (msg {msg1.message_id})")
 
     await asyncio.sleep(0.3)
@@ -104,15 +109,21 @@ Partnership agreement with TechCorp Inc.
 
 <i>👇 Click a button below to respond</i>""",
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Approve", callback_data="approve_doc"),
-                InlineKeyboardButton(text="❌ Reject", callback_data="reject_doc"),
-            ],
-            [InlineKeyboardButton(text="✏️ Edit", callback_data="edit_doc")],
-        ]),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Approve", callback_data="approve_doc"),
+                    InlineKeyboardButton(text="❌ Reject", callback_data="reject_doc"),
+                ],
+                [InlineKeyboardButton(text="✏️ Edit", callback_data="edit_doc")],
+            ]
+        ),
     )
-    demo_messages["doc"] = {"id": msg2.message_id, "title": "Partnership Contract", "status": "pending"}
+    demo_messages["doc"] = {
+        "id": msg2.message_id,
+        "title": "Partnership Contract",
+        "status": "pending",
+    }
     print(f"   ✅ Document approval (msg {msg2.message_id})")
 
     await asyncio.sleep(0.3)
@@ -132,15 +143,21 @@ Artificial intelligence continues to transform industries...
 
 <i>👇 Click a button below to respond</i>""",
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Publish", callback_data="approve_content"),
-                InlineKeyboardButton(text="❌ Reject", callback_data="reject_content"),
-            ],
-            [InlineKeyboardButton(text="✏️ Edit", callback_data="edit_content")],
-        ]),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Publish", callback_data="approve_content"),
+                    InlineKeyboardButton(text="❌ Reject", callback_data="reject_content"),
+                ],
+                [InlineKeyboardButton(text="✏️ Edit", callback_data="edit_content")],
+            ]
+        ),
     )
-    demo_messages["content"] = {"id": msg3.message_id, "title": "Blog Post: AI Trends", "status": "pending"}
+    demo_messages["content"] = {
+        "id": msg3.message_id,
+        "title": "Blog Post: AI Trends",
+        "status": "pending",
+    }
     print(f"   ✅ Content approval (msg {msg3.message_id})")
 
     print("\n" + "=" * 60)
@@ -203,7 +220,9 @@ Artificial intelligence continues to transform industries...
                     try:
                         if action == "approve":
                             if demo["status"] != "pending":
-                                await client.answer_callback_query(cb_id, f"Already {demo['status']}", show_alert=True)
+                                await client.answer_callback_query(
+                                    cb_id, f"Already {demo['status']}", show_alert=True
+                                )
                                 continue
 
                             demo["status"] = "approved"
@@ -219,16 +238,24 @@ Artificial intelligence continues to transform industries...
 <b>✅ APPROVED</b>
 By: @{username}""",
                                 parse_mode=ParseMode.HTML,
-                                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                    [InlineKeyboardButton(text="✅ Status: Approved", callback_data="noop")],
-                                ]),
+                                reply_markup=InlineKeyboardMarkup(
+                                    inline_keyboard=[
+                                        [
+                                            InlineKeyboardButton(
+                                                text="✅ Status: Approved", callback_data="noop"
+                                            )
+                                        ],
+                                    ]
+                                ),
                             )
                             await client.answer_callback_query(cb_id, "✅ Approved!")
                             print(f"   ✅ {demo['title']} APPROVED by @{username}")
 
                         elif action == "reject":
                             if demo["status"] != "pending":
-                                await client.answer_callback_query(cb_id, f"Already {demo['status']}", show_alert=True)
+                                await client.answer_callback_query(
+                                    cb_id, f"Already {demo['status']}", show_alert=True
+                                )
                                 continue
 
                             # Ask for reason
@@ -244,7 +271,9 @@ By: @{username}""",
 
                         elif action == "edit":
                             if demo["status"] != "pending":
-                                await client.answer_callback_query(cb_id, f"Already {demo['status']}", show_alert=True)
+                                await client.answer_callback_query(
+                                    cb_id, f"Already {demo['status']}", show_alert=True
+                                )
                                 continue
 
                             demo["status"] = "editing"
@@ -259,12 +288,25 @@ By: @{username}""",
 <b>✏️ EDITING MODE</b>
 Editor: @{username}""",
                                 parse_mode=ParseMode.HTML,
-                                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                    [InlineKeyboardButton(text="✅ Submit Changes", callback_data=f"submit_{key}")],
-                                    [InlineKeyboardButton(text="❌ Cancel Edit", callback_data=f"cancel_{key}")],
-                                ]),
+                                reply_markup=InlineKeyboardMarkup(
+                                    inline_keyboard=[
+                                        [
+                                            InlineKeyboardButton(
+                                                text="✅ Submit Changes",
+                                                callback_data=f"submit_{key}",
+                                            )
+                                        ],
+                                        [
+                                            InlineKeyboardButton(
+                                                text="❌ Cancel Edit", callback_data=f"cancel_{key}"
+                                            )
+                                        ],
+                                    ]
+                                ),
                             )
-                            await client.answer_callback_query(cb_id, "Edit mode - make your changes")
+                            await client.answer_callback_query(
+                                cb_id, "Edit mode - make your changes"
+                            )
                             print(f"   ✏️ {demo['title']} in EDIT MODE by @{username}")
 
                         elif action == "submit":
@@ -280,13 +322,23 @@ Editor: @{username}""",
 
 <i>👇 Ready for approval</i>""",
                                 parse_mode=ParseMode.HTML,
-                                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                    [
-                                        InlineKeyboardButton(text="✅ Approve", callback_data=f"approve_{key}"),
-                                        InlineKeyboardButton(text="❌ Reject", callback_data=f"reject_{key}"),
-                                    ],
-                                    [InlineKeyboardButton(text="✏️ Edit Again", callback_data=f"edit_{key}")],
-                                ]),
+                                reply_markup=InlineKeyboardMarkup(
+                                    inline_keyboard=[
+                                        [
+                                            InlineKeyboardButton(
+                                                text="✅ Approve", callback_data=f"approve_{key}"
+                                            ),
+                                            InlineKeyboardButton(
+                                                text="❌ Reject", callback_data=f"reject_{key}"
+                                            ),
+                                        ],
+                                        [
+                                            InlineKeyboardButton(
+                                                text="✏️ Edit Again", callback_data=f"edit_{key}"
+                                            )
+                                        ],
+                                    ]
+                                ),
                             )
                             await client.answer_callback_query(cb_id, "✅ Changes submitted!")
                             print(f"   📝 {demo['title']} edits SUBMITTED by @{username}")
@@ -304,13 +356,23 @@ Editor: @{username}""",
 
 <i>👇 Awaiting approval</i>""",
                                 parse_mode=ParseMode.HTML,
-                                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                    [
-                                        InlineKeyboardButton(text="✅ Approve", callback_data=f"approve_{key}"),
-                                        InlineKeyboardButton(text="❌ Reject", callback_data=f"reject_{key}"),
-                                    ],
-                                    [InlineKeyboardButton(text="✏️ Edit", callback_data=f"edit_{key}")],
-                                ]),
+                                reply_markup=InlineKeyboardMarkup(
+                                    inline_keyboard=[
+                                        [
+                                            InlineKeyboardButton(
+                                                text="✅ Approve", callback_data=f"approve_{key}"
+                                            ),
+                                            InlineKeyboardButton(
+                                                text="❌ Reject", callback_data=f"reject_{key}"
+                                            ),
+                                        ],
+                                        [
+                                            InlineKeyboardButton(
+                                                text="✏️ Edit", callback_data=f"edit_{key}"
+                                            )
+                                        ],
+                                    ]
+                                ),
                             )
                             await client.answer_callback_query(cb_id, "Edit cancelled")
                             print(f"   🚫 Edit CANCELLED for {demo['title']}")
@@ -324,13 +386,15 @@ Editor: @{username}""",
 
                 # Handle message (rejection reason)
                 elif update.message and update.message.text:
-                    user = update.message.from_user if hasattr(update.message, 'from_user') else {}
+                    user = update.message.from_user if hasattr(update.message, "from_user") else {}
                     if isinstance(user, dict):
                         user_id = user.get("id", 0)
                         username = user.get("username") or user.get("first_name", "User")
                     else:
-                        user_id = getattr(user, 'id', 0)
-                        username = getattr(user, 'username', None) or getattr(user, 'first_name', 'User')
+                        user_id = getattr(user, "id", 0)
+                        username = getattr(user, "username", None) or getattr(
+                            user, "first_name", "User"
+                        )
 
                     text = update.message.text
 
@@ -352,9 +416,15 @@ Editor: @{username}""",
 <b>{demo['title']}</b>
 By: @{username}{reason_text}""",
                             parse_mode=ParseMode.HTML,
-                            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                                [InlineKeyboardButton(text="❌ Status: Rejected", callback_data="noop")],
-                            ]),
+                            reply_markup=InlineKeyboardMarkup(
+                                inline_keyboard=[
+                                    [
+                                        InlineKeyboardButton(
+                                            text="❌ Status: Rejected", callback_data="noop"
+                                        )
+                                    ],
+                                ]
+                            ),
                         )
 
                         await client.send_message(
@@ -363,7 +433,10 @@ By: @{username}{reason_text}""",
                             parse_mode=ParseMode.HTML,
                         )
 
-                        print(f"   ❌ {demo['title']} REJECTED by @{username}" + (f" - {reason}" if reason else ""))
+                        print(
+                            f"   ❌ {demo['title']} REJECTED by @{username}"
+                            + (f" - {reason}" if reason else "")
+                        )
 
         except TelegramError as e:
             if "query is too old" not in str(e).lower():

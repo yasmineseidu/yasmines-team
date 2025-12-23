@@ -147,9 +147,7 @@ class TestCreateDocument:
         assert client.create_document is not None
         assert callable(client.create_document)
 
-    def test_create_document_signature(
-        self, client: GoogleDocsClient
-    ) -> None:
+    def test_create_document_signature(self, client: GoogleDocsClient) -> None:
         """Test create_document method signature."""
         import inspect
 

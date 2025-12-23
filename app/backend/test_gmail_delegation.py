@@ -46,13 +46,13 @@ async def test_delegation():
 
     # Step 2: Create client with delegation
     user_email = "yasmine@smarterteam.ai"  # ← Change to your workspace email
-    print(f"\n[Step 2] Creating client with domain-wide delegation...")
+    print("\n[Step 2] Creating client with domain-wide delegation...")
     print(f"   Impersonating: {user_email}")
 
     try:
         client = GmailClient(
             credentials_json=creds,
-            user_email=user_email  # ← This enables domain-wide delegation
+            user_email=user_email,  # ← This enables domain-wide delegation
         )
         print("✅ Client created with delegation")
     except Exception as e:
@@ -60,11 +60,15 @@ async def test_delegation():
         return False
 
     # Step 3: Authenticate
-    print(f"\n[Step 3] Authenticating with domain-wide delegation...")
+    print("\n[Step 3] Authenticating with domain-wide delegation...")
     try:
         await client.authenticate()
         print("✅ Authentication successful")
-        print(f"   Access Token: {client.access_token[:30]}..." if client.access_token else "   Token: (JWT bearer)")
+        print(
+            f"   Access Token: {client.access_token[:30]}..."
+            if client.access_token
+            else "   Token: (JWT bearer)"
+        )
     except Exception as e:
         print(f"❌ FAILED: {e}")
         print("\nPossible causes:")
@@ -75,7 +79,7 @@ async def test_delegation():
         return False
 
     # Step 4: Test API call
-    print(f"\n[Step 4] Testing API call (get_user_profile)...")
+    print("\n[Step 4] Testing API call (get_user_profile)...")
     try:
         profile = await client.get_user_profile()
         print("✅ API call successful!")
@@ -98,10 +102,10 @@ async def test_delegation():
     print("=" * 60)
     print(f"\nYou can now access Gmail for: {user_email}")
     print("\nNext steps:")
-    print(f"  • Access other users: change user_email to their email")
-    print(f"  • Send emails: await client.send_message(...)")
-    print(f"  • List messages: await client.list_messages(...)")
-    print(f"  • Manage labels: await client.list_labels()")
+    print("  • Access other users: change user_email to their email")
+    print("  • Send emails: await client.send_message(...)")
+    print("  • List messages: await client.list_messages(...)")
+    print("  • Manage labels: await client.list_labels()")
     return True
 
 

@@ -47,8 +47,7 @@ def get_database_url() -> str:
     url = os.getenv("DATABASE_URL", "")
     if not url:
         raise ValueError(
-            "DATABASE_URL environment variable is required. "
-            "Set it in .env file at project root."
+            "DATABASE_URL environment variable is required. " "Set it in .env file at project root."
         )
     # Ensure standard postgresql:// prefix for sync driver
     if url.startswith("postgres://"):

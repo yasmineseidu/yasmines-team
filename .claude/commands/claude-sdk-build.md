@@ -477,7 +477,7 @@ grep -r "similar_functionality" src/ --include="*.py"
    from src.tools.existing_tool import existing_tool_function
    # OR
    from src.integrations.existing_service import ExistingServiceClient
-   
+
    # Use it in your agent
    result = await existing_tool_function(params)
    ```
@@ -487,15 +487,15 @@ grep -r "similar_functionality" src/ --include="*.py"
    # Check if it can be extended
    # Option A: Extend the existing tool
    from src.tools.existing_tool import BaseTool
-   
+
    class ExtendedTool(BaseTool):
        async def new_method(self, ...):
            # Add new functionality
            pass
-   
+
    # Option B: Create wrapper that uses existing tool
    from src.tools.existing_tool import existing_tool
-   
+
    async def enhanced_tool(params):
        # Pre-processing
        result = await existing_tool(params)
@@ -614,10 +614,10 @@ Database Interactions:
    ```bash
    # Check models
    grep -r "class.*Table" src/models/
-   
+
    # Check migrations
    ls -la app/backend/alembic/versions/
-   
+
    # Check schema specs
    find specs/database-schema -name "*{table_name}*"
    ```
@@ -627,7 +627,7 @@ Database Interactions:
    # Create Alembic migration
    cd app/backend
    alembic revision --autogenerate -m "add {table_name} table"
-   
+
    # Review and edit migration file
    # Ensure it follows existing patterns
    ```
@@ -636,9 +636,9 @@ Database Interactions:
    ```python
    """
    {Agent Name} Agent.
-   
+
    Handles: {description}
-   
+
    Database Flow:
    - Reads from: {table_name} (via {upstream_agent})
    - Writes to: {table_name} (consumed by {downstream_agent})
@@ -655,7 +655,7 @@ Database Interactions:
        # Set status flags
        # Trigger downstream agent if needed
        pass
-   
+
    # If using direct handoff
    async def _handoff_to_agent(self, agent_name: str, data: dict) -> None:
        """Direct handoff to downstream agent."""
@@ -1113,13 +1113,13 @@ class Test{Service}ClientLive:
     async def test_endpoint_1_success(self, client: {Service}Client, sample_data: dict) -> None:
         """Test endpoint_1 with real API - MUST PASS."""
         result = await client.endpoint_1(**sample_data["endpoint_1"])
-        
+
         # Verify response structure
         assert "field1" in result
         assert isinstance(result["field1"], str)
         assert "field2" in result
         assert isinstance(result["field2"], int)
-        
+
         # Verify response content (if applicable)
         assert result["field1"] is not None
         assert result["field2"] > 0
@@ -1127,7 +1127,7 @@ class Test{Service}ClientLive:
     async def test_endpoint_2_success(self, client: {Service}Client, sample_data: dict) -> None:
         """Test endpoint_2 with real API - MUST PASS."""
         result = await client.endpoint_2(**sample_data["endpoint_2"])
-        
+
         # Verify response
         assert isinstance(result, dict)
         # Add specific assertions
@@ -1172,22 +1172,22 @@ class {Service}Client(BaseIntegrationClient):
         **kwargs: Any
     ) -> dict[str, Any]:
         """Generic request method for any endpoint.
-        
+
         This allows calling new endpoints without code changes.
-        
+
         Args:
             method: HTTP method (GET, POST, PUT, DELETE, etc.)
             endpoint: API endpoint path (e.g., "/v1/new-endpoint")
             **kwargs: Additional request parameters
-            
+
         Returns:
             API response as dictionary.
-            
+
         Raises:
             {Service}APIError: If request fails.
         """
         url = f"{self.base_url}{endpoint}"
-        
+
         try:
             response = await self._http_client.request(
                 method=method,
@@ -1210,22 +1210,22 @@ class {Service}Client(BaseIntegrationClient):
         **kwargs: Any
     ) -> dict[str, Any]:
         """Call any endpoint dynamically - future-proof.
-        
+
         This method allows calling new endpoints that may be
         released in the future without requiring code changes.
-        
+
         Example:
             >>> result = await client.call_endpoint(
             ...     "/v1/new-feature",
             ...     method="POST",
             ...     json={"param": "value"}
             ... )
-        
+
         Args:
             endpoint: Endpoint path (e.g., "/v1/new-endpoint")
             method: HTTP method (default: "GET")
             **kwargs: Request parameters (json, params, etc.)
-            
+
         Returns:
             API response.
         """
@@ -1287,8 +1287,8 @@ touch docs/api-endpoints/{service}.md
 ## Endpoints
 
 ### 1. endpoint_1
-**Method:** `POST`  
-**Path:** `/v1/endpoint_1`  
+**Method:** `POST`
+**Path:** `/v1/endpoint_1`
 **Description:** [Description of what this endpoint does]
 
 **Request Parameters:**

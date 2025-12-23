@@ -551,4 +551,3 @@ class TestExaClientFindSimilarAndContents:
             payload = call_args.kwargs["json"]
             assert payload["contents"]["text"] is True
             assert payload["contents"]["highlights"] is True
-

@@ -33,7 +33,6 @@ from typing import Any
 import pytest
 
 from src.integrations.google_docs import (
-    GoogleDocsAuthError,
     GoogleDocsClient,
     GoogleDocsError,
 )
@@ -109,9 +108,7 @@ def sample_data() -> dict[str, Any]:
             "rows": 3,
             "columns": 3,
         },
-        "share_email": os.getenv(
-            "TEST_EMAIL", "test@example.com"
-        ),  # Use TEST_EMAIL from env
+        "share_email": os.getenv("TEST_EMAIL", "test@example.com"),  # Use TEST_EMAIL from env
         "colors": {
             "red": {"red": 1.0, "green": 0.0, "blue": 0.0},
             "blue": {"red": 0.0, "green": 0.0, "blue": 1.0},
@@ -148,9 +145,7 @@ class TestGoogleDocsLiveAPI:
         logger.info(f"✅ Created document: {self.document_id}")
 
     @pytest.mark.asyncio
-    async def test_02_get_document(
-        self, client: GoogleDocsClient
-    ) -> None:
+    async def test_02_get_document(self, client: GoogleDocsClient) -> None:
         """Test retrieving a real document."""
         if not hasattr(self, "document_id"):
             pytest.skip("No document created in previous test")
@@ -197,9 +192,7 @@ class TestGoogleDocsLiveAPI:
         logger.info(f"✅ Inserted Unicode text: {text}")
 
     @pytest.mark.asyncio
-    async def test_05_format_text_bold(
-        self, client: GoogleDocsClient
-    ) -> None:
+    async def test_05_format_text_bold(self, client: GoogleDocsClient) -> None:
         """Test formatting text as bold."""
         if not hasattr(self, "document_id"):
             pytest.skip("No document created")
@@ -216,9 +209,7 @@ class TestGoogleDocsLiveAPI:
         logger.info("✅ Applied bold formatting")
 
     @pytest.mark.asyncio
-    async def test_06_format_text_italic(
-        self, client: GoogleDocsClient
-    ) -> None:
+    async def test_06_format_text_italic(self, client: GoogleDocsClient) -> None:
         """Test formatting text as italic."""
         if not hasattr(self, "document_id"):
             pytest.skip("No document created")
@@ -271,9 +262,7 @@ class TestGoogleDocsLiveAPI:
         logger.info(f"✅ Created table: {config['rows']}x{config['columns']}")
 
     @pytest.mark.asyncio
-    async def test_09_batch_update(
-        self, client: GoogleDocsClient
-    ) -> None:
+    async def test_09_batch_update(self, client: GoogleDocsClient) -> None:
         """Test batch update with multiple operations."""
         if not hasattr(self, "document_id"):
             pytest.skip("No document created")
@@ -309,9 +298,7 @@ class TestGoogleDocsLiveAPI:
             pytest.skip("No document created")
 
         email = sample_data["share_email"]
-        result = await client.share_document(
-            self.document_id, email=email, role="reader"
-        )
+        result = await client.share_document(self.document_id, email=email, role="reader")
 
         assert result is not None
         # Note: If email is test@example.com, it might fail with invalid email
@@ -319,9 +306,7 @@ class TestGoogleDocsLiveAPI:
         logger.info(f"✅ Attempted to share with {email}")
 
     @pytest.mark.asyncio
-    async def test_11_get_permissions(
-        self, client: GoogleDocsClient
-    ) -> None:
+    async def test_11_get_permissions(self, client: GoogleDocsClient) -> None:
         """Test getting document permissions."""
         if not hasattr(self, "document_id"):
             pytest.skip("No document created")
@@ -334,9 +319,7 @@ class TestGoogleDocsLiveAPI:
         logger.info(f"✅ Retrieved permissions: {len(result)} entries")
 
     @pytest.mark.asyncio
-    async def test_12_cleanup_document(
-        self, client: GoogleDocsClient
-    ) -> None:
+    async def test_12_cleanup_document(self, client: GoogleDocsClient) -> None:
         """Clean up test document.
 
         Note: Google Docs API doesn't have a delete endpoint.
@@ -346,9 +329,7 @@ class TestGoogleDocsLiveAPI:
             pytest.skip("No document created")
 
         # Document is left in Drive for manual cleanup or future automation
-        logger.info(
-            f"⚠️  Test document created: {self.document_id}"
-        )
+        logger.info(f"⚠️  Test document created: {self.document_id}")
         logger.info("   (Manual cleanup recommended or implement Drive API delete)")
 
 
@@ -364,9 +345,7 @@ class TestEndpointDiscovery:
     """
 
     @pytest.mark.asyncio
-    async def test_endpoint_discovery(
-        self, client: GoogleDocsClient
-    ) -> None:
+    async def test_endpoint_discovery(self, client: GoogleDocsClient) -> None:
         """Verify all expected endpoints exist."""
         expected_endpoints = [
             "authenticate",
@@ -381,13 +360,9 @@ class TestEndpointDiscovery:
         ]
 
         for endpoint_name in expected_endpoints:
-            assert hasattr(
-                client, endpoint_name
-            ), f"Missing endpoint: {endpoint_name}"
+            assert hasattr(client, endpoint_name), f"Missing endpoint: {endpoint_name}"
             endpoint = getattr(client, endpoint_name)
-            assert callable(
-                endpoint
-            ), f"Endpoint not callable: {endpoint_name}"
+            assert callable(endpoint), f"Endpoint not callable: {endpoint_name}"
 
         logger.info(f"✅ All {len(expected_endpoints)} endpoints discovered")
 
@@ -422,9 +397,7 @@ class TestEndpointDiscovery:
             actual_params = list(sig.parameters.keys())
 
             for param in expected_params:
-                assert (
-                    param in actual_params
-                ), f"{endpoint_name}: missing parameter '{param}'"
+                assert param in actual_params, f"{endpoint_name}: missing parameter '{param}'"
 
         logger.info("✅ All endpoint signatures verified")
 
@@ -478,9 +451,7 @@ class TestRealWorldWorkflows:
     ) -> None:
         """Test workflow: create doc → add table → add content."""
         # Create document
-        doc = await client.create_document(
-            title=f"Table Test {datetime.now().isoformat()}"
-        )
+        doc = await client.create_document(title=f"Table Test {datetime.now().isoformat()}")
         doc_id = doc["documentId"]
         logger.info(f"✅ Created document: {doc_id}")
 
@@ -495,9 +466,7 @@ class TestRealWorldWorkflows:
         logger.info(f"✅ Created table: {config['rows']}x{config['columns']}")
 
         # Insert content
-        insert_result = await client.insert_text(
-            doc_id, sample_data["text_samples"][1]
-        )
+        insert_result = await client.insert_text(doc_id, sample_data["text_samples"][1])
         assert insert_result["documentId"] == doc_id
         logger.info("✅ Added content to document")
 
@@ -511,9 +480,7 @@ class TestErrorHandlingLive:
     """Test error handling with real API."""
 
     @pytest.mark.asyncio
-    async def test_get_nonexistent_document(
-        self, client: GoogleDocsClient
-    ) -> None:
+    async def test_get_nonexistent_document(self, client: GoogleDocsClient) -> None:
         """Test error handling for non-existent document."""
         with pytest.raises((GoogleDocsError, Exception)):
             await client.get_document("nonexistent-document-id-12345")
