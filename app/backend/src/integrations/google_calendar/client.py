@@ -27,7 +27,7 @@ import json
 import logging
 import os
 import random
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, cast
 
 import httpx
@@ -85,6 +85,7 @@ class GoogleCalendarClient:
         credentials_str: str | None = None,
         credentials_path: str | None = None,
         access_token: str | None = None,
+        delegated_user: str | None = None,
         timeout: float = 30.0,
         max_retries: int = 3,
         retry_base_delay: float = 1.0,
@@ -97,6 +98,7 @@ class GoogleCalendarClient:
             credentials_str: OAuth2 service account credentials as JSON string
             credentials_path: Path to service account credentials JSON file
             access_token: Pre-obtained OAuth2 access token (optional)
+            delegated_user: Email of user to impersonate (domain-wide delegation)
             timeout: Request timeout in seconds (default: 30)
             max_retries: Maximum retry attempts (default: 3)
             retry_base_delay: Base delay for exponential backoff (default: 1.0)
@@ -129,6 +131,7 @@ class GoogleCalendarClient:
         self.base_url = self.CALENDAR_API_BASE
         self.credentials_json = credentials_json or {}
         self.access_token = access_token
+        self.delegated_user = delegated_user
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
@@ -284,6 +287,7 @@ class GoogleCalendarClient:
         Authenticate using service account credentials.
 
         Implements JWT bearer token flow for service account authentication.
+        Supports domain-wide delegation when delegated_user is specified.
 
         Raises:
             GoogleCalendarAuthError: If JWT generation or token exchange fails
@@ -292,11 +296,24 @@ class GoogleCalendarClient:
             from google.auth.transport.requests import Request
             from google.oauth2 import service_account
 
+            # Use single scope for domain-wide delegation (most common setup)
+            # or full scopes for service account's own calendar
+            if self.delegated_user:
+                # Domain-wide delegation typically only authorizes the main calendar scope
+                scopes = ["https://www.googleapis.com/auth/calendar"]
+            else:
+                scopes = self.DEFAULT_SCOPES
+
             # Create credentials from service account JSON
             credentials = service_account.Credentials.from_service_account_info(
                 self.credentials_json,
-                scopes=self.DEFAULT_SCOPES,
+                scopes=scopes,
             )
+
+            # Apply domain-wide delegation if delegated_user is specified
+            if self.delegated_user:
+                credentials = credentials.with_subject(self.delegated_user)
+                logger.info(f"Using domain-wide delegation for: {self.delegated_user}")
 
             # Refresh to get access token
             request = Request()
@@ -599,9 +616,13 @@ class GoogleCalendarClient:
             }
 
             if time_min:
-                params["timeMin"] = time_min.isoformat() + "Z"
+                # Convert to UTC and format as RFC3339 with Z suffix
+                utc_min = time_min.astimezone(UTC) if time_min.tzinfo is not None else time_min
+                params["timeMin"] = utc_min.strftime("%Y-%m-%dT%H:%M:%SZ")
             if time_max:
-                params["timeMax"] = time_max.isoformat() + "Z"
+                # Convert to UTC and format as RFC3339 with Z suffix
+                utc_max = time_max.astimezone(UTC) if time_max.tzinfo is not None else time_max
+                params["timeMax"] = utc_max.strftime("%Y-%m-%dT%H:%M:%SZ")
             if query:
                 params["q"] = query
             if page_token:
@@ -990,6 +1011,117 @@ class GoogleCalendarClient:
                 "healthy": False,
                 "message": f"Health check failed: {e}",
             }
+
+    # =========================================================================
+    # Future-Proof Generic API Methods
+    # =========================================================================
+
+    async def request(
+        self,
+        method: str,
+        endpoint: str,
+        params: dict[str, Any] | None = None,
+        json_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Make a generic request to any Google Calendar API endpoint.
+
+        This method provides future-proof access to new endpoints that may be
+        added to the API without requiring client updates.
+
+        Args:
+            method: HTTP method (GET, POST, PUT, PATCH, DELETE)
+            endpoint: API endpoint path (e.g., "/calendars/primary/events")
+            params: Query parameters
+            json_data: JSON body data for POST/PUT/PATCH requests
+
+        Returns:
+            Parsed JSON response
+
+        Raises:
+            GoogleCalendarAPIError: If request fails
+
+        Example:
+            >>> # Access a hypothetical new endpoint
+            >>> response = await client.request(
+            ...     method="GET",
+            ...     endpoint="/calendars/primary/settings",
+            ...     params={"fields": "id,summary"}
+            ... )
+        """
+        url = f"{self.CALENDAR_API_BASE}{endpoint}"
+        kwargs: dict[str, Any] = {}
+
+        if params:
+            kwargs["params"] = params
+        if json_data:
+            kwargs["json"] = json_data
+
+        return await self._request_with_retry(method, url, **kwargs)
+
+    async def get(self, endpoint: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """
+        Make a GET request to any Google Calendar API endpoint.
+
+        Args:
+            endpoint: API endpoint path
+            params: Query parameters
+
+        Returns:
+            Parsed JSON response
+        """
+        return await self.request("GET", endpoint, params=params)
+
+    async def post(
+        self,
+        endpoint: str,
+        json_data: dict[str, Any],
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Make a POST request to any Google Calendar API endpoint.
+
+        Args:
+            endpoint: API endpoint path
+            json_data: JSON body data
+            params: Query parameters
+
+        Returns:
+            Parsed JSON response
+        """
+        return await self.request("POST", endpoint, params=params, json_data=json_data)
+
+    async def patch(
+        self,
+        endpoint: str,
+        json_data: dict[str, Any],
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Make a PATCH request to any Google Calendar API endpoint.
+
+        Args:
+            endpoint: API endpoint path
+            json_data: JSON body data
+            params: Query parameters
+
+        Returns:
+            Parsed JSON response
+        """
+        return await self.request("PATCH", endpoint, params=params, json_data=json_data)
+
+    async def delete(self, endpoint: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """
+        Make a DELETE request to any Google Calendar API endpoint.
+
+        Args:
+            endpoint: API endpoint path
+            params: Query parameters
+
+        Returns:
+            Parsed JSON response
+        """
+        return await self.request("DELETE", endpoint, params=params)
 
     async def close(self) -> None:
         """Close the HTTP client and release resources."""

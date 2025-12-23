@@ -116,6 +116,7 @@ class GoogleDocsClient:
         credentials_json: dict[str, Any] | None = None,
         credentials_str: str | None = None,
         access_token: str | None = None,
+        delegated_user: str | None = None,
         timeout: float = 30.0,
         max_retries: int = 3,
         retry_base_delay: float = 1.0,
@@ -127,6 +128,7 @@ class GoogleDocsClient:
             credentials_json: Service account credentials as dictionary
             credentials_str: Service account credentials as JSON string
             access_token: Pre-obtained OAuth2 access token (optional)
+            delegated_user: Email of user to impersonate (domain-wide delegation)
             timeout: Request timeout in seconds (default: 30)
             max_retries: Maximum retry attempts (default: 3)
             retry_base_delay: Base delay for exponential backoff (default: 1.0)
@@ -160,6 +162,7 @@ class GoogleDocsClient:
         self.base_url = self.DOCS_API_BASE
         self.credentials_json = credentials_json or {}
         self.access_token = access_token
+        self.delegated_user = delegated_user
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
@@ -241,6 +244,7 @@ class GoogleDocsClient:
         Authenticate using service account credentials.
 
         Implements JWT bearer token flow for service account authentication.
+        Supports domain-wide delegation when delegated_user is specified.
 
         Raises:
             GoogleDocsAuthError: If JWT generation or token exchange fails
@@ -249,11 +253,23 @@ class GoogleDocsClient:
             from google.auth.transport.requests import Request
             from google.oauth2 import service_account
 
+            # Use single scope for domain-wide delegation (most common setup)
+            # or full scopes for service account's own documents
+            if self.delegated_user:
+                scopes = ["https://www.googleapis.com/auth/documents"]
+            else:
+                scopes = self.DEFAULT_SCOPES
+
             # Create credentials from service account JSON
             credentials = service_account.Credentials.from_service_account_info(
                 self.credentials_json,
-                scopes=self.DEFAULT_SCOPES,
+                scopes=scopes,
             )
+
+            # Apply domain-wide delegation if delegated_user is specified
+            if self.delegated_user:
+                credentials = credentials.with_subject(self.delegated_user)
+                logger.info(f"Using domain-wide delegation for: {self.delegated_user}")
 
             # Refresh to get access token
             request = Request()
