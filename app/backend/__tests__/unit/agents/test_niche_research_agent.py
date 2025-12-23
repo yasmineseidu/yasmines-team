@@ -1,0 +1,374 @@
+"""
+Unit tests for Niche Research Agent.
+
+Tests the core functionality of the niche research agent including
+scoring, pain point extraction, and opportunity identification.
+"""
+
+import sys
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+# Standard library imports first
+# Third-party imports
+# Local imports
+from src.agents.niche_research_agent import NicheResearchAgent, NicheResearchAgentError
+
+# Add fixtures directory to path for local imports
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "fixtures"))
+from niche_research_fixtures import mock_reddit_post, mock_reddit_subreddit
+
+
+class TestNicheResearchAgentInitialization:
+    """Tests for NicheResearchAgent initialization."""
+
+    def test_has_correct_name(self) -> None:
+        agent = NicheResearchAgent()
+        assert agent.name == "niche_research_agent"
+
+    def test_stores_api_keys_from_params(self) -> None:
+        # pragma: allowlist secret
+        agent = NicheResearchAgent(
+            reddit_client_id="test_id",  # pragma: allowlist secret
+            reddit_client_secret="test_secret",  # pragma: allowlist secret
+            brave_api_key="test_brave_key",  # pragma: allowlist secret
+            tavily_api_key="test_tavily_key",  # pragma: allowlist secret
+        )
+        assert agent.reddit_client_id == "test_id"
+        assert agent.reddit_client_secret == "test_secret"  # pragma: allowlist secret
+        assert agent.brave_api_key == "test_brave_key"  # pragma: allowlist secret
+        assert agent.tavily_api_key == "test_tavily_key"  # pragma: allowlist secret
+
+    def test_system_prompt_returns_string(self) -> None:
+        agent = NicheResearchAgent()
+        prompt = agent.system_prompt
+        assert isinstance(prompt, str)
+        assert "Niche Research Agent" in prompt
+
+
+class TestCalculateEngagementScore:
+    """Tests for _calculate_engagement_score method."""
+
+    @pytest.fixture
+    def agent(self) -> NicheResearchAgent:
+        return NicheResearchAgent()
+
+    def test_high_engagement_score(self, agent: NicheResearchAgent) -> None:
+        subreddit = mock_reddit_subreddit(
+            name="high_engagement",
+            subscribers=100000,
+            active_users=10000,  # 10% active ratio
+        )
+        score = agent._calculate_engagement_score(subreddit)
+        # Active ratio: min(0.10 * 20, 5.0) = 2.0
+        # Sub score: min(log10(100000) / 2, 5.0) = 2.5
+        # Total: 2.0 + 2.5 = 4.5
+        assert score > 4.0
+
+    def test_low_engagement_score(self, agent: NicheResearchAgent) -> None:
+        subreddit = mock_reddit_subreddit(
+            name="low_engagement",
+            subscribers=10000,
+            active_users=100,  # 1% active ratio
+        )
+        score = agent._calculate_engagement_score(subreddit)
+        assert score < 5.0
+
+    def test_zero_subscribers(self, agent: NicheResearchAgent) -> None:
+        subreddit = mock_reddit_subreddit(
+            name="zero_subs",
+            subscribers=0,
+            active_users=0,
+        )
+        score = agent._calculate_engagement_score(subreddit)
+        assert score == 0.0
+
+    def test_zero_active_users(self, agent: NicheResearchAgent) -> None:
+        subreddit = mock_reddit_subreddit(
+            name="zero_active",
+            subscribers=10000,
+            active_users=0,
+        )
+        score = agent._calculate_engagement_score(subreddit)
+        assert score > 0.0  # Still gets subscriber score
+
+
+class TestCalculateRelevanceScore:
+    """Tests for _calculate_relevance_score method."""
+
+    @pytest.fixture
+    def agent(self) -> NicheResearchAgent:
+        return NicheResearchAgent()
+
+    def test_high_relevance_with_keywords(self, agent: NicheResearchAgent) -> None:
+        subreddit = mock_reddit_subreddit(
+            name="entrepreneur",
+            subscribers=50000,
+        )
+        subreddit.title = "Entrepreneurship and Startups"
+        subreddit.public_description = "A community for entrepreneurs"
+
+        keywords = ["entrepreneur", "startup", "business"]
+        score = agent._calculate_relevance_score(subreddit, keywords)
+        # "entrepreneur" appears 2 times (in title and description)
+        # So score should be 2
+        assert score >= 1.0
+
+    def test_low_relevance_no_keywords(self, agent: NicheResearchAgent) -> None:
+        subreddit = mock_reddit_subreddit(
+            name="gaming",
+            subscribers=50000,
+        )
+        keywords = ["entrepreneur", "startup", "business"]
+        score = agent._calculate_relevance_score(subreddit, keywords)
+        assert score == 0.0
+
+    def test_empty_keywords(self, agent: NicheResearchAgent) -> None:
+        subreddit = mock_reddit_subreddit()
+        score = agent._calculate_relevance_score(subreddit, [])
+        assert score == 0.0
+
+
+class TestExtractPainContext:
+    """Tests for _extract_pain_context method."""
+
+    @pytest.fixture
+    def agent(self) -> NicheResearchAgent:
+        return NicheResearchAgent()
+
+    def test_extracts_context_with_indicator(self, agent: NicheResearchAgent) -> None:
+        title = "Struggling to find customers for my SaaS"
+        context = agent._extract_pain_context(title, "struggling")
+        assert context == title
+
+    def test_returns_none_if_indicator_not_found(self, agent: NicheResearchAgent) -> None:
+        title = "Just sharing my success story"
+        context = agent._extract_pain_context(title, "struggling")
+        assert context is None
+
+    def test_handles_empty_title(self, agent: NicheResearchAgent) -> None:
+        context = agent._extract_pain_context("", "test")
+        # Returns None for empty titles since indicator is not found
+        assert context is None
+
+
+class TestResearchNiche:
+    """Tests for research_niche method."""
+
+    @pytest.fixture
+    def agent(self) -> NicheResearchAgent:
+        # pragma: allowlist secret
+        return NicheResearchAgent(
+            reddit_client_id="test_id",  # pragma: allowlist secret
+            reddit_client_secret="test_secret",  # pragma: allowlist secret
+            brave_api_key="test_brave_key",  # pragma: allowlist secret
+            tavily_api_key="test_tavily_key",  # pragma: allowlist secret
+        )
+
+    @pytest.mark.asyncio
+    async def test_requires_non_empty_query(self, agent: NicheResearchAgent) -> None:
+        with pytest.raises(NicheResearchAgentError, match="Query is required"):
+            await agent.research_niche("")
+
+        with pytest.raises(NicheResearchAgentError, match="Query is required"):
+            await agent.research_niche("   ")
+
+    @pytest.mark.asyncio
+    async def test_research_niche_success(self, agent: NicheResearchAgent) -> None:
+        """Test successful niche research with mocked dependencies."""
+
+        # Mock Reddit client
+        mock_reddit_client = AsyncMock()
+        mock_reddit_client.__aenter__ = AsyncMock(return_value=mock_reddit_client)
+        mock_reddit_client.__aexit__ = AsyncMock()
+
+        # Mock search results
+        mock_search_result = MagicMock()
+        mock_search_result.posts = [
+            mock_reddit_post("entrepreneur", "Entrepreneurship tips"),
+        ]
+        mock_reddit_client.search = AsyncMock(return_value=mock_search_result)
+
+        # Mock subreddit
+        mock_subreddit = mock_reddit_subreddit("entrepreneur", 50000, 5000)
+        mock_reddit_client.get_subreddit = AsyncMock(return_value=mock_subreddit)
+
+        # Mock subreddit posts
+        mock_reddit_client.get_subreddit_posts = AsyncMock(
+            return_value=[
+                mock_reddit_post(title="Struggling to find customers"),
+                mock_reddit_post(title="Need help with marketing"),
+            ]
+        )
+
+        # Mock Brave client
+        mock_brave_client = AsyncMock()
+        mock_brave_client.__aenter__ = AsyncMock(return_value=mock_brave_client)
+        mock_brave_client.__aexit__ = AsyncMock()
+
+        mock_brave_response = MagicMock()
+        mock_brave_response.results = []
+        mock_brave_client.search = AsyncMock(return_value=mock_brave_response)
+
+        # Mock Tavily client
+        mock_tavily_client = AsyncMock()
+        mock_tavily_client.__aenter__ = AsyncMock(return_value=mock_tavily_client)
+        mock_tavily_client.__aexit__ = AsyncMock()
+
+        mock_tavily_response = MagicMock()
+        mock_tavily_response.results = []
+        mock_tavily_client.research = AsyncMock(return_value=mock_tavily_response)
+
+        # Patch the client creation methods
+        with (
+            patch.object(agent, "_get_reddit_client", return_value=mock_reddit_client),
+            patch.object(agent, "_get_brave_client", return_value=mock_brave_client),
+            patch.object(agent, "_get_tavily_client", return_value=mock_tavily_client),
+        ):
+            result = await agent.research_niche("AI tools for entrepreneurs")
+
+        # Verify result structure
+        assert result.niche == "AI tools for entrepreneurs"
+        assert isinstance(result.subreddits, list)
+        assert isinstance(result.pain_points, list)
+        assert isinstance(result.opportunities, list)
+        assert result.total_subscribers >= 0
+        assert result.total_active_users >= 0
+
+    @pytest.mark.asyncio
+    async def test_research_niche_with_custom_config(self, agent: NicheResearchAgent) -> None:
+        """Test niche research with custom configuration parameters."""
+
+        # Mock all clients
+        mock_reddit_client = AsyncMock()
+        mock_reddit_client.__aenter__ = AsyncMock(return_value=mock_reddit_client)
+        mock_reddit_client.__aexit__ = AsyncMock()
+
+        mock_search_result = MagicMock()
+        mock_search_result.posts = []
+        mock_reddit_client.search = AsyncMock(return_value=mock_search_result)
+        mock_reddit_client.get_subreddit = AsyncMock(return_value=mock_reddit_subreddit())
+        mock_reddit_client.get_subreddit_posts = AsyncMock(return_value=[])
+
+        mock_brave_client = AsyncMock()
+        mock_brave_client.__aenter__ = AsyncMock(return_value=mock_brave_client)
+        mock_brave_client.__aexit__ = AsyncMock()
+        mock_brave_client.search = AsyncMock(return_value=MagicMock(results=[]))
+
+        mock_tavily_client = AsyncMock()
+        mock_tavily_client.__aenter__ = AsyncMock(return_value=mock_tavily_client)
+        mock_tavily_client.__aexit__ = AsyncMock()
+        mock_tavily_client.research = AsyncMock(return_value=MagicMock(results=[]))
+
+        with (
+            patch.object(agent, "_get_reddit_client", return_value=mock_reddit_client),
+            patch.object(agent, "_get_brave_client", return_value=mock_brave_client),
+            patch.object(agent, "_get_tavily_client", return_value=mock_tavily_client),
+        ):
+            result = await agent.research_niche(
+                "test niche",
+                max_subreddits=5,
+                posts_per_subreddit=10,
+                min_subscribers=5000,
+                engagement_weight=0.7,
+                relevance_weight=0.3,
+            )
+
+        # Verify the result was created
+        assert result.niche == "test niche"
+
+
+class TestHealthCheck:
+    """Tests for health_check method."""
+
+    @pytest.fixture
+    def agent(self) -> NicheResearchAgent:
+        # pragma: allowlist secret
+        return NicheResearchAgent(
+            reddit_client_id="test_id",  # pragma: allowlist secret
+            reddit_client_secret="test_secret",  # pragma: allowlist secret
+            brave_api_key="test_brave_key",  # pragma: allowlist secret
+            tavily_api_key="test_tavily_key",  # pragma: allowlist secret
+        )
+
+    @pytest.mark.asyncio
+    async def test_health_check_with_all_services_healthy(self, agent: NicheResearchAgent) -> None:
+        """Test health check when all services are healthy."""
+
+        # Mock all clients
+        mock_reddit_client = AsyncMock()
+        mock_reddit_client.__aenter__ = AsyncMock(return_value=mock_reddit_client)
+        mock_reddit_client.__aexit__ = AsyncMock()
+        mock_reddit_client.search = AsyncMock(return_value=MagicMock(posts=[]))
+
+        mock_brave_client = AsyncMock()
+        mock_brave_client.__aenter__ = AsyncMock(return_value=mock_brave_client)
+        mock_brave_client.__aexit__ = AsyncMock()
+        mock_brave_client.search = AsyncMock(return_value=MagicMock(results=[]))
+
+        mock_tavily_client = AsyncMock()
+        mock_tavily_client.__aenter__ = AsyncMock(return_value=mock_tavily_client)
+        mock_tavily_client.__aexit__ = AsyncMock()
+        mock_tavily_client.search = AsyncMock(return_value=MagicMock(results=[]))
+
+        with (
+            patch.object(agent, "_get_reddit_client", return_value=mock_reddit_client),
+            patch.object(agent, "_get_brave_client", return_value=mock_brave_client),
+            patch.object(agent, "_get_tavily_client", return_value=mock_tavily_client),
+        ):
+            health = await agent.health_check()
+
+        assert health["agent"] == "niche_research_agent"
+        assert "services" in health
+        assert "reddit" in health["services"]
+        assert "brave" in health["services"]
+        assert "tavily" in health["services"]
+
+    @pytest.mark.asyncio
+    async def test_health_check_with_no_credentials(self) -> None:
+        """Test health check when no credentials are provided."""
+        agent = NicheResearchAgent()
+        health = await agent.health_check()
+
+        assert health["healthy"] is False
+        assert health["services"]["reddit"]["healthy"] is False
+        assert "No credentials" in health["services"]["reddit"]["error"]
+
+
+class TestGetClientMethods:
+    """Tests for client getter methods."""
+
+    @pytest.mark.asyncio
+    async def test_get_reddit_client_without_credentials(self) -> None:
+        agent = NicheResearchAgent()
+        with pytest.raises(NicheResearchAgentError, match="Reddit credentials required"):
+            await agent._get_reddit_client()
+
+    @pytest.mark.asyncio
+    async def test_get_brave_client_without_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Clear any environment variables
+        monkeypatch.delenv("BRAVE_API_KEY", raising=False)
+        agent = NicheResearchAgent(brave_api_key="")
+        with pytest.raises(NicheResearchAgentError, match="Brave API key required"):
+            await agent._get_brave_client()
+
+    @pytest.mark.asyncio
+    async def test_get_tavily_client_without_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Clear any environment variables
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        agent = NicheResearchAgent(tavily_api_key="")
+        with pytest.raises(NicheResearchAgentError, match="Tavily API key required"):
+            await agent._get_tavily_client()
+
+    @pytest.mark.asyncio
+    async def test_get_reddit_client_with_credentials(self) -> None:
+        # pragma: allowlist secret
+        agent = NicheResearchAgent(
+            reddit_client_id="test_id",  # pragma: allowlist secret
+            reddit_client_secret="test_secret",  # pragma: allowlist secret
+        )
+        client = await agent._get_reddit_client()
+        assert client is not None
+        assert client.client_id == "test_id"
