@@ -3,10 +3,16 @@ Unit tests for Niche Research Agent.
 
 Tests the core functionality of the niche research agent including
 scoring, pain point extraction, and opportunity identification.
+
+Also tests resilient integration features including:
+- Tenacity retry with exponential backoff
+- Token bucket rate limiting
+- Enhanced error handling for 4xx/5xx/timeout/connection errors
 """
 
 import sys
 from pathlib import Path
+from time import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,11 +20,64 @@ import pytest
 # Standard library imports first
 # Third-party imports
 # Local imports
-from src.agents.niche_research_agent import NicheResearchAgent, NicheResearchAgentError
+from src.agents.niche_research_agent import (
+    AuthenticationFailedError,
+    NicheResearchAgent,
+    NicheResearchAgentError,
+    RateLimitExceededError,
+    ServiceUnavailableError,
+    TokenBucketRateLimiter,
+)
 
 # Add fixtures directory to path for local imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "fixtures"))
 from niche_research_fixtures import mock_reddit_post, mock_reddit_subreddit
+
+
+class TestTokenBucketRateLimiter:
+    """Tests for TokenBucketRateLimiter."""
+
+    @pytest.mark.asyncio
+    async def test_acquire_within_capacity(self) -> None:
+        """Test acquiring tokens within capacity."""
+        limiter = TokenBucketRateLimiter(capacity=10, refill_rate=1.0, service_name="Test")
+        # Should acquire immediately
+        start = time()
+        await limiter.acquire(5)
+        elapsed = time() - start
+        assert elapsed < 0.1  # Should be nearly instant
+
+    @pytest.mark.asyncio
+    async def test_acquire_blocks_when_empty(self) -> None:
+        """Test that acquiring waits when tokens are empty."""
+        limiter = TokenBucketRateLimiter(capacity=5, refill_rate=100.0, service_name="Test")
+        # Drain all tokens
+        await limiter.acquire(5)
+
+        # Next acquire should wait for refill
+        start = time()
+        await limiter.acquire(1)
+        elapsed = time() - start
+        # Should wait approximately 0.01s for 1 token at 100 tokens/s
+        assert elapsed >= 0.005
+
+    @pytest.mark.asyncio
+    async def test_refill_over_time(self) -> None:
+        """Test that tokens refill over time."""
+        limiter = TokenBucketRateLimiter(capacity=10, refill_rate=10.0, service_name="Test")
+        # Drain tokens
+        await limiter.acquire(10)
+
+        # Wait for 0.1s - should get 1 token back
+        import asyncio
+
+        await asyncio.sleep(0.1)
+
+        # Should be able to acquire 1 token without waiting
+        start = time()
+        await limiter.acquire(1)
+        elapsed = time() - start
+        assert elapsed < 0.05  # Should be nearly instant
 
 
 class TestNicheResearchAgentInitialization:
@@ -179,23 +238,13 @@ class TestResearchNiche:
     async def test_research_niche_success(self, agent: NicheResearchAgent) -> None:
         """Test successful niche research with mocked dependencies."""
 
-        # Mock Reddit client
+        # Mock the resilient clients
         mock_reddit_client = AsyncMock()
-        mock_reddit_client.__aenter__ = AsyncMock(return_value=mock_reddit_client)
-        mock_reddit_client.__aexit__ = AsyncMock()
-
-        # Mock search results
-        mock_search_result = MagicMock()
-        mock_search_result.posts = [
-            mock_reddit_post("entrepreneur", "Entrepreneurship tips"),
-        ]
-        mock_reddit_client.search = AsyncMock(return_value=mock_search_result)
-
-        # Mock subreddit
-        mock_subreddit = mock_reddit_subreddit("entrepreneur", 50000, 5000)
-        mock_reddit_client.get_subreddit = AsyncMock(return_value=mock_subreddit)
-
-        # Mock subreddit posts
+        mock_reddit_client.search_subreddits = AsyncMock(
+            return_value=[
+                mock_reddit_subreddit("entrepreneur", 50000, 5000),
+            ]
+        )
         mock_reddit_client.get_subreddit_posts = AsyncMock(
             return_value=[
                 mock_reddit_post(title="Struggling to find customers"),
@@ -203,29 +252,30 @@ class TestResearchNiche:
             ]
         )
 
-        # Mock Brave client
         mock_brave_client = AsyncMock()
-        mock_brave_client.__aenter__ = AsyncMock(return_value=mock_brave_client)
-        mock_brave_client.__aexit__ = AsyncMock()
-
         mock_brave_response = MagicMock()
         mock_brave_response.results = []
         mock_brave_client.search = AsyncMock(return_value=mock_brave_response)
 
-        # Mock Tavily client
         mock_tavily_client = AsyncMock()
-        mock_tavily_client.__aenter__ = AsyncMock(return_value=mock_tavily_client)
-        mock_tavily_client.__aexit__ = AsyncMock()
-
         mock_tavily_response = MagicMock()
         mock_tavily_response.results = []
         mock_tavily_client.research = AsyncMock(return_value=mock_tavily_response)
 
-        # Patch the client creation methods
+        # Patch the resilient client classes
         with (
-            patch.object(agent, "_get_reddit_client", return_value=mock_reddit_client),
-            patch.object(agent, "_get_brave_client", return_value=mock_brave_client),
-            patch.object(agent, "_get_tavily_client", return_value=mock_tavily_client),
+            patch(
+                "src.agents.niche_research_agent.agent.ResilientRedditClient",
+                return_value=mock_reddit_client,
+            ),
+            patch(
+                "src.agents.niche_research_agent.agent.ResilientBraveClient",
+                return_value=mock_brave_client,
+            ),
+            patch(
+                "src.agents.niche_research_agent.agent.ResilientTavilyClient",
+                return_value=mock_tavily_client,
+            ),
         ):
             result = await agent.research_niche("AI tools for entrepreneurs")
 
@@ -241,31 +291,30 @@ class TestResearchNiche:
     async def test_research_niche_with_custom_config(self, agent: NicheResearchAgent) -> None:
         """Test niche research with custom configuration parameters."""
 
-        # Mock all clients
+        # Mock the resilient clients
         mock_reddit_client = AsyncMock()
-        mock_reddit_client.__aenter__ = AsyncMock(return_value=mock_reddit_client)
-        mock_reddit_client.__aexit__ = AsyncMock()
-
-        mock_search_result = MagicMock()
-        mock_search_result.posts = []
-        mock_reddit_client.search = AsyncMock(return_value=mock_search_result)
-        mock_reddit_client.get_subreddit = AsyncMock(return_value=mock_reddit_subreddit())
+        mock_reddit_client.search_subreddits = AsyncMock(return_value=[])
         mock_reddit_client.get_subreddit_posts = AsyncMock(return_value=[])
 
         mock_brave_client = AsyncMock()
-        mock_brave_client.__aenter__ = AsyncMock(return_value=mock_brave_client)
-        mock_brave_client.__aexit__ = AsyncMock()
         mock_brave_client.search = AsyncMock(return_value=MagicMock(results=[]))
 
         mock_tavily_client = AsyncMock()
-        mock_tavily_client.__aenter__ = AsyncMock(return_value=mock_tavily_client)
-        mock_tavily_client.__aexit__ = AsyncMock()
         mock_tavily_client.research = AsyncMock(return_value=MagicMock(results=[]))
 
         with (
-            patch.object(agent, "_get_reddit_client", return_value=mock_reddit_client),
-            patch.object(agent, "_get_brave_client", return_value=mock_brave_client),
-            patch.object(agent, "_get_tavily_client", return_value=mock_tavily_client),
+            patch(
+                "src.agents.niche_research_agent.agent.ResilientRedditClient",
+                return_value=mock_reddit_client,
+            ),
+            patch(
+                "src.agents.niche_research_agent.agent.ResilientBraveClient",
+                return_value=mock_brave_client,
+            ),
+            patch(
+                "src.agents.niche_research_agent.agent.ResilientTavilyClient",
+                return_value=mock_tavily_client,
+            ),
         ):
             result = await agent.research_niche(
                 "test niche",
@@ -297,26 +346,29 @@ class TestHealthCheck:
     async def test_health_check_with_all_services_healthy(self, agent: NicheResearchAgent) -> None:
         """Test health check when all services are healthy."""
 
-        # Mock all clients
+        # Mock the resilient clients
         mock_reddit_client = AsyncMock()
-        mock_reddit_client.__aenter__ = AsyncMock(return_value=mock_reddit_client)
-        mock_reddit_client.__aexit__ = AsyncMock()
-        mock_reddit_client.search = AsyncMock(return_value=MagicMock(posts=[]))
+        mock_reddit_client.search_subreddits = AsyncMock(return_value=[])
 
         mock_brave_client = AsyncMock()
-        mock_brave_client.__aenter__ = AsyncMock(return_value=mock_brave_client)
-        mock_brave_client.__aexit__ = AsyncMock()
         mock_brave_client.search = AsyncMock(return_value=MagicMock(results=[]))
 
         mock_tavily_client = AsyncMock()
-        mock_tavily_client.__aenter__ = AsyncMock(return_value=mock_tavily_client)
-        mock_tavily_client.__aexit__ = AsyncMock()
-        mock_tavily_client.search = AsyncMock(return_value=MagicMock(results=[]))
+        mock_tavily_client.research = AsyncMock(return_value=MagicMock(results=[]))
 
         with (
-            patch.object(agent, "_get_reddit_client", return_value=mock_reddit_client),
-            patch.object(agent, "_get_brave_client", return_value=mock_brave_client),
-            patch.object(agent, "_get_tavily_client", return_value=mock_tavily_client),
+            patch(
+                "src.agents.niche_research_agent.agent.ResilientRedditClient",
+                return_value=mock_reddit_client,
+            ),
+            patch(
+                "src.agents.niche_research_agent.agent.ResilientBraveClient",
+                return_value=mock_brave_client,
+            ),
+            patch(
+                "src.agents.niche_research_agent.agent.ResilientTavilyClient",
+                return_value=mock_tavily_client,
+            ),
         ):
             health = await agent.health_check()
 
@@ -337,38 +389,30 @@ class TestHealthCheck:
         assert "No credentials" in health["services"]["reddit"]["error"]
 
 
-class TestGetClientMethods:
-    """Tests for client getter methods."""
+class TestExceptions:
+    """Tests for custom exception types."""
 
-    @pytest.mark.asyncio
-    async def test_get_reddit_client_without_credentials(self) -> None:
-        agent = NicheResearchAgent()
-        with pytest.raises(NicheResearchAgentError, match="Reddit credentials required"):
-            await agent._get_reddit_client()
+    def test_rate_limit_exceeded_error(self) -> None:
+        error = RateLimitExceededError("Reddit", retry_after=60)
+        assert "Reddit" in str(error)
+        assert "60" in str(error)
+        assert error.details["service"] == "Reddit"
+        assert error.details["retry_after"] == 60
 
-    @pytest.mark.asyncio
-    async def test_get_brave_client_without_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Clear any environment variables
-        monkeypatch.delenv("BRAVE_API_KEY", raising=False)
-        agent = NicheResearchAgent(brave_api_key="")
-        with pytest.raises(NicheResearchAgentError, match="Brave API key required"):
-            await agent._get_brave_client()
+    def test_rate_limit_exceeded_error_no_retry_after(self) -> None:
+        error = RateLimitExceededError("Brave")
+        assert "Brave" in str(error)
+        assert error.details["retry_after"] is None
 
-    @pytest.mark.asyncio
-    async def test_get_tavily_client_without_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Clear any environment variables
-        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-        agent = NicheResearchAgent(tavily_api_key="")
-        with pytest.raises(NicheResearchAgentError, match="Tavily API key required"):
-            await agent._get_tavily_client()
+    def test_authentication_failed_error(self) -> None:
+        error = AuthenticationFailedError("Tavily")
+        assert "Tavily" in str(error)
+        assert "Authentication failed" in str(error)
+        assert error.details["service"] == "Tavily"
 
-    @pytest.mark.asyncio
-    async def test_get_reddit_client_with_credentials(self) -> None:
-        # pragma: allowlist secret
-        agent = NicheResearchAgent(
-            reddit_client_id="test_id",  # pragma: allowlist secret
-            reddit_client_secret="test_secret",  # pragma: allowlist secret
-        )
-        client = await agent._get_reddit_client()
-        assert client is not None
-        assert client.client_id == "test_id"
+    def test_service_unavailable_error(self) -> None:
+        error = ServiceUnavailableError("Reddit", 503)
+        assert "Reddit" in str(error)
+        assert "503" in str(error)
+        assert error.details["service"] == "Reddit"
+        assert error.details["status_code"] == 503
