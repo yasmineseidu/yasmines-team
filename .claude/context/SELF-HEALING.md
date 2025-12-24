@@ -653,3 +653,101 @@ If invalid, request corrected email before proceeding.
 - [ ] Learning impact analysis
 - [ ] Predictive error detection
 - [ ] Multi-level learning (agent, team, org)
+
+---
+
+## Documented Error Learnings
+
+### Claude Agent SDK Errors
+
+| ID | Error | Sev | Symptom | Root Cause | Wrong Code | Correct Code | Affects |
+|----|-------|-----|---------|------------|------------|--------------|---------|
+| LEARN-001 | ANTHROPIC_API_KEY conflicts | Critical | `Command failed with exit code 1` | SDK uses `claude` CLI with own auth; env var conflicts | Having `ANTHROPIC_API_KEY` set in environment | `os.environ.pop("ANTHROPIC_API_KEY", None)` before SDK calls | All Claude SDK agents using `query()` |
+| LEARN-003 | SDK tools reject dependencies | High | `Tool signature mismatch` | SDK @tool functions must be self-contained, no DI | `@tool async def fn(query: str, client: Client)` | `@tool async def fn(query: str):` then create client inside function body | All @tool decorated functions |
+| LEARN-005 | WebSearch ignores site: | Low | Search returns generic results | WebSearch is not Google; operators ignored | `prompt = "site:reddit.com AI tools"` | `prompt = "Reddit discussions about AI tools"` | All WebSearch/WebFetch prompts |
+
+### Python/Library Errors
+
+| ID | Error | Sev | Symptom | Root Cause | Wrong Code | Correct Code | Affects |
+|----|-------|-----|---------|------------|------------|--------------|---------|
+| LEARN-002 | Tenacity tuple syntax | High | `incompatible type "type[A] \| type[B]"` | `retry_if_exception_type` expects tuple, not union | `retry_if_exception_type(RateLimitError \| APIError)` | `retry_if_exception_type((RateLimitError, APIError))` | All tenacity retry decorators |
+| LEARN-004 | Mixed type attributes | Med | `AttributeError: 'X' has no attribute 'y'` | Data from APIs/SDK can be dict or object with varying attr names | `subscriber_count = sub.subscribers` | `subscriber_count = getattr(sub, 'subscribers', None) or getattr(sub, 'subscriber_count', 0)` | All agents processing external API/SDK data |
+
+### Google API Errors
+
+| ID | Error | Sev | Symptom | Root Cause | Wrong Code | Correct Code | Affects |
+|----|-------|-----|---------|------------|------------|--------------|---------|
+| LEARN-006 | Google Drive quota exceeded | Critical | `GoogleDocsQuotaError: Quota exceeded: The user's Drive storage quota has been exceeded` | Service accounts have NO storage quota; files must be created in a user's Drive via domain-wide delegation | Not setting `delegated_user` parameter when initializing GoogleDriveClient/GoogleDocsClient | Set `GOOGLE_DELEGATED_USER=user@domain.com` in .env and pass to clients: `GoogleDriveClient(delegated_user=os.getenv('GOOGLE_DELEGATED_USER'))` | All agents using GoogleDriveClient, GoogleDocsClient (ResearchExportAgent, etc.) |
+
+**LEARN-006 Details:**
+
+**Full Problem:**
+Service accounts don't have their own Google Drive storage. When creating files without domain-wide delegation, they hit quota errors immediately because they're trying to create files in non-existent service account storage.
+
+**Complete Solution:**
+1. **Backend Code:**
+   - Add `delegated_user` parameter to agent `__init__`
+   - Pass `delegated_user` to GoogleDriveClient and GoogleDocsClient
+   - Read from `GOOGLE_DELEGATED_USER` environment variable
+
+   ```python
+   # In ResearchExportAgent.__init__()
+   self.delegated_user = delegated_user or os.getenv("GOOGLE_DELEGATED_USER")
+
+   self.drive_client = GoogleDriveClient(
+       credentials_json=credentials,
+       delegated_user=self.delegated_user,
+   )
+
+   self.docs_client = GoogleDocsClient(
+       credentials_json=credentials,
+       delegated_user=self.delegated_user,
+   )
+   ```
+
+2. **Environment Configuration:**
+   ```bash
+   # In .env file
+   GOOGLE_DELEGATED_USER=yasmine@smarterflo.com
+   ```
+
+3. **Google Workspace Admin Console:**
+   - Navigate to: Security → API Controls → Domain-wide Delegation
+   - Add service account Client ID: `100100768773360796850`
+   - Authorize scopes (comma-separated on one line):
+     ```
+     https://www.googleapis.com/auth/drive,https://www.googleapis.com/auth/documents
+     ```
+
+4. **Google Drive Sharing:**
+   - Share parent folder with service account email
+   - Service account email format: `projectname@projectid.iam.gserviceaccount.com`
+
+**Related Bugs Fixed:**
+- **GoogleDocsClient scope error**: When using `delegated_user`, client was only requesting `documents` scope but also needs `drive.file` scope for document creation via Drive API
+  ```python
+  # In GoogleDocsClient._authenticate_service_account()
+  if self.delegated_user:
+      scopes = [
+          "https://www.googleapis.com/auth/documents",
+          "https://www.googleapis.com/auth/drive.file",  # REQUIRED!
+      ]
+  ```
+
+- **GoogleDriveClient metadata validation error**: `get_file_metadata(fields="parents")` returns partial response but code tried to validate as full `DriveMetadata` model
+  ```python
+  # In GoogleDriveClient.get_file_metadata()
+  # Return raw dict for partial field requests, not DriveMetadata
+  if fields == default_fields:
+      return DriveMetadata(**response)
+  else:
+      return response  # Return dict for custom fields
+  ```
+
+**Testing:**
+- Integration tests: 4/4 passing with real Google API
+- Unit tests: 14/14 passing
+- Quality checks: All passing (lint, format, type, security)
+
+**Prevention:**
+Always use domain-wide delegation for service accounts that need to create Google Workspace assets (Drive files, Docs, Sheets, etc.). Service accounts can only own temporary/system files in their own storage space (~16GB limit), not user-facing documents.
