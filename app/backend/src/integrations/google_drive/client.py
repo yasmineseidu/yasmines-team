@@ -586,6 +586,90 @@ class GoogleDriveClient:
             logger.error(f"Failed to create document: {e}")
             raise GoogleDriveError(f"Failed to create document: {e}") from e
 
+    async def create_folder(
+        self,
+        name: str,
+        parent_id: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Create a new folder in Google Drive.
+
+        Args:
+            name: Folder name
+            parent_id: Parent folder ID (optional, defaults to root)
+
+        Returns:
+            Folder metadata including ID and webViewLink
+
+        Raises:
+            GoogleDriveError: If folder creation fails
+        """
+        try:
+            body: dict[str, Any] = {
+                "name": name,
+                "mimeType": "application/vnd.google-apps.folder",
+            }
+
+            if parent_id:
+                body["parents"] = [parent_id]
+
+            response = await self._request_with_retry(
+                "POST",
+                f"{self.DRIVE_API_BASE}/files",
+                json=body,
+                params={"fields": "id,name,webViewLink"},
+            )
+
+            logger.info(f"Created folder: {response.get('id')} ({name})")
+            return response
+
+        except GoogleDriveError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to create folder: {e}")
+            raise GoogleDriveError(f"Failed to create folder: {e}") from e
+
+    async def move_file_to_folder(
+        self,
+        file_id: str,
+        folder_id: str,
+    ) -> None:
+        """
+        Move file to a different folder in Google Drive.
+
+        Removes file from all current parent folders and adds to new folder.
+
+        Args:
+            file_id: Google Drive file ID to move
+            folder_id: Destination folder ID
+
+        Raises:
+            GoogleDriveError: If move operation fails
+        """
+        try:
+            # Get current parents to remove them
+            metadata = await self.get_file_metadata(file_id, fields="parents")
+            current_parents = getattr(metadata, "parents", []) or []
+
+            # Update file with new parent
+            params: dict[str, str] = {"addParents": folder_id}
+            if current_parents:
+                params["removeParents"] = ",".join(current_parents)
+
+            await self._request_with_retry(
+                "PATCH",
+                f"{self.DRIVE_API_BASE}/files/{file_id}",
+                params=params,
+            )
+
+            logger.info(f"Moved file {file_id} to folder {folder_id}")
+
+        except GoogleDriveError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to move file to folder: {e}")
+            raise GoogleDriveError(f"Failed to move file to folder: {e}") from e
+
     async def upload_file(
         self,
         file_name: str,

@@ -1,0 +1,415 @@
+openapi: 3.0.0
+info:
+  title: Research Export Agent API
+  description: |
+    API for exporting niche and persona research to professionally formatted Google Docs.
+
+    This agent compiles market intelligence research into 4 comprehensive documents:
+    - Niche Overview: Executive summary, market analysis, competitive landscape
+    - Persona Profiles: Detailed buyer personas with pain points and goals
+    - Pain Points Analysis: Consolidated pain points with evidence and quotes
+    - Messaging Angles: Value propositions and differentiation strategies
+
+    All documents are created in a Google Drive folder with "view" permissions for anyone with the link.
+  version: 1.0.0
+  contact:
+    name: Smarter Team API Support
+    email: support@smarterteam.ai
+
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Local development
+  - url: https://api.smarterteam.ai/v1
+    description: Production
+
+tags:
+  - name: Research Export
+    description: Export research to Google Docs
+  - name: Health
+    description: Agent health and status
+
+paths:
+  /agents/research-export/export:
+    post:
+      summary: Export niche research to Google Docs
+      description: |
+        Compiles complete niche and persona research into professionally formatted Google Docs.
+
+        **Process:**
+        1. Creates Google Drive folder (subfolder of parent folder)
+        2. Generates 4 documents with research data
+        3. Shares folder with "anyone with link can view"
+        4. Returns folder URL and document metadata
+
+        **Requirements:**
+        - Valid Google Service Account credentials
+        - Parent folder access (1q2CuAABTE9HLML8cMd5YaOC3Y1ev6JC4)
+        - Complete research data from Phase 1 agents
+      tags:
+        - Research Export
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExportRequest'
+      responses:
+        '200':
+          description: Research exported successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExportResponse'
+        '400':
+          description: Invalid request data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Google API authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Google API rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /agents/research-export/health:
+    get:
+      summary: Check agent health
+      description: Returns health status of Research Export Agent and Google API connectivity
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Agent is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Agent or dependencies unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+components:
+  schemas:
+    ExportRequest:
+      type: object
+      required:
+        - niche_id
+        - niche_data
+        - niche_scores
+        - personas
+        - consolidated_pain_points
+      properties:
+        niche_id:
+          type: string
+          format: uuid
+          description: Niche UUID from database
+          example: "550e8400-e29b-41d4-a716-446655440000"
+
+        niche_data:
+          type: object
+          description: Niche metadata from niches table
+          required:
+            - name
+            - slug
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+              example: "SaaS Founders"
+            slug:
+              type: string
+              example: "saas-founders"
+            industry:
+              type: array
+              items:
+                type: string
+              example: ["Technology", "Software"]
+            job_titles:
+              type: array
+              items:
+                type: string
+              example: ["CEO", "CTO", "Founder"]
+            company_size:
+              type: array
+              items:
+                type: string
+              example: ["1-50", "51-200"]
+            location:
+              type: array
+              items:
+                type: string
+              example: ["United States", "Europe"]
+            pain_points:
+              type: array
+              items:
+                type: object
+            value_propositions:
+              type: array
+              items:
+                type: string
+            messaging_tone:
+              type: string
+              example: "professional"
+
+        niche_scores:
+          type: object
+          description: Scoring data from niche_scores table
+          required:
+            - overall_score
+            - recommendation
+            - confidence
+          properties:
+            overall_score:
+              type: number
+              minimum: 0
+              maximum: 100
+              example: 85
+            market_size_score:
+              type: number
+              minimum: 0
+              maximum: 100
+            competition_score:
+              type: number
+              minimum: 0
+              maximum: 100
+            reachability_score:
+              type: number
+              minimum: 0
+              maximum: 100
+            pain_intensity_score:
+              type: number
+              minimum: 0
+              maximum: 100
+            budget_authority_score:
+              type: number
+              minimum: 0
+              maximum: 100
+            confidence:
+              type: number
+              minimum: 0
+              maximum: 1
+              example: 0.9
+            recommendation:
+              type: string
+              enum: [pursue, consider, avoid]
+              example: "pursue"
+            scoring_details:
+              type: string
+              description: JSON string with detailed scoring breakdown
+
+        niche_research_data:
+          type: object
+          nullable: true
+          description: Research findings from niche_research_data table
+          properties:
+            market_size_estimate:
+              type: string
+            company_count_estimate:
+              type: integer
+            persona_count_estimate:
+              type: integer
+            growth_rate:
+              type: string
+            competitors_found:
+              type: array
+              items:
+                type: object
+            differentiation_opportunities:
+              type: array
+              items:
+                type: string
+            pain_points_detailed:
+              type: array
+              items:
+                type: object
+            pain_point_quotes:
+              type: array
+              items:
+                type: object
+
+        personas:
+          type: array
+          description: List of personas from personas table
+          minItems: 1
+          items:
+            type: object
+            required:
+              - id
+              - name
+            properties:
+              id:
+                type: string
+                format: uuid
+              name:
+                type: string
+              job_titles:
+                type: array
+                items:
+                  type: string
+              seniority_level:
+                type: string
+              department:
+                type: string
+              pain_points:
+                type: array
+                items:
+                  type: object
+              goals:
+                type: array
+                items:
+                  type: string
+              messaging_angles:
+                type: object
+
+        persona_research_data:
+          type: array
+          description: Research sources from persona_research_data table
+          items:
+            type: object
+
+        industry_scores:
+          type: array
+          description: Industry fit scores from industry_fit_scores table
+          items:
+            type: object
+
+        consolidated_pain_points:
+          type: array
+          description: Consolidated pain points from Persona Research Agent
+          items:
+            type: string
+          example:
+            - "Difficulty scaling customer acquisition"
+            - "High customer churn rates"
+            - "Limited marketing budget"
+
+    ExportResponse:
+      type: object
+      required:
+        - folder_url
+        - documents
+      properties:
+        folder_url:
+          type: string
+          format: uri
+          description: Google Drive folder URL (view access)
+          example: "https://drive.google.com/drive/folders/1a2b3c4d5e6f7g8h9i0j"
+
+        folder_id:
+          type: string
+          description: Google Drive folder ID
+          example: "1a2b3c4d5e6f7g8h9i0j"
+
+        documents:
+          type: array
+          description: List of created documents
+          minItems: 4
+          maxItems: 4
+          items:
+            type: object
+            required:
+              - doc_id
+              - doc_url
+              - name
+            properties:
+              doc_id:
+                type: string
+                description: Google Docs document ID
+              doc_url:
+                type: string
+                format: uri
+                description: Google Docs URL (edit access)
+              name:
+                type: string
+                description: Document title
+                example: "1. Niche Overview - SaaS Founders"
+
+        notification_sent:
+          type: boolean
+          description: Whether Slack notification was sent
+          example: false
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+        - message
+      properties:
+        error:
+          type: string
+          description: Error type
+          example: "GoogleDriveAuthError"
+        message:
+          type: string
+          description: Human-readable error message
+          example: "Failed to authenticate with Google Drive API"
+        details:
+          type: object
+          description: Additional error context
+        timestamp:
+          type: string
+          format: date-time
+          description: Error timestamp
+        request_id:
+          type: string
+          description: Request ID for tracing
+
+    HealthResponse:
+      type: object
+      required:
+        - status
+        - agent
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+          description: Overall health status
+        agent:
+          type: string
+          example: "research_export_agent"
+        version:
+          type: string
+          example: "1.0.0"
+        dependencies:
+          type: object
+          properties:
+            google_drive:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [connected, disconnected, error]
+                last_check:
+                  type: string
+                  format: date-time
+            google_docs:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [connected, disconnected, error]
+                last_check:
+                  type: string
+                  format: date-time
+        timestamp:
+          type: string
+          format: date-time
