@@ -253,10 +253,14 @@ class GoogleDocsClient:
             from google.auth.transport.requests import Request
             from google.oauth2 import service_account
 
-            # Use single scope for domain-wide delegation (most common setup)
+            # Use both Docs and Drive scopes for domain-wide delegation
+            # (needed because create_document uses Drive API)
             # or full scopes for service account's own documents
             if self.delegated_user:
-                scopes = ["https://www.googleapis.com/auth/documents"]
+                scopes = [
+                    "https://www.googleapis.com/auth/documents",
+                    "https://www.googleapis.com/auth/drive.file",
+                ]
             else:
                 scopes = self.DEFAULT_SCOPES
 

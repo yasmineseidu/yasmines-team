@@ -130,6 +130,7 @@ class ResearchExportAgent:
         self,
         google_credentials: dict[str, Any] | None = None,
         parent_folder_id: str = RESEARCH_PARENT_FOLDER_ID,
+        delegated_user: str | None = None,
     ) -> None:
         """
         Initialize Research Export Agent.
@@ -137,24 +138,42 @@ class ResearchExportAgent:
         Args:
             google_credentials: Google service account credentials JSON
             parent_folder_id: Parent folder ID for all research exports
+            delegated_user: Email of user to impersonate (domain-wide delegation)
+                          If not provided, reads from GOOGLE_DELEGATED_USER env var
         """
         # Remove ANTHROPIC_API_KEY if present (LEARN-001)
         os.environ.pop("ANTHROPIC_API_KEY", None)
 
         self.parent_folder_id = parent_folder_id
 
-        # Initialize Google clients
+        # Get delegated user from parameter or environment
+        self.delegated_user = delegated_user or os.getenv("GOOGLE_DELEGATED_USER")
+
+        # Initialize Google clients with domain-wide delegation
         self.drive_client = GoogleDriveClient(
             credentials_json=google_credentials or self._load_google_credentials(),
+            delegated_user=self.delegated_user,
             timeout=30.0,
             max_retries=3,
         )
 
         self.docs_client = GoogleDocsClient(
             credentials_json=google_credentials or self._load_google_credentials(),
+            delegated_user=self.delegated_user,
             timeout=30.0,
             max_retries=3,
         )
+
+        if self.delegated_user:
+            logger.info(
+                f"ResearchExportAgent initialized with domain-wide delegation for: {self.delegated_user}"
+            )
+        else:
+            logger.warning(
+                "ResearchExportAgent initialized WITHOUT domain-wide delegation. "
+                "Files will be created using service account storage (may hit quota limits). "
+                "Set GOOGLE_DELEGATED_USER environment variable to use domain-wide delegation."
+            )
 
         logger.info("ResearchExportAgent initialized")
 

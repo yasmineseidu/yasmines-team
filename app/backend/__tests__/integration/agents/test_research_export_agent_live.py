@@ -18,10 +18,10 @@ from pathlib import Path
 import pytest
 from dotenv import load_dotenv
 
-from src.agents.research_export.agent import FolderCreationError, ResearchExportAgent
+from src.agents.research_export.agent import ResearchExportAgent
 
-# Load .env from project root
-project_root = Path(__file__).parent.parent.parent.parent.parent
+# Load .env from project root (yasmines-team/, not yasmines-team/app/)
+project_root = Path(__file__).parent.parent.parent.parent.parent.parent
 load_dotenv(project_root / ".env")
 
 
@@ -35,6 +35,8 @@ def google_credentials() -> dict[str, str]:
     """
     Load Google service account credentials from .env.
 
+    Supports both JSON string and file path (like the client code).
+
     Raises:
         pytest.skip: If credentials not found in .env
     """
@@ -42,10 +44,28 @@ def google_credentials() -> dict[str, str]:
     if not credentials_json:
         pytest.skip("GOOGLE_SERVICE_ACCOUNT_JSON not found in .env")
 
-    try:
-        return json.loads(credentials_json)
-    except json.JSONDecodeError:
-        pytest.skip("GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON")
+    # Check if it's a file path or JSON string (same logic as GoogleDocsClient)
+    if credentials_json.startswith("{"):
+        # JSON string
+        try:
+            return json.loads(credentials_json)
+        except json.JSONDecodeError:
+            pytest.skip("GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON")
+    else:
+        # Try as file path - check both absolute and relative to project root
+        file_path = Path(credentials_json)
+        if not file_path.is_absolute():
+            # Try relative to project root
+            file_path = project_root / credentials_json
+
+        if file_path.exists():
+            try:
+                with open(file_path) as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, OSError) as e:
+                pytest.skip(f"Failed to load credentials from file: {e}")
+        else:
+            pytest.skip(f"GOOGLE_SERVICE_ACCOUNT_JSON file not found: {file_path}")
 
 
 @pytest.fixture
@@ -455,6 +475,8 @@ class TestResearchExportAgentLive:
 
         MUST PASS: Proper error raised for authentication failure.
         """
+        from src.integrations.google_drive.exceptions import GoogleDriveAuthError
+
         invalid_credentials = {
             "type": "service_account",
             "project_id": "invalid",
@@ -466,9 +488,8 @@ class TestResearchExportAgentLive:
         agent = ResearchExportAgent(google_credentials=invalid_credentials)
 
         # Attempt to create folder should fail authentication
-        with pytest.raises(
-            FolderCreationError
-        ):  # Will raise auth error wrapped in FolderCreationError
+        # (authentication happens during create_research_folder call)
+        with pytest.raises(GoogleDriveAuthError):
             await agent.create_research_folder(
                 niche_name="Should Fail",
                 niche_slug="should-fail",

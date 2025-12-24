@@ -441,7 +441,7 @@ class GoogleDriveClient:
         self,
         file_id: str,
         fields: str = "id,name,mimeType,size,createdTime,modifiedTime,webViewLink,owners,parents,shared,trashed",
-    ) -> DriveMetadata:
+    ) -> DriveMetadata | dict[str, Any]:
         """
         Get file metadata from Google Drive.
 
@@ -450,7 +450,7 @@ class GoogleDriveClient:
             fields: Fields to return (comma-separated)
 
         Returns:
-            DriveMetadata object with file details
+            DriveMetadata object when using default fields, or raw dict for custom fields
 
         Raises:
             GoogleDriveError: If file not found or request fails
@@ -463,7 +463,15 @@ class GoogleDriveClient:
             )
 
             logger.info(f"Retrieved metadata for file: {file_id}")
-            return DriveMetadata(**response)
+
+            # Only validate as DriveMetadata if we have the required fields
+            # When requesting partial fields (like just "parents"), return raw dict
+            default_fields = "id,name,mimeType,size,createdTime,modifiedTime,webViewLink,owners,parents,shared,trashed"
+            if fields == default_fields:
+                return DriveMetadata(**response)
+            else:
+                # Return raw dict for partial field requests
+                return response
 
         except GoogleDriveError:
             raise
@@ -496,7 +504,11 @@ class GoogleDriveClient:
             # Get file metadata to determine type
             if not mime_type:
                 metadata = await self.get_file_metadata(file_id)
-                mime_type = metadata.mime_type
+                # Default fields always return DriveMetadata, not dict
+                if isinstance(metadata, dict):
+                    mime_type = metadata.get("mimeType", "")
+                else:
+                    mime_type = metadata.mime_type
 
             # Determine export MIME type based on source
             if mime_type == self.DOCS_MIME_TYPE:
@@ -649,7 +661,13 @@ class GoogleDriveClient:
         try:
             # Get current parents to remove them
             metadata = await self.get_file_metadata(file_id, fields="parents")
-            current_parents = getattr(metadata, "parents", []) or []
+            # metadata is dict when custom fields requested
+            current_parents = (
+                metadata.get("parents", [])
+                if isinstance(metadata, dict)
+                else getattr(metadata, "parents", [])
+            )
+            current_parents = current_parents or []
 
             # Update file with new parent
             params: dict[str, str] = {"addParents": folder_id}
