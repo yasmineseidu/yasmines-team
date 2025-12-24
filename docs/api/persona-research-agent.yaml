@@ -1,0 +1,576 @@
+openapi: 3.0.3
+info:
+  title: Persona Research Agent API
+  description: |
+    Agent 1.2 - Persona Research Agent for cold email marketing.
+
+    This agent researches buyer personas by mining Reddit for pain points,
+    extracting language patterns, and synthesizing comprehensive personas
+    with messaging angles for effective cold outreach.
+
+    Part of Phase 1: Market Intelligence in the 76-agent cold email system.
+  version: 1.0.0
+  contact:
+    name: Smarter Team
+
+tags:
+  - name: Persona Research
+    description: Persona research and synthesis operations
+
+paths:
+  /api/v1/agents/persona-research/run:
+    post:
+      summary: Run persona research for a niche
+      description: |
+        Executes comprehensive persona research for a given niche ID.
+
+        The agent will:
+        1. Retrieve niche data from database
+        2. Mine Reddit for pain points and quotes
+        3. Extract language patterns from conversations
+        4. Synthesize complete buyer personas
+        5. Calculate industry fit scores
+        6. Store results and return PersonaResearchResult
+      operationId: runPersonaResearch
+      tags:
+        - Persona Research
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PersonaResearchConfig'
+            example:
+              niche_id: "550e8400-e29b-41d4-a716-446655440000"
+              pain_points_hint:
+                - "CRM adoption is low"
+                - "Sales reps spend too much time on admin"
+              max_personas: 3
+              reddit_enabled: true
+              linkedin_enabled: true
+              industry_content_enabled: true
+      responses:
+        '200':
+          description: Successful persona research
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonaResearchResult'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Niche not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          description: Rate limited
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/agents/persona-research/mine-reddit:
+    post:
+      summary: Mine Reddit for pain points
+      description: |
+        Mines Reddit subreddits for pain points related to job titles
+        and industry. Returns raw pain points with quotes and engagement
+        scores.
+      operationId: mineRedditPainPoints
+      tags:
+        - Persona Research
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - job_titles
+                - industry
+              properties:
+                job_titles:
+                  type: array
+                  items:
+                    type: string
+                  description: Target job titles to research
+                  example: ["VP of Sales", "Sales Director"]
+                industry:
+                  type: string
+                  description: Target industry
+                  example: "SaaS"
+                max_results:
+                  type: integer
+                  default: 20
+                  description: Maximum pain points to return
+      responses:
+        '200':
+          description: Pain points mined successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pain_points:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PainPointQuote'
+                  posts_analyzed:
+                    type: integer
+                  comments_analyzed:
+                    type: integer
+                  subreddit_relevance:
+                    type: object
+                    additionalProperties:
+                      type: number
+        '429':
+          description: Reddit rate limited
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/v1/agents/persona-research/synthesize:
+    post:
+      summary: Synthesize a persona from components
+      description: |
+        Creates a complete persona from provided components including
+        pain points, goals, and language patterns.
+      operationId: synthesizePersona
+      tags:
+        - Persona Research
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - job_titles
+              properties:
+                name:
+                  type: string
+                  example: "The Scaling VP"
+                job_titles:
+                  type: array
+                  items:
+                    type: string
+                seniority_level:
+                  type: string
+                  enum: [IC, LEAD, MANAGER, DIRECTOR, VP, C_LEVEL]
+                  default: MANAGER
+                department:
+                  type: string
+                pain_points:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/PainPointQuote'
+                goals:
+                  type: array
+                  items:
+                    type: string
+                language_patterns:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/LanguagePattern'
+                industry:
+                  type: string
+      responses:
+        '200':
+          description: Persona synthesized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Persona'
+
+  /api/v1/agents/persona-research/industry-fit:
+    post:
+      summary: Calculate industry fit score
+      description: |
+        Calculates how well a persona's pain points align with
+        a specific industry's known challenges.
+      operationId: calculateIndustryFitScore
+      tags:
+        - Persona Research
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - industry
+              properties:
+                industry:
+                  type: string
+                  example: "SaaS"
+                niche_pain_points:
+                  type: array
+                  items:
+                    type: string
+                persona_pain_points:
+                  type: array
+                  items:
+                    type: object
+                accessibility_score:
+                  type: number
+                  minimum: 0
+                  maximum: 1
+                  default: 0.5
+                budget_indicators:
+                  type: number
+                  minimum: 0
+                  maximum: 1
+                  default: 0.5
+      responses:
+        '200':
+          description: Fit score calculated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndustryFitScore'
+
+components:
+  schemas:
+    PersonaResearchConfig:
+      type: object
+      required:
+        - niche_id
+      properties:
+        niche_id:
+          type: string
+          format: uuid
+          description: UUID of the niche to research personas for
+        pain_points_hint:
+          type: array
+          items:
+            type: string
+          description: Initial pain points from niche research to guide persona mining
+        max_personas:
+          type: integer
+          default: 3
+          minimum: 1
+          maximum: 10
+          description: Maximum number of personas to generate
+        reddit_enabled:
+          type: boolean
+          default: true
+          description: Enable Reddit mining for pain points
+        linkedin_enabled:
+          type: boolean
+          default: true
+          description: Enable LinkedIn web search for professional context
+        industry_content_enabled:
+          type: boolean
+          default: true
+          description: Enable industry report/blog searching
+
+    PersonaResearchResult:
+      type: object
+      properties:
+        personas:
+          type: array
+          items:
+            $ref: '#/components/schemas/Persona'
+          description: Generated buyer personas
+        persona_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: UUIDs of stored personas
+        consolidated_pain_points:
+          type: array
+          items:
+            type: string
+          description: Top pain points across all personas
+        value_propositions:
+          type: array
+          items:
+            type: string
+          description: Suggested value propositions based on pain points
+        recommended_tone:
+          type: string
+          enum: [PROFESSIONAL, CASUAL, DIRECT, EMPATHETIC, TECHNICAL]
+          description: Recommended email tone for this niche
+        industry_scores:
+          type: array
+          items:
+            $ref: '#/components/schemas/IndustryFitScore'
+        research_data:
+          type: array
+          items:
+            $ref: '#/components/schemas/PersonaResearchData'
+          description: Audit trail of sources used
+        sources_used:
+          type: array
+          items:
+            type: object
+            properties:
+              tool:
+                type: string
+              queries_count:
+                type: integer
+              results_count:
+                type: integer
+              urls:
+                type: array
+                items:
+                  type: string
+        niche_id:
+          type: string
+          format: uuid
+        total_quotes_collected:
+          type: integer
+        total_language_patterns:
+          type: integer
+        reddit_sources_count:
+          type: integer
+        execution_time_ms:
+          type: integer
+          description: Total execution time in milliseconds
+
+    Persona:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        niche_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          description: Descriptive name like "The Scaling VP"
+          example: "The Scaling VP"
+        job_titles:
+          type: array
+          items:
+            type: string
+          example: ["VP of Sales", "Sales Director", "Head of Sales"]
+        seniority_level:
+          type: string
+          enum: [IC, LEAD, MANAGER, DIRECTOR, VP, C_LEVEL]
+        department:
+          type: string
+          example: "Sales"
+        pain_points:
+          type: array
+          items:
+            $ref: '#/components/schemas/PainPointQuote'
+        goals:
+          type: array
+          items:
+            type: string
+          example:
+            - "Hit revenue targets consistently"
+            - "Scale sales team efficiently"
+        objections:
+          type: array
+          items:
+            $ref: '#/components/schemas/Objection'
+        language_patterns:
+          type: array
+          items:
+            $ref: '#/components/schemas/LanguagePattern'
+        trigger_events:
+          type: array
+          items:
+            type: string
+          description: Events that trigger buying behavior
+          example:
+            - "New job or promotion"
+            - "Funding round announcement"
+        messaging_angles:
+          type: object
+          properties:
+            primary:
+              $ref: '#/components/schemas/MessagingAngle'
+            secondary:
+              $ref: '#/components/schemas/MessagingAngle'
+        angles_to_avoid:
+          type: array
+          items:
+            type: string
+          example:
+            - "Generic productivity claims"
+            - "Price-focused messaging"
+        confidence_score:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Confidence in persona accuracy based on data quality
+
+    PainPointQuote:
+      type: object
+      properties:
+        pain:
+          type: string
+          description: The pain point summary
+          example: "CRM adoption is a nightmare"
+        intensity:
+          type: integer
+          minimum: 1
+          maximum: 10
+          description: Pain intensity score
+          example: 8
+        quote:
+          type: string
+          description: Direct quote expressing the pain
+          example: "I've spent 6 months trying to get my team to use our CRM"
+        source:
+          type: string
+          format: uri
+          description: URL or identifier of the source
+        source_type:
+          type: string
+          enum: [reddit, linkedin, industry, web]
+          description: Type of source
+        frequency:
+          type: string
+          enum: [rare, occasional, common, very_common]
+          description: How often this pain is mentioned
+        engagement_score:
+          type: integer
+          description: Engagement metrics (upvotes, comments, etc.)
+        raw:
+          type: object
+          description: Raw source data for audit
+
+    LanguagePattern:
+      type: object
+      properties:
+        phrase:
+          type: string
+          example: "drives me crazy"
+        context:
+          type: string
+          description: When/how the phrase is used
+          example: "When describing CRM frustrations"
+        category:
+          type: string
+          enum: [emotional, pain, goal, jargon, general]
+        source:
+          type: string
+        frequency:
+          type: integer
+          description: How often the phrase appears
+
+    Objection:
+      type: object
+      properties:
+        objection:
+          type: string
+          example: "We don't have budget for this right now"
+        real_meaning:
+          type: string
+          description: What the prospect actually means
+          example: "I'm not convinced of the ROI"
+        counter_approach:
+          type: string
+          description: How to address the objection
+          example: "Show specific cost savings and time-to-value"
+        frequency:
+          type: string
+          enum: [rare, occasional, common, very_common]
+
+    MessagingAngle:
+      type: object
+      properties:
+        angle:
+          type: string
+          example: "Pain-focused"
+        hook:
+          type: string
+          example: "Stop losing deals to bad CRM data"
+        supporting_pain:
+          type: string
+          description: Pain point that supports this angle
+        confidence_score:
+          type: number
+          minimum: 0
+          maximum: 1
+
+    IndustryFitScore:
+      type: object
+      properties:
+        industry:
+          type: string
+          example: "SaaS"
+        score:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: Fit score out of 100
+        reasoning:
+          type: string
+          description: Explanation of the score
+        pain_point_alignment:
+          type: array
+          items:
+            type: string
+          description: Pain points that align with the industry
+
+    PersonaResearchData:
+      type: object
+      description: Audit trail data for research provenance
+      properties:
+        persona_id:
+          type: string
+          format: uuid
+        source:
+          type: string
+          enum: [reddit, linkedin, web, industry]
+        url:
+          type: string
+          format: uri
+        content_type:
+          type: string
+          enum: [post, comment, article, report]
+        content:
+          type: string
+          description: Snippet of source content
+        insights:
+          type: array
+          items:
+            type: string
+        language_samples:
+          type: array
+          items:
+            type: string
+        quotes:
+          type: array
+          items:
+            type: string
+        engagement_metrics:
+          type: object
+          additionalProperties: true
+        collected_at:
+          type: string
+          format: date-time
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+          description: Error type
+        message:
+          type: string
+          description: Human-readable error message
+        details:
+          type: object
+          description: Additional error context
