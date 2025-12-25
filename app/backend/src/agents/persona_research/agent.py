@@ -21,7 +21,6 @@ Handoff:
 - Sends: persona_ids, consolidated_pain_points, industry_scores to Research Export Agent (1.3)
 """
 
-import asyncio
 import logging
 import os
 import time
@@ -54,6 +53,7 @@ from src.agents.persona_research.schemas import (
     SeniorityLevel,
     ToneType,
 )
+from src.utils.rate_limiter import CircuitBreaker, TokenBucketRateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -92,113 +92,6 @@ class ResearchTimeoutError(PersonaResearchError):
     """Raised when research takes too long."""
 
     pass
-
-
-# ============================================================================
-# Rate Limiter
-# ============================================================================
-
-
-class TokenBucketRateLimiter:
-    """Token bucket rate limiter for Claude SDK API calls."""
-
-    def __init__(
-        self,
-        capacity: int = 60,
-        refill_rate: float = 1.0,
-        service_name: str = "ClaudeSDK",
-    ) -> None:
-        """Initialize rate limiter."""
-        self.capacity = capacity
-        self.refill_rate = refill_rate
-        self.service_name = service_name
-        self.tokens = float(capacity)
-        self.last_update = time.time()
-        self._lock = asyncio.Lock()
-
-    async def acquire(self, tokens: int = 1) -> None:
-        """Acquire tokens, waiting if necessary."""
-        async with self._lock:
-            now = time.time()
-            elapsed = now - self.last_update
-
-            # Refill tokens
-            self.tokens = min(
-                self.capacity,
-                self.tokens + elapsed * self.refill_rate,
-            )
-            self.last_update = now
-
-            if self.tokens >= tokens:
-                self.tokens -= tokens
-                return
-
-            # Wait for tokens
-            wait_time = (tokens - self.tokens) / self.refill_rate
-            logger.debug(f"[{self.service_name}] Rate limited, waiting {wait_time:.2f}s")
-            await asyncio.sleep(wait_time)
-
-            # Refill based on actual elapsed time (not full capacity!)
-            now = time.time()
-            elapsed = now - self.last_update
-            self.tokens = min(
-                self.capacity,
-                self.tokens + elapsed * self.refill_rate,
-            )
-            self.last_update = now
-            self.tokens -= tokens
-
-
-# ============================================================================
-# Circuit Breaker
-# ============================================================================
-
-
-class CircuitBreaker:
-    """Circuit breaker for resilient API calls."""
-
-    def __init__(
-        self,
-        failure_threshold: int = 5,
-        recovery_timeout: float = 60.0,
-        service_name: str = "Service",
-    ) -> None:
-        """Initialize circuit breaker."""
-        self.failure_threshold = failure_threshold
-        self.recovery_timeout = recovery_timeout
-        self.service_name = service_name
-        self.failure_count = 0
-        self.last_failure_time: float | None = None
-        self.is_open = False
-
-    def record_failure(self) -> None:
-        """Record a failure and potentially open the circuit."""
-        self.failure_count += 1
-        self.last_failure_time = time.time()
-
-        if self.failure_count >= self.failure_threshold:
-            self.is_open = True
-            logger.warning(
-                f"[{self.service_name}] Circuit breaker OPEN after "
-                f"{self.failure_count} failures"
-            )
-
-    def record_success(self) -> None:
-        """Record a success and reset the circuit."""
-        self.failure_count = 0
-        self.is_open = False
-
-    def can_proceed(self) -> bool:
-        """Check if we can proceed with the request."""
-        if not self.is_open:
-            return True
-
-        # Check if recovery timeout has passed
-        if self.last_failure_time and time.time() - self.last_failure_time > self.recovery_timeout:
-            logger.info(f"[{self.service_name}] Circuit breaker HALF-OPEN, testing...")
-            return True
-
-        return False
 
 
 # ============================================================================
@@ -486,7 +379,7 @@ The exact words people use are crucial for cold email:
                 search_results = await self._web_search(search_query)
                 results.extend(search_results)
             except Exception as e:
-                logger.warning(f"LinkedIn search failed for query '{query}': {e}")
+                logger.warning(f"LinkedIn search failed for query '{search_query}': {e}")
                 continue
 
         return {
@@ -525,7 +418,7 @@ The exact words people use are crucial for cold email:
                 search_results = await self._web_search(search_query)
                 results.extend(search_results)
             except Exception as e:
-                logger.warning(f"Industry search failed for query '{query}': {e}")
+                logger.warning(f"Industry search failed for query '{search_query}': {e}")
                 continue
 
         return {
@@ -727,7 +620,14 @@ The exact words people use are crucial for cold email:
 
         # Extract niche info
         job_titles = niche_data.get("job_titles", ["Manager"]) if niche_data else ["Manager"]
-        industry = niche_data.get("industry", "Technology") if niche_data else "Technology"
+        # Industry can be a list or string - normalize to string for single industry operations
+        raw_industry = niche_data.get("industry", "Technology") if niche_data else "Technology"
+        if isinstance(raw_industry, list):
+            industry = raw_industry[0] if raw_industry else "Technology"
+            industries = raw_industry
+        else:
+            industry = raw_industry
+            industries = [raw_industry]
 
         # Phase 1: Reddit deep dive (PRIORITY)
         logger.info("Phase 1: Reddit deep dive")
@@ -782,8 +682,10 @@ The exact words people use are crucial for cold email:
             secondary_persona.niche_id = config.niche_id
             personas.append(secondary_persona)
 
-        # Calculate industry fit scores
-        industry_scores = [self._calculate_industry_fit_score(industry, personas[0])]
+        # Calculate industry fit scores for each industry
+        industry_scores = [
+            self._calculate_industry_fit_score(ind, personas[0]) for ind in industries
+        ]
 
         # Consolidate pain points
         all_pain_points: list[str] = []

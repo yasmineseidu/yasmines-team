@@ -17,9 +17,9 @@ from src.agents.niche_research_agent.agent import (
     NicheResearchAgentError,
     RateLimitExceededError,
     ServiceUnavailableError,
-    TokenBucketRateLimiter,
     create_niche_research_mcp_server,
 )
+from src.utils.rate_limiter import TokenBucketRateLimiter
 
 __all__ = [
     "NicheResearchAgent",

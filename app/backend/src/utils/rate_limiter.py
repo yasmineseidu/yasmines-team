@@ -21,25 +21,48 @@ class TokenBucketRateLimiter:
     - Tokens refill at a constant rate
     - Each request consumes one or more tokens
     - Requests wait if insufficient tokens available
+
+    Supports two initialization styles:
+    1. Rate-based: TokenBucketRateLimiter(rate_limit=60, rate_window=60)
+    2. Capacity-based: TokenBucketRateLimiter(capacity=10, refill_rate=1.0)
     """
 
     def __init__(
         self,
-        rate_limit: int = 60,
-        rate_window: int = 60,
+        rate_limit: int | None = None,
+        rate_window: int | None = None,
         service_name: str = "API",
+        *,
+        capacity: int | None = None,
+        refill_rate: float | None = None,
     ) -> None:
         """
         Initialize rate limiter.
 
         Args:
-            rate_limit: Maximum requests per rate window
-            rate_window: Window size in seconds
+            rate_limit: Maximum requests per rate window (use with rate_window)
+            rate_window: Window size in seconds (use with rate_limit)
             service_name: Name of the service for logging
+            capacity: Maximum tokens / burst capacity (alternative to rate_limit)
+            refill_rate: Tokens per second (alternative to rate_window calculation)
+
+        Either use (rate_limit, rate_window) OR (capacity, refill_rate).
+        Defaults to 60 requests per 60 seconds if no parameters provided.
         """
-        self.capacity = rate_limit
-        self.rate_window = rate_window
-        self.refill_rate = rate_limit / rate_window
+        # Support both initialization styles
+        if capacity is not None and refill_rate is not None:
+            # Capacity-based initialization
+            self.capacity = capacity
+            self.refill_rate = refill_rate
+            self.rate_window = int(capacity / refill_rate) if refill_rate > 0 else 60
+        else:
+            # Rate-based initialization (original style)
+            effective_rate_limit = rate_limit if rate_limit is not None else 60
+            effective_rate_window = rate_window if rate_window is not None else 60
+            self.capacity = effective_rate_limit
+            self.rate_window = effective_rate_window
+            self.refill_rate = effective_rate_limit / effective_rate_window
+
         self.service_name = service_name
         self.tokens = float(self.capacity)
         self.last_update = time.time()

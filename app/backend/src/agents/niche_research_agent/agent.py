@@ -23,7 +23,8 @@ from datetime import datetime
 from typing import Any
 
 import httpx
-from claude_agent_sdk import create_sdk_mcp_server, tool
+from claude_agent_sdk import ClaudeAgentOptions, create_sdk_mcp_server, query, tool
+from claude_agent_sdk.types import AssistantMessage, TextBlock
 from tenacity import (
     before_sleep_log,
     retry,
@@ -33,6 +34,9 @@ from tenacity import (
 )
 
 from src.integrations.brave import BraveClient
+from src.integrations.exa import ExaClient
+from src.integrations.google_docs.client import GoogleDocsClient
+from src.integrations.google_drive.client import GoogleDriveClient
 from src.integrations.reddit import (
     RedditClient,
     RedditPost,
@@ -40,6 +44,7 @@ from src.integrations.reddit import (
     RedditSubreddit,
     RedditTimeFilter,
 )
+from src.integrations.serper import SerperClient
 from src.integrations.tavily import TavilyClient
 from src.models.niche_research import (
     NicheOpportunity,
@@ -47,6 +52,7 @@ from src.models.niche_research import (
     NicheResearchResult,
     NicheSubreddit,
 )
+from src.utils.rate_limiter import TokenBucketRateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -93,73 +99,6 @@ class ServiceUnavailableError(NicheResearchAgentError):
 
 
 # ============================================================================
-# Token Bucket Rate Limiter
-# ============================================================================
-
-
-class TokenBucketRateLimiter:
-    """
-    Token bucket rate limiter for API calls.
-
-    Allows bursts up to capacity, then refills at refill_rate per second.
-    """
-
-    def __init__(self, capacity: int, refill_rate: float, service_name: str) -> None:
-        """
-        Initialize rate limiter.
-
-        Args:
-            capacity: Maximum tokens (burst capacity)
-            refill_rate: Tokens to add per second
-            service_name: Service name for logging
-        """
-        self.capacity = capacity
-        self.refill_rate = refill_rate
-        self.service_name = service_name
-        self.tokens = float(capacity)
-        self.last_update = asyncio.get_event_loop().time()
-        self._lock = asyncio.Lock()
-
-    async def acquire(self, tokens: int = 1) -> None:
-        """
-        Acquire tokens, waiting if necessary.
-
-        Args:
-            tokens: Number of tokens to acquire
-        """
-        async with self._lock:
-            now = asyncio.get_event_loop().time()
-            elapsed = now - self.last_update
-
-            # Refill tokens based on elapsed time
-            self.tokens = min(
-                self.capacity,
-                self.tokens + elapsed * self.refill_rate,
-            )
-            self.last_update = now
-
-            # Check if we have enough tokens
-            if self.tokens >= tokens:
-                self.tokens -= tokens
-                return
-
-            # Wait for tokens to be available
-            tokens_needed = tokens - self.tokens
-            wait_time = tokens_needed / self.refill_rate
-
-            logger.debug(
-                f"[{self.service_name}] Rate limit reached. "
-                f"Waiting {wait_time:.2f}s for token refill"
-            )
-
-            await asyncio.sleep(wait_time)
-
-            # Refill and acquire
-            self.tokens = self.capacity
-            self.tokens -= tokens
-
-
-# ============================================================================
 # SDK MCP Tools
 # ============================================================================
 
@@ -173,15 +112,19 @@ class TokenBucketRateLimiter:
         "posts_per_subreddit": int,
         "min_subscribers": int,
         "include_nsfw": bool,
+        "client_id": str,
+        "client_secret": str,
     },
 )
-async def search_reddit_tool(args: dict[str, Any], reddit_client: RedditClient) -> dict[str, Any]:
+async def search_reddit_tool(args: dict[str, Any]) -> dict[str, Any]:
     """
     SDK MCP tool for searching Reddit.
 
+    This tool creates its own Reddit client using provided credentials,
+    following the SDK pattern where tools are self-contained.
+
     Args:
-        args: Tool arguments with query, max_subreddits, etc.
-        reddit_client: Authenticated Reddit client
+        args: Tool arguments with query, max_subreddits, credentials, etc.
 
     Returns:
         Tool result with subreddits and posts
@@ -192,36 +135,52 @@ async def search_reddit_tool(args: dict[str, Any], reddit_client: RedditClient) 
         posts_per_subreddit = args.get("posts_per_subreddit", 25)
         min_subscribers = args.get("min_subscribers", 1000)
         include_nsfw = args.get("include_nsfw", False)
+        client_id = args.get("client_id", os.getenv("REDDIT_CLIENT_ID", ""))
+        client_secret = args.get("client_secret", os.getenv("REDDIT_CLIENT_SECRET", ""))
 
-        # Search for subreddits
-        subreddits_list = await reddit_client.search_subreddits(
-            query=query,
-            limit=max_subreddits,
-            include_over18=include_nsfw,
+        if not client_id or not client_secret:
+            return {
+                "content": [{"type": "text", "text": "Reddit credentials not provided"}],
+                "is_error": True,
+            }
+
+        # Create Reddit client for this tool call
+        reddit_client = RedditClient(
+            client_id=client_id,
+            client_secret=client_secret,
+            user_agent="smarter-team-niche-research/1.0",
         )
 
-        # Filter by subscriber count
-        subreddits: list[RedditSubreddit] = []
-        seen: set[str] = set()
-
-        for subreddit in subreddits_list:
-            if subreddit.subscribers >= min_subscribers and subreddit.name not in seen:
-                seen.add(subreddit.name)
-                subreddits.append(subreddit)
-
-                if len(subreddits) >= max_subreddits:
-                    break
-
-        # Get top posts from each subreddit
-        all_posts: list[RedditPost] = []
-        for subreddit in subreddits[:5]:  # Limit to top 5
-            posts = await reddit_client.get_subreddit_posts(
-                subreddit.name,
-                sort=RedditSortType.HOT,
-                time_filter=RedditTimeFilter.MONTH,
-                limit=posts_per_subreddit,
+        async with reddit_client:
+            # Search for subreddits
+            subreddits_list = await reddit_client.search_subreddits(
+                query=query,
+                limit=max_subreddits,
+                include_over18=include_nsfw,
             )
-            all_posts.extend(posts)
+
+            # Filter by subscriber count
+            subreddits: list[RedditSubreddit] = []
+            seen: set[str] = set()
+
+            for subreddit in subreddits_list:
+                if subreddit.subscribers >= min_subscribers and subreddit.name not in seen:
+                    seen.add(subreddit.name)
+                    subreddits.append(subreddit)
+
+                    if len(subreddits) >= max_subreddits:
+                        break
+
+            # Get top posts from each subreddit
+            all_posts: list[RedditPost] = []
+            for subreddit in subreddits[:5]:  # Limit to top 5
+                posts = await reddit_client.get_subreddit_posts(
+                    subreddit.name,
+                    sort=RedditSortType.HOT,
+                    time_filter=RedditTimeFilter.MONTH,
+                    limit=posts_per_subreddit,
+                )
+                all_posts.extend(posts)
 
         # Format results
         subreddit_data = [
@@ -474,11 +433,11 @@ class ResilientRedditClient:
             )
         return self._client
 
-    @retry(  # type: ignore[misc]
+    @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1.0, max=60.0),
         retry=retry_if_exception_type(
-            httpx.TimeoutException | httpx.NetworkError | ServiceUnavailableError
+            (httpx.TimeoutException, httpx.NetworkError, ServiceUnavailableError)
         ),
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True,
@@ -517,11 +476,11 @@ class ResilientRedditClient:
         except httpx.NetworkError as e:
             raise NicheResearchAgentError(f"Reddit network error: {e}") from e
 
-    @retry(  # type: ignore[misc]
+    @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1.0, max=60.0),
         retry=retry_if_exception_type(
-            httpx.TimeoutException | httpx.NetworkError | ServiceUnavailableError
+            (httpx.TimeoutException, httpx.NetworkError, ServiceUnavailableError)
         ),
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True,
@@ -592,11 +551,11 @@ class ResilientBraveClient:
             self._client = BraveClient(api_key=self.api_key)
         return self._client
 
-    @retry(  # type: ignore[misc]
+    @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1.0, max=60.0),
         retry=retry_if_exception_type(
-            httpx.TimeoutException | httpx.NetworkError | ServiceUnavailableError
+            (httpx.TimeoutException, httpx.NetworkError, ServiceUnavailableError)
         ),
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True,
@@ -664,11 +623,11 @@ class ResilientTavilyClient:
             self._client = TavilyClient(api_key=self.api_key)
         return self._client
 
-    @retry(  # type: ignore[misc]
+    @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1.0, max=60.0),
         retry=retry_if_exception_type(
-            httpx.TimeoutException | httpx.NetworkError | ServiceUnavailableError
+            (httpx.TimeoutException, httpx.NetworkError, ServiceUnavailableError)
         ),
         before_sleep=before_sleep_log(logger, logging.WARNING),
         reraise=True,
@@ -705,6 +664,232 @@ class ResilientTavilyClient:
             raise NicheResearchAgentError(f"Tavily network error: {e}") from e
 
 
+class ResilientExaClient:
+    """
+    Exa client with retry logic and rate limiting.
+
+    Ultra-resilient integration with:
+    - Tenacity retry with exponential backoff and jitter
+    - Token bucket rate limiting (10 requests/second)
+    - Specific error handling for 4xx/5xx/timeout/connection errors
+
+    Free tier: 1,000 searches/month (use wisely!)
+    """
+
+    # Exa API limit: 10 requests/second
+    RATE_LIMIT = 10
+    RATE_WINDOW = 1.0  # seconds
+
+    def __init__(self, api_key: str) -> None:
+        self.api_key = api_key
+        self._rate_limiter = TokenBucketRateLimiter(
+            capacity=self.RATE_LIMIT,
+            refill_rate=self.RATE_LIMIT / self.RATE_WINDOW,
+            service_name="Exa",
+        )
+        self._client: ExaClient | None = None
+
+    async def _get_client(self) -> ExaClient:
+        """Get or create Exa client."""
+        if self._client is None:
+            self._client = ExaClient(api_key=self.api_key)
+        return self._client
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1.0, max=60.0),
+        retry=retry_if_exception_type(
+            (httpx.TimeoutException, httpx.NetworkError, ServiceUnavailableError)
+        ),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,
+    )
+    async def search(
+        self,
+        query: str,
+        num_results: int = 10,
+        use_autoprompt: bool = True,
+    ) -> Any:
+        """Semantic search with retry and rate limiting."""
+        await self._rate_limiter.acquire()
+
+        try:
+            client = await self._get_client()
+            async with client:
+                return await client.search(
+                    query=query,
+                    num_results=num_results,
+                    use_autoprompt=use_autoprompt,
+                )
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                raise RateLimitExceededError("Exa") from e
+            if e.response.status_code == 401:
+                raise AuthenticationFailedError("Exa") from e
+            if 500 <= e.response.status_code < 600:
+                raise ServiceUnavailableError("Exa", e.response.status_code) from e
+            raise NicheResearchAgentError(f"Exa API error: {e}") from e
+
+        except httpx.TimeoutException as e:
+            raise NicheResearchAgentError("Exa request timed out") from e
+
+        except httpx.NetworkError as e:
+            raise NicheResearchAgentError(f"Exa network error: {e}") from e
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1.0, max=60.0),
+        retry=retry_if_exception_type(
+            (httpx.TimeoutException, httpx.NetworkError, ServiceUnavailableError)
+        ),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,
+    )
+    async def search_companies(
+        self,
+        query: str,
+        num_results: int = 10,
+    ) -> Any:
+        """Search for companies with retry and rate limiting."""
+        await self._rate_limiter.acquire()
+
+        try:
+            client = await self._get_client()
+            async with client:
+                return await client.search_companies(
+                    query=query,
+                    num_results=num_results,
+                )
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                raise RateLimitExceededError("Exa") from e
+            if e.response.status_code == 401:
+                raise AuthenticationFailedError("Exa") from e
+            if 500 <= e.response.status_code < 600:
+                raise ServiceUnavailableError("Exa", e.response.status_code) from e
+            raise NicheResearchAgentError(f"Exa API error: {e}") from e
+
+        except httpx.TimeoutException as e:
+            raise NicheResearchAgentError("Exa request timed out") from e
+
+        except httpx.NetworkError as e:
+            raise NicheResearchAgentError(f"Exa network error: {e}") from e
+
+
+class ResilientSerperClient:
+    """
+    Serper client with retry logic and rate limiting.
+
+    Ultra-resilient integration with:
+    - Tenacity retry with exponential backoff and jitter
+    - Token bucket rate limiting (50 requests/second)
+    - Specific error handling for 4xx/5xx/timeout/connection errors
+
+    Free tier: 2,500 queries included!
+    """
+
+    # Serper API limit: 50 QPS (Starter tier)
+    RATE_LIMIT = 50
+    RATE_WINDOW = 1.0  # seconds
+
+    def __init__(self, api_key: str) -> None:
+        self.api_key = api_key
+        self._rate_limiter = TokenBucketRateLimiter(
+            capacity=self.RATE_LIMIT,
+            refill_rate=self.RATE_LIMIT / self.RATE_WINDOW,
+            service_name="Serper",
+        )
+        self._client: SerperClient | None = None
+
+    async def _get_client(self) -> SerperClient:
+        """Get or create Serper client."""
+        if self._client is None:
+            self._client = SerperClient(api_key=self.api_key)
+        return self._client
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1.0, max=60.0),
+        retry=retry_if_exception_type(
+            (httpx.TimeoutException, httpx.NetworkError, ServiceUnavailableError)
+        ),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,
+    )
+    async def search(
+        self,
+        query: str,
+        num: int = 10,
+    ) -> Any:
+        """Google search with retry and rate limiting."""
+        await self._rate_limiter.acquire()
+
+        try:
+            client = await self._get_client()
+            async with client:
+                return await client.search(
+                    query=query,
+                    num=num,
+                )
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                raise RateLimitExceededError("Serper") from e
+            if e.response.status_code == 401:
+                raise AuthenticationFailedError("Serper") from e
+            if 500 <= e.response.status_code < 600:
+                raise ServiceUnavailableError("Serper", e.response.status_code) from e
+            raise NicheResearchAgentError(f"Serper API error: {e}") from e
+
+        except httpx.TimeoutException as e:
+            raise NicheResearchAgentError("Serper request timed out") from e
+
+        except httpx.NetworkError as e:
+            raise NicheResearchAgentError(f"Serper network error: {e}") from e
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1.0, max=60.0),
+        retry=retry_if_exception_type(
+            (httpx.TimeoutException, httpx.NetworkError, ServiceUnavailableError)
+        ),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,
+    )
+    async def search_news(
+        self,
+        query: str,
+        num: int = 10,
+    ) -> Any:
+        """News search with retry and rate limiting."""
+        await self._rate_limiter.acquire()
+
+        try:
+            client = await self._get_client()
+            async with client:
+                return await client.search_news(
+                    query=query,
+                    num=num,
+                )
+
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                raise RateLimitExceededError("Serper") from e
+            if e.response.status_code == 401:
+                raise AuthenticationFailedError("Serper") from e
+            if 500 <= e.response.status_code < 600:
+                raise ServiceUnavailableError("Serper", e.response.status_code) from e
+            raise NicheResearchAgentError(f"Serper API error: {e}") from e
+
+        except httpx.TimeoutException as e:
+            raise NicheResearchAgentError("Serper request timed out") from e
+
+        except httpx.NetworkError as e:
+            raise NicheResearchAgentError(f"Serper network error: {e}") from e
+
+
 # ============================================================================
 # Niche Research Agent using Claude Agent SDK
 # ============================================================================
@@ -730,6 +915,8 @@ class NicheResearchAgent:
         reddit_client_secret: str | None = None,
         brave_api_key: str | None = None,
         tavily_api_key: str | None = None,
+        exa_api_key: str | None = None,
+        serper_api_key: str | None = None,
     ) -> None:
         """
         Initialize the Niche Research Agent.
@@ -739,12 +926,16 @@ class NicheResearchAgent:
             reddit_client_secret: Reddit app client secret (from environment if not provided)
             brave_api_key: Brave Search API key (from environment if not provided)
             tavily_api_key: Tavily Search API key (from environment if not provided)
+            exa_api_key: EXA AI Search API key (from environment if not provided)
+            serper_api_key: Serper Google Search API key (from environment if not provided)
         """
         # Get API keys from environment if not provided
         self.reddit_client_id = reddit_client_id or os.getenv("REDDIT_CLIENT_ID", "")
         self.reddit_client_secret = reddit_client_secret or os.getenv("REDDIT_CLIENT_SECRET", "")
         self.brave_api_key = brave_api_key or os.getenv("BRAVE_API_KEY", "")
         self.tavily_api_key = tavily_api_key or os.getenv("TAVILY_API_KEY", "")
+        self.exa_api_key = exa_api_key or os.getenv("EXA_API_KEY", "")
+        self.serper_api_key = serper_api_key or os.getenv("SERPER_API_KEY", "")
 
         self.name = "niche_research_agent"
         logger.info(f"Initialized {self.name}")
@@ -759,44 +950,53 @@ class NicheResearchAgent:
         - Base score of 1.0
 
         Args:
-            subreddit: RedditSubreddit object
+            subreddit: RedditSubreddit or NicheSubreddit object
 
         Returns:
             Engagement score (0.0 to 10.0)
         """
+        # Handle both RedditSubreddit (subscribers) and NicheSubreddit (subscriber_count)
+        subscribers = (
+            getattr(subreddit, "subscribers", None)
+            or getattr(subreddit, "subscriber_count", 0)
+            or 0
+        )
+        active_users = getattr(subreddit, "active_users", 0) or 0
+
         # Active user ratio (higher is better)
-        if subreddit.subscribers > 0:
-            active_ratio = subreddit.active_users / subreddit.subscribers
-        else:
-            active_ratio = 0.0
+        active_ratio = active_users / subscribers if subscribers > 0 else 0.0
 
         # Normalize active ratio (typically 0.01 to 0.10)
         active_score = min(active_ratio * 20, 5.0)
 
         # Subscriber score (logarithmic, max 5.0)
-        if subreddit.subscribers > 0:
-            sub_score = min(math.log10(subreddit.subscribers) / 2, 5.0)
-        else:
-            sub_score = 0.0
+        sub_score = min(math.log10(subscribers) / 2, 5.0) if subscribers > 0 else 0.0
 
         return active_score + sub_score
 
     def _calculate_relevance_score(
         self,
-        subreddit: RedditSubreddit,
+        subreddit: RedditSubreddit | NicheSubreddit,
         keywords: list[str],
     ) -> float:
         """
         Calculate relevance score based on keyword matching.
 
         Args:
-            subreddit: RedditSubreddit object
+            subreddit: RedditSubreddit or NicheSubreddit object
             keywords: List of trend keywords
 
         Returns:
             Relevance score (0.0 to 10.0)
         """
-        description_lower = subreddit.title.lower() + " " + subreddit.public_description.lower()
+        # Handle both RedditSubreddit (public_description) and NicheSubreddit (description)
+        title = getattr(subreddit, "title", "") or ""
+        description = (
+            getattr(subreddit, "public_description", None)
+            or getattr(subreddit, "description", "")
+            or ""
+        )
+        description_lower = title.lower() + " " + description.lower()
 
         # Count keyword matches
         matches = sum(1 for kw in keywords if kw.lower() in description_lower)
@@ -850,6 +1050,8 @@ class NicheResearchAgent:
         reddit_client: ResilientRedditClient | None = None
         brave_client: ResilientBraveClient | None = None
         tavily_client: ResilientTavilyClient | None = None
+        exa_client: ResilientExaClient | None = None
+        serper_client: ResilientSerperClient | None = None
 
         if self.reddit_client_id and self.reddit_client_secret:
             reddit_client = ResilientRedditClient(
@@ -864,6 +1066,12 @@ class NicheResearchAgent:
         if self.tavily_api_key:
             tavily_client = ResilientTavilyClient(api_key=self.tavily_api_key)
 
+        if self.exa_api_key:
+            exa_client = ResilientExaClient(api_key=self.exa_api_key)
+
+        if self.serper_api_key:
+            serper_client = ResilientSerperClient(api_key=self.serper_api_key)
+
         try:
             # Phase 1: Parallel web research
             research_data = await self._parallel_web_research(
@@ -871,6 +1079,8 @@ class NicheResearchAgent:
                 reddit_client,
                 brave_client,
                 tavily_client,
+                exa_client,
+                serper_client,
                 max_subreddits,
                 posts_per_subreddit,
                 min_subscribers,
@@ -942,6 +1152,8 @@ class NicheResearchAgent:
         reddit_client: ResilientRedditClient | None,
         brave_client: ResilientBraveClient | None,
         tavily_client: ResilientTavilyClient | None,
+        exa_client: ResilientExaClient | None,
+        serper_client: ResilientSerperClient | None,
         max_subreddits: int,
         posts_per_subreddit: int,
         min_subscribers: int,
@@ -950,13 +1162,21 @@ class NicheResearchAgent:
         """
         Phase 1.1: Parallel web research using multiple sources.
 
-        Searches Reddit, Brave, and Tavily in parallel for maximum speed.
+        Searches ALL available sources in parallel for maximum coverage:
+        - Claude SDK WebSearch (always, free)
+        - Reddit API (if credentials)
+        - EXA semantic search (1K/mo free)
+        - Serper Google search (2.5K free)
+        - Brave search (if key available)
+        - Tavily deep research (if key available)
 
         Args:
             query: Niche search query
             reddit_client: Resilient Reddit client
             brave_client: Resilient Brave client
             tavily_client: Resilient Tavily client
+            exa_client: Resilient Exa client (semantic search)
+            serper_client: Resilient Serper client (Google search)
             max_subreddits: Maximum subreddits to find
             posts_per_subreddit: Posts per subreddit
             min_subscribers: Minimum subscriber count
@@ -975,11 +1195,22 @@ class NicheResearchAgent:
             "errors": [],
         }
 
-        # Create tasks for parallel execution
+        # Create tasks for parallel execution - ALL SOURCES RUN IN PARALLEL
         tasks = []
 
-        # Reddit search task
+        # 1. ALWAYS use Claude SDK WebSearch (built-in, no API key needed)
+        # This is PRIMARY and always runs for comprehensive research
+        logger.info("Adding Claude SDK WebSearch for comprehensive Reddit + web research")
+        tasks.append(
+            self._deep_research_via_claude_sdk(
+                query,
+                max_subreddits,
+            )
+        )
+
+        # 2. Reddit API (if credentials available) - ADDITIONAL source
         if reddit_client:
+            logger.info("Adding Reddit API for direct subreddit/post data")
             tasks.append(
                 self._search_reddit_parallel(
                     reddit_client,
@@ -991,12 +1222,25 @@ class NicheResearchAgent:
                 )
             )
 
-        # Brave web search task
-        if brave_client:
-            tasks.append(self._search_web_parallel(brave_client, query))
+        # 3. EXA semantic search (1,000 free/month) - CHEAP SOURCE
+        if exa_client:
+            logger.info("Adding EXA for semantic/neural search (1K free/mo)")
+            tasks.append(self._search_exa_parallel(exa_client, query))
 
-        # Tavily research task
+        # 4. Serper Google search (2,500 free queries) - CHEAP SOURCE
+        if serper_client:
+            logger.info("Adding Serper for Google search (2.5K free)")
+            tasks.append(self._search_serper_parallel(serper_client, query))
+
+        # 5. Brave web search (market research + Reddit via web)
+        if brave_client:
+            logger.info("Adding Brave Search for market validation + Reddit web search")
+            tasks.append(self._search_web_parallel(brave_client, query))
+            tasks.append(self._search_reddit_via_web(brave_client, query, max_subreddits))
+
+        # 6. Tavily deep research
         if tavily_client:
+            logger.info("Adding Tavily for deep market research")
             tasks.append(self._search_tavily_parallel(tavily_client, query))
 
         # Execute all tasks in parallel
@@ -1008,8 +1252,33 @@ class NicheResearchAgent:
                     logger.warning(f"Research task {i} failed: {result}")
                     results["errors"].append(str(result))
                 elif isinstance(result, dict):
-                    # Merge results
-                    results.update(result)
+                    # MERGE results (don't overwrite, extend lists)
+                    for key, value in result.items():
+                        if (
+                            key in results
+                            and isinstance(results[key], list)
+                            and isinstance(value, list)
+                        ):
+                            # Extend lists (subreddits, posts, web_results, etc.)
+                            results[key].extend(value)
+                        elif key not in results or not results[key]:
+                            results[key] = value
+
+            # Deduplicate subreddits by name
+            seen_subs: set[str] = set()
+            unique_subs: list[Any] = []
+            for sub in results.get("subreddits", []):
+                name = getattr(sub, "name", "") if hasattr(sub, "name") else sub.get("name", "")
+                if name and name not in seen_subs:
+                    seen_subs.add(name)
+                    unique_subs.append(sub)
+            results["subreddits"] = unique_subs
+
+            logger.info(
+                f"Merged research: {len(results['subreddits'])} unique subreddits, "
+                f"{len(results.get('posts', []))} posts, "
+                f"{len(results.get('web_results', []))} web results"
+            )
 
         logger.info(f"Parallel research complete. Found {len(results['subreddits'])} subreddits")
         return results
@@ -1060,6 +1329,480 @@ class NicheResearchAgent:
 
         except NicheResearchAgentError as e:
             logger.error(f"Reddit search failed: {e}")
+            results["errors"].append(str(e))
+
+        return results
+
+    async def _deep_research_via_claude_sdk(
+        self,
+        search_query: str,
+        max_subreddits: int = 10,
+    ) -> dict[str, Any]:
+        """
+        Comprehensive deep research using Claude SDK's WebSearch and WebFetch.
+
+        This is the PRIMARY research method that always runs.
+        Performs multi-phase research:
+        1. Reddit community discovery
+        2. Pain point and problem discovery
+        3. Market trends and opportunities
+        4. Deep content fetching for insights
+
+        Args:
+            search_query: Search query for research
+            max_subreddits: Maximum subreddits to find
+
+        Returns:
+            Comprehensive research findings from all searches
+        """
+        logger.info(f"Starting deep research via Claude SDK for: {search_query}")
+        results: dict[str, Any] = {
+            "subreddits": [],
+            "posts": [],
+            "web_results": [],
+            "pain_points_raw": [],
+            "market_insights": [],
+            "errors": [],
+        }
+
+        try:
+            # Configure Claude SDK with WebSearch AND WebFetch
+            # Using acceptEdits for safer automated workflows (per SDK_PATTERNS.md)
+            # bypassPermissions requires security hooks which aren't needed for built-in tools
+            options = ClaudeAgentOptions(
+                allowed_tools=["WebSearch", "WebFetch"],
+                permission_mode="acceptEdits",
+                max_turns=15,  # More turns for comprehensive research
+                setting_sources=["project"],  # Load CLAUDE.md settings
+            )
+
+            # PHASE 1: Reddit Community Discovery
+            phase1_prompt = f"""You are a market research expert. Research "{search_query}" thoroughly.
+
+PHASE 1: Find Reddit Communities
+
+Use WebSearch to find Reddit communities discussing "{search_query}". Search for:
+1. "Reddit {search_query} community subreddit"
+2. "Reddit {search_query} discussion forum"
+3. "best subreddits for {search_query}"
+4. "Reddit where to discuss {search_query}"
+
+For each subreddit found, extract:
+- Subreddit name (e.g., "entrepreneur", "startups")
+- What the community discusses
+- Estimated size/activity level if mentioned
+
+Return as JSON:
+{{
+    "subreddits": [
+        {{"name": "subreddit_name", "description": "what they discuss", "activity": "high/medium/low"}}
+    ]
+}}"""
+
+            phase1_response = await self._run_claude_sdk_query(phase1_prompt, options)
+            phase1_data = self._parse_json_response(phase1_response)
+
+            for sub_data in phase1_data.get("subreddits", [])[:max_subreddits]:
+                name = sub_data.get("name", "").lower().strip().replace("r/", "")
+                if name and len(name) > 1:
+                    activity = sub_data.get("activity", "medium")
+                    engagement = 8.0 if activity == "high" else 5.0 if activity == "medium" else 3.0
+                    niche_sub = NicheSubreddit(
+                        name=name,
+                        title=f"r/{name}",
+                        description=sub_data.get("description", "")[:500],
+                        subscriber_count=0,
+                        active_users=0,
+                        engagement_score=engagement,
+                        relevance_score=7.0,
+                        url=f"https://reddit.com/r/{name}",
+                        created_at=datetime.now(),
+                        raw={"source": "claude_sdk_phase1"},
+                    )
+                    results["subreddits"].append(niche_sub)
+
+            logger.info(f"Phase 1 found {len(results['subreddits'])} subreddits")
+
+            # PHASE 2: Pain Points and Problems Discovery
+            phase2_prompt = f"""You are a market research expert analyzing pain points for "{search_query}".
+
+PHASE 2: Find Pain Points and Problems
+
+Use WebSearch to find problems and frustrations people have with "{search_query}". Search for:
+1. "Reddit {search_query} problems frustrated"
+2. "{search_query} challenges issues help"
+3. "struggling with {search_query} advice"
+4. "{search_query} not working alternatives"
+5. "hate {search_query} issues"
+
+Look for:
+- Specific complaints and frustrations
+- Common questions people ask
+- Things people wish were different
+- Repeated problems across multiple posts
+
+Return as JSON:
+{{
+    "pain_points": [
+        {{"problem": "specific problem description", "severity": "high/medium/low", "frequency": "common/occasional/rare", "source": "where you found it"}}
+    ],
+    "common_questions": [
+        "Question people frequently ask"
+    ]
+}}"""
+
+            phase2_response = await self._run_claude_sdk_query(phase2_prompt, options)
+            phase2_data = self._parse_json_response(phase2_response)
+
+            for pp in phase2_data.get("pain_points", []):
+                results["pain_points_raw"].append(pp)
+                # Also add as a post for pain point extraction
+                results["posts"].append(
+                    {
+                        "title": pp.get("problem", ""),
+                        "subreddit": "research",
+                        "url": pp.get("source", ""),
+                        "source": "claude_sdk_phase2",
+                        "severity": pp.get("severity", "medium"),
+                    }
+                )
+
+            for q in phase2_data.get("common_questions", []):
+                results["posts"].append(
+                    {
+                        "title": q,
+                        "subreddit": "research",
+                        "url": "",
+                        "source": "claude_sdk_phase2_question",
+                    }
+                )
+
+            logger.info(f"Phase 2 found {len(results['pain_points_raw'])} pain points")
+
+            # PHASE 3: Market Trends and Opportunities
+            phase3_prompt = f"""You are a market research expert analyzing opportunities for "{search_query}".
+
+PHASE 3: Market Trends and Opportunities
+
+Use WebSearch to find market trends and business opportunities for "{search_query}". Search for:
+1. "{search_query} market size growth 2024"
+2. "{search_query} trends opportunities"
+3. "{search_query} startup ideas business"
+4. "best tools for {search_query}"
+5. "{search_query} industry analysis"
+
+Look for:
+- Market size and growth trends
+- Emerging opportunities
+- Gaps in current solutions
+- What successful products/services exist
+- Underserved segments
+
+Return as JSON:
+{{
+    "market_insights": [
+        {{"insight": "specific market insight", "opportunity": "potential business opportunity", "evidence": "where you found this"}}
+    ],
+    "existing_solutions": [
+        {{"name": "product/service name", "what_it_does": "brief description", "gap": "what it doesn't do well"}}
+    ],
+    "trends": [
+        "Emerging trend in this space"
+    ]
+}}"""
+
+            phase3_response = await self._run_claude_sdk_query(phase3_prompt, options)
+            phase3_data = self._parse_json_response(phase3_response)
+
+            for insight in phase3_data.get("market_insights", []):
+                results["market_insights"].append(insight)
+                results["web_results"].append(
+                    {
+                        "title": insight.get("insight", ""),
+                        "description": insight.get("opportunity", ""),
+                        "url": insight.get("evidence", ""),
+                        "source": "claude_sdk_phase3",
+                    }
+                )
+
+            for solution in phase3_data.get("existing_solutions", []):
+                results["web_results"].append(
+                    {
+                        "title": solution.get("name", ""),
+                        "description": f"{solution.get('what_it_does', '')} - Gap: {solution.get('gap', '')}",
+                        "source": "claude_sdk_phase3_solution",
+                    }
+                )
+
+            for trend in phase3_data.get("trends", []):
+                results["web_results"].append(
+                    {
+                        "title": trend,
+                        "description": "Market trend",
+                        "source": "claude_sdk_phase3_trend",
+                    }
+                )
+
+            logger.info(f"Phase 3 found {len(results['market_insights'])} market insights")
+
+            # PHASE 4: Deep Dive on Top Findings (using WebFetch)
+            if results["subreddits"]:
+                top_subreddits = [s.name for s in results["subreddits"][:3]]
+                phase4_prompt = f"""You are a market research expert doing deep research on "{search_query}".
+
+PHASE 4: Deep Dive Research
+
+The top Reddit communities for this niche are: {', '.join(top_subreddits)}
+
+Use WebFetch to get more details from relevant pages. Try to fetch:
+1. One of the subreddit pages if accessible
+2. A relevant article or blog post about "{search_query}"
+
+Then use WebSearch for:
+1. "Reddit r/{top_subreddits[0] if top_subreddits else search_query} top posts"
+2. "{search_query} expert advice tips"
+
+Analyze what you find and return:
+{{
+    "deep_insights": [
+        {{"finding": "specific finding", "implication": "what this means for business", "confidence": "high/medium/low"}}
+    ],
+    "additional_communities": [
+        {{"name": "community_name", "platform": "reddit/forum/other", "relevance": "why it's relevant"}}
+    ],
+    "key_influencers": [
+        "Name or username of key voice in this space"
+    ]
+}}"""
+
+                phase4_response = await self._run_claude_sdk_query(phase4_prompt, options)
+                phase4_data = self._parse_json_response(phase4_response)
+
+                for insight in phase4_data.get("deep_insights", []):
+                    results["market_insights"].append(
+                        {
+                            "insight": insight.get("finding", ""),
+                            "opportunity": insight.get("implication", ""),
+                            "confidence": insight.get("confidence", "medium"),
+                        }
+                    )
+
+                for community in phase4_data.get("additional_communities", []):
+                    if community.get("platform") == "reddit":
+                        name = community.get("name", "").lower().strip().replace("r/", "")
+                        if name and not any(s.name == name for s in results["subreddits"]):
+                            niche_sub = NicheSubreddit(
+                                name=name,
+                                title=f"r/{name}",
+                                description=community.get("relevance", "")[:500],
+                                subscriber_count=0,
+                                active_users=0,
+                                engagement_score=5.0,
+                                relevance_score=6.0,
+                                url=f"https://reddit.com/r/{name}",
+                                created_at=datetime.now(),
+                                raw={"source": "claude_sdk_phase4"},
+                            )
+                            results["subreddits"].append(niche_sub)
+
+                logger.info(
+                    f"Phase 4 added {len(phase4_data.get('deep_insights', []))} deep insights"
+                )
+
+            logger.info(
+                f"Claude SDK deep research complete: "
+                f"{len(results['subreddits'])} subreddits, "
+                f"{len(results['posts'])} posts, "
+                f"{len(results['pain_points_raw'])} pain points, "
+                f"{len(results['market_insights'])} insights"
+            )
+
+        except Exception as e:
+            logger.error(f"Claude SDK deep research failed: {e}")
+            import traceback
+
+            logger.debug(f"Claude SDK traceback: {traceback.format_exc()}")
+            results["errors"].append(str(e))
+
+        return results
+
+    async def _run_claude_sdk_query(
+        self,
+        prompt: str,
+        options: ClaudeAgentOptions,
+    ) -> str:
+        """Run a Claude SDK query and return the response text."""
+        response_text = ""
+        try:
+            async for message in query(prompt=prompt, options=options):
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            response_text += block.text
+        except Exception as e:
+            logger.warning(f"Claude SDK query failed: {e}")
+        return response_text
+
+    def _parse_json_response(self, response_text: str) -> dict[str, Any]:
+        """Parse JSON from Claude SDK response."""
+        import json
+        import re
+
+        if not response_text:
+            return {}
+
+        # Find JSON in response
+        json_match = re.search(r"\{[\s\S]*\}", response_text)
+        if json_match:
+            try:
+                return json.loads(json_match.group())
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse JSON: {e}")
+        return {}
+
+    async def _search_reddit_via_claude_sdk(
+        self,
+        search_query: str,
+        max_subreddits: int = 10,
+    ) -> dict[str, Any]:
+        """Legacy method - redirects to deep research."""
+        return await self._deep_research_via_claude_sdk(search_query, max_subreddits)
+
+    async def _search_reddit_via_web(
+        self,
+        brave_client: ResilientBraveClient,
+        query: str,
+        max_subreddits: int = 10,
+    ) -> dict[str, Any]:
+        """
+        Search Reddit via web search when Reddit API credentials are not available.
+
+        Uses Brave to search site:reddit.com for subreddits and posts.
+        This is a fallback method that provides similar functionality to the Reddit API.
+
+        Args:
+            brave_client: Resilient Brave client for web search
+            query: Search query
+            max_subreddits: Maximum subreddits to find
+
+        Returns:
+            Dictionary with subreddits and posts extracted from web results
+        """
+        logger.info(f"Searching Reddit via web search for: {query}")
+        results: dict[str, Any] = {"subreddits": [], "posts": [], "errors": []}
+
+        try:
+            # Search for subreddits
+            subreddit_queries = [
+                f"site:reddit.com/r/ {query}",
+                f"site:reddit.com {query} subreddit community",
+            ]
+
+            seen_subreddits: set[str] = set()
+            seen_posts: set[str] = set()
+
+            for search_query in subreddit_queries:
+                try:
+                    response = await brave_client.search(
+                        query=search_query,
+                        count=20,
+                        freshness="month",
+                    )
+
+                    for result in response.results:
+                        url = getattr(result, "url", "") or ""
+                        title = getattr(result, "title", "") or ""
+                        description = getattr(result, "description", "") or ""
+
+                        # Extract subreddit from URL
+                        if "/r/" in url:
+                            parts = url.split("/r/")
+                            if len(parts) > 1:
+                                subreddit_part = parts[1].split("/")[0]
+                                subreddit_name = subreddit_part.lower()
+
+                                if subreddit_name and subreddit_name not in seen_subreddits:
+                                    seen_subreddits.add(subreddit_name)
+
+                                    # Create a NicheSubreddit from web data
+                                    from datetime import datetime
+
+                                    niche_sub = NicheSubreddit(
+                                        name=subreddit_name,
+                                        title=f"r/{subreddit_name}",
+                                        description=description[:500] if description else "",
+                                        subscriber_count=0,  # Unknown from web search
+                                        active_users=0,
+                                        engagement_score=5.0,  # Default score
+                                        relevance_score=7.0,  # Higher since it matched query
+                                        url=f"https://reddit.com/r/{subreddit_name}",
+                                        created_at=datetime.now(),
+                                        raw={"source": "web_search", "original_url": url},
+                                    )
+                                    results["subreddits"].append(niche_sub)
+
+                                # Check if this is a post (has /comments/)
+                                if "/comments/" in url and url not in seen_posts:
+                                    seen_posts.add(url)
+                                    # Create a mock post for pain point extraction
+                                    results["posts"].append(
+                                        {
+                                            "title": title,
+                                            "url": url,
+                                            "subreddit": subreddit_name,
+                                            "source": "web_search",
+                                        }
+                                    )
+
+                except NicheResearchAgentError as e:
+                    logger.warning(f"Web search for Reddit failed: {e}")
+                    continue
+
+            # Search for pain points/problems on Reddit
+            pain_queries = [
+                f"site:reddit.com {query} problem issue help",
+                f"site:reddit.com {query} struggling frustrated",
+                f"site:reddit.com {query} how to advice",
+            ]
+
+            for search_query in pain_queries:
+                try:
+                    response = await brave_client.search(
+                        query=search_query,
+                        count=15,
+                        freshness="month",
+                    )
+
+                    for result in response.results:
+                        url = getattr(result, "url", "") or ""
+                        title = getattr(result, "title", "") or ""
+
+                        if "/r/" in url and "/comments/" in url and url not in seen_posts:
+                            seen_posts.add(url)
+                            # Extract subreddit name
+                            parts = url.split("/r/")
+                            subreddit_name = parts[1].split("/")[0] if len(parts) > 1 else "unknown"
+
+                            results["posts"].append(
+                                {
+                                    "title": title,
+                                    "url": url,
+                                    "subreddit": subreddit_name,
+                                    "source": "web_search",
+                                }
+                            )
+
+                except NicheResearchAgentError as e:
+                    logger.warning(f"Pain point search failed: {e}")
+                    continue
+
+            logger.info(
+                f"Web-based Reddit search complete: "
+                f"{len(results['subreddits'])} subreddits, {len(results['posts'])} posts"
+            )
+
+        except Exception as e:
+            logger.error(f"Reddit web search failed: {e}")
             results["errors"].append(str(e))
 
         return results
@@ -1123,6 +1866,200 @@ class NicheResearchAgent:
 
         return results
 
+    async def _search_exa_parallel(
+        self,
+        exa_client: ResilientExaClient,
+        query: str,
+    ) -> dict[str, Any]:
+        """
+        Search using EXA for semantic/neural search.
+
+        EXA understands meaning, not just keywords - great for finding
+        companies, trends, and content by concept.
+
+        Free tier: 1,000 searches/month
+        """
+        logger.info("Searching with EXA for semantic/neural search")
+        results: dict[str, Any] = {
+            "web_results": [],
+            "market_insights": [],
+            "errors": [],
+        }
+
+        try:
+            # Semantic search for market insights
+            search_queries = [
+                f"{query} market opportunities",
+                f"{query} business problems challenges",
+                f"{query} Reddit community discussion",
+            ]
+
+            for search_query in search_queries:
+                try:
+                    response = await exa_client.search(
+                        query=search_query,
+                        num_results=10,
+                        use_autoprompt=True,
+                    )
+
+                    for item in response.results:
+                        results["web_results"].append(
+                            {
+                                "title": item.title,
+                                "url": item.url,
+                                "description": item.summary or "",
+                                "score": item.score,
+                                "source": "exa_semantic",
+                            }
+                        )
+
+                        # Check if it's a Reddit URL (subreddit discovery)
+                        if "reddit.com/r/" in item.url:
+                            parts = item.url.split("/r/")
+                            if len(parts) > 1:
+                                subreddit_name = parts[1].split("/")[0].lower()
+                                results["market_insights"].append(
+                                    {
+                                        "insight": f"Reddit community r/{subreddit_name} discusses {query}",
+                                        "opportunity": item.title,
+                                        "evidence": item.url,
+                                        "source": "exa_semantic",
+                                    }
+                                )
+
+                except NicheResearchAgentError as e:
+                    logger.warning(f"EXA search failed for '{search_query}': {e}")
+                    continue
+
+            logger.info(
+                f"EXA search complete: {len(results['web_results'])} results, "
+                f"{len(results['market_insights'])} insights"
+            )
+
+        except Exception as e:
+            logger.error(f"EXA search failed: {e}")
+            results["errors"].append(str(e))
+
+        return results
+
+    async def _search_serper_parallel(
+        self,
+        serper_client: ResilientSerperClient,
+        query: str,
+    ) -> dict[str, Any]:
+        """
+        Search using Serper for Google Search results.
+
+        Returns organic results, knowledge graphs, "People Also Ask",
+        and related searches - great for market validation.
+
+        Free tier: 2,500 queries included!
+        """
+        logger.info("Searching with Serper for Google Search results")
+        results: dict[str, Any] = {
+            "web_results": [],
+            "market_insights": [],
+            "posts": [],  # Pain points from "People Also Ask"
+            "errors": [],
+        }
+
+        try:
+            # Multiple search queries for comprehensive coverage
+            search_queries = [
+                f"{query} market size trends",
+                f"site:reddit.com {query}",
+                f"{query} problems challenges issues",
+            ]
+
+            for search_query in search_queries:
+                try:
+                    response = await serper_client.search(
+                        query=search_query,
+                        num=15,
+                    )
+
+                    # Organic results
+                    for item in response.organic:
+                        results["web_results"].append(
+                            {
+                                "title": item.title,
+                                "url": item.link,
+                                "description": item.snippet,
+                                "source": "serper_google",
+                            }
+                        )
+
+                        # Check for Reddit posts (not just subreddit links)
+                        if "reddit.com/r/" in item.link and "/comments/" in item.link:
+                            # It's a post - useful for pain point extraction
+                            parts = item.link.split("/r/")
+                            subreddit = parts[1].split("/")[0] if len(parts) > 1 else "unknown"
+                            results["posts"].append(
+                                {
+                                    "title": item.title,
+                                    "url": item.link,
+                                    "subreddit": subreddit,
+                                    "source": "serper_google",
+                                }
+                            )
+
+                    # Knowledge Graph (if available)
+                    if response.knowledge_graph:
+                        kg = response.knowledge_graph
+                        results["market_insights"].append(
+                            {
+                                "insight": kg.title or "",
+                                "opportunity": kg.description or "",
+                                "evidence": kg.website or "",
+                                "source": "serper_knowledge_graph",
+                            }
+                        )
+
+                    # People Also Ask (great for pain point discovery!)
+                    for paa in response.people_also_ask:
+                        results["posts"].append(
+                            {
+                                "title": paa.question,
+                                "url": paa.link or "",
+                                "subreddit": "serper_paa",
+                                "source": "serper_people_also_ask",
+                            }
+                        )
+                        results["market_insights"].append(
+                            {
+                                "insight": paa.question,
+                                "opportunity": paa.snippet or "",
+                                "evidence": paa.link or "",
+                                "source": "serper_people_also_ask",
+                            }
+                        )
+
+                    # Related searches (trend discovery)
+                    for rs in response.related_searches:
+                        results["market_insights"].append(
+                            {
+                                "insight": f"Related search: {rs.query}",
+                                "opportunity": f"People also search for: {rs.query}",
+                                "evidence": "",
+                                "source": "serper_related",
+                            }
+                        )
+
+                except NicheResearchAgentError as e:
+                    logger.warning(f"Serper search failed for '{search_query}': {e}")
+                    continue
+
+            logger.info(
+                f"Serper search complete: {len(results['web_results'])} results, "
+                f"{len(results['posts'])} posts, {len(results['market_insights'])} insights"
+            )
+
+        except Exception as e:
+            logger.error(f"Serper search failed: {e}")
+            results["errors"].append(str(e))
+
+        return results
+
     async def _aggregate_findings(
         self,
         research_data: dict[str, Any],
@@ -1130,7 +2067,7 @@ class NicheResearchAgent:
         """
         Phase 1.2: Aggregate findings from all research sources.
 
-        Combines data from Reddit, web search, and Tavily into unified results.
+        Combines data from Reddit, web search, Tavily, and Claude SDK into unified results.
 
         Args:
             research_data: Raw research data from all sources
@@ -1145,21 +2082,54 @@ class NicheResearchAgent:
             "posts": research_data.get("posts", []),
             "web_results": research_data.get("web_results", []),
             "research_results": research_data.get("research_results", []),
+            "pain_points_raw": research_data.get("pain_points_raw", []),
+            "market_insights": research_data.get("market_insights", []),
             "trend_keywords": [],
         }
 
         # Extract trend keywords from web results
         keywords: Counter[str] = Counter()
+
+        # From web results
         for result in aggregated["web_results"][:20]:
-            # Simple keyword extraction from titles
-            words = result.title.lower().split()
-            for word in words:
-                if len(word) > 4:  # Only meaningful words
-                    keywords[word] += 1
+            title = (
+                result.get("title", "")
+                if isinstance(result, dict)
+                else getattr(result, "title", "")
+            )
+            if title:
+                words = title.lower().split()
+                for word in words:
+                    if len(word) > 4:
+                        keywords[word] += 1
 
-        aggregated["trend_keywords"] = [kw for kw, _ in keywords.most_common(20)]
+        # From market insights
+        for insight in aggregated["market_insights"][:10]:
+            if isinstance(insight, dict):
+                text = insight.get("insight", "") + " " + insight.get("opportunity", "")
+                words = text.lower().split()
+                for word in words:
+                    if len(word) > 4:
+                        keywords[word] += 1
 
-        logger.info(f"Aggregated {len(aggregated['subreddits'])} subreddits")
+        # From pain points
+        for pp in aggregated["pain_points_raw"][:10]:
+            if isinstance(pp, dict):
+                problem = pp.get("problem", "")
+                words = problem.lower().split()
+                for word in words:
+                    if len(word) > 4:
+                        keywords[word] += 1
+
+        aggregated["trend_keywords"] = [kw for kw, _ in keywords.most_common(30)]
+
+        logger.info(
+            f"Aggregated: {len(aggregated['subreddits'])} subreddits, "
+            f"{len(aggregated['posts'])} posts, "
+            f"{len(aggregated['web_results'])} web results, "
+            f"{len(aggregated['market_insights'])} market insights, "
+            f"{len(aggregated['pain_points_raw'])} raw pain points"
+        )
         return aggregated
 
     async def _score_subreddits(
@@ -1193,18 +2163,32 @@ class NicheResearchAgent:
                 aggregated_data.get("trend_keywords", []),
             )
 
-            niche_sub = NicheSubreddit(
-                name=subreddit.name,
-                title=subreddit.title,
-                description=subreddit.public_description,
-                subscriber_count=subreddit.subscribers,
-                active_users=subreddit.active_users,
-                engagement_score=engagement_score,
-                relevance_score=relevance_score,
-                url=subreddit.url,
-                created_at=datetime.fromtimestamp(subreddit.created_utc),
-                raw=subreddit.raw if hasattr(subreddit, "raw") else {},
-            )
+            # Handle both RedditSubreddit and NicheSubreddit input types
+            # If it's already a NicheSubreddit, just update scores
+            if isinstance(subreddit, NicheSubreddit):
+                subreddit.engagement_score = engagement_score
+                subreddit.relevance_score = relevance_score
+                niche_sub = subreddit
+            else:
+                # It's a RedditSubreddit - convert to NicheSubreddit
+                niche_sub = NicheSubreddit(
+                    name=subreddit.name,
+                    title=subreddit.title,
+                    description=getattr(subreddit, "public_description", "")
+                    or getattr(subreddit, "description", "")
+                    or "",
+                    subscriber_count=getattr(subreddit, "subscribers", 0)
+                    or getattr(subreddit, "subscriber_count", 0)
+                    or 0,
+                    active_users=getattr(subreddit, "active_users", 0) or 0,
+                    engagement_score=engagement_score,
+                    relevance_score=relevance_score,
+                    url=getattr(subreddit, "url", ""),
+                    created_at=datetime.fromtimestamp(getattr(subreddit, "created_utc", 0))
+                    if getattr(subreddit, "created_utc", 0)
+                    else datetime.now(),
+                    raw=getattr(subreddit, "raw", {}),
+                )
 
             scored_subreddits.append(niche_sub)
 
@@ -1267,18 +2251,26 @@ class NicheResearchAgent:
         source_posts: dict[str, list[str]] = {}
 
         for post in posts:
-            title_lower = post.title.lower()
+            # Handle both dict (from web search) and object (from Reddit API) formats
+            if isinstance(post, dict):
+                title = post.get("title", "")
+                permalink = post.get("url", "") or post.get("permalink", "")
+            else:
+                title = getattr(post, "title", "")
+                permalink = getattr(post, "permalink", "") or getattr(post, "url", "")
+
+            title_lower = title.lower()
 
             # Check for pain indicators
             for indicator in pain_indicators:
                 if indicator in title_lower:
                     # Extract the pain context (simple approach)
-                    pain_context = self._extract_pain_context(post.title, indicator)
+                    pain_context = self._extract_pain_context(title, indicator)
                     if pain_context:
                         pain_counter[pain_context] += 1
                         if pain_context not in source_posts:
                             source_posts[pain_context] = []
-                        source_posts[pain_context].append(post.permalink)
+                        source_posts[pain_context].append(permalink)
 
         # Create pain point objects
         for pain, freq in pain_counter.most_common(10):
@@ -1434,6 +2426,394 @@ Your capabilities include:
 - Identifying business opportunities based on pain points
 
 You use Reddit, web search, and AI analysis to provide comprehensive insights."""
+
+    # ========================================================================
+    # Google Drive/Docs Export Methods
+    # ========================================================================
+
+    async def export_to_google_drive(
+        self,
+        result: NicheResearchResult,
+        parent_folder_id: str,
+        credentials_path: str | None = None,
+        delegated_user: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Export research results to Google Drive as formatted Google Docs.
+
+        Creates a folder with the niche name and date, containing:
+        1. Niche Overview - Summary, scores, subreddits
+        2. Pain Points Analysis - All discovered pain points
+        3. Market Insights - Opportunities and trends
+        4. Raw Data - JSON export of all data
+
+        Args:
+            result: NicheResearchResult from research_niche()
+            parent_folder_id: Google Drive folder ID to create research folder in
+            credentials_path: Path to Google service account JSON (optional)
+            delegated_user: Email to impersonate for domain-wide delegation
+
+        Returns:
+            Dictionary with folder_url and document URLs
+
+        Example:
+            >>> result = await agent.research_niche("AI tools for solopreneurs")
+            >>> export = await agent.export_to_google_drive(
+            ...     result=result,
+            ...     parent_folder_id="1abc123...",
+            ...     delegated_user="yasmine@smarterflo.com"
+            ... )
+            >>> print(export["folder_url"])
+        """
+        import json
+
+        logger.info(f"Exporting research to Google Drive: {result.niche}")
+
+        # Load credentials
+        credentials_json = None
+        if credentials_path:
+            with open(credentials_path) as f:
+                credentials_json = json.load(f)
+        else:
+            # Try environment variable
+            creds_env = os.getenv("GOOGLE_DRIVE_CREDENTIALS_JSON")
+            if creds_env:
+                if creds_env.startswith("{"):
+                    credentials_json = json.loads(creds_env)
+                elif os.path.exists(creds_env):
+                    with open(creds_env) as f:
+                        credentials_json = json.load(f)
+
+        if not credentials_json:
+            raise NicheResearchAgentError(
+                "Google credentials required. Set GOOGLE_DRIVE_CREDENTIALS_JSON or pass credentials_path"
+            )
+
+        # Initialize clients
+        drive_client = GoogleDriveClient(
+            credentials_json=credentials_json,
+            delegated_user=delegated_user or os.getenv("GOOGLE_DELEGATED_USER"),
+        )
+        docs_client = GoogleDocsClient(
+            credentials_json=credentials_json,
+            delegated_user=delegated_user or os.getenv("GOOGLE_DELEGATED_USER"),
+        )
+
+        try:
+            # Authenticate
+            await drive_client.authenticate()
+            await docs_client.authenticate()
+
+            # Create folder for this research
+            folder_name = f"{result.niche} - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            folder = await drive_client.create_document(
+                title=folder_name,
+                mime_type="application/vnd.google-apps.folder",
+                parent_folder_id=parent_folder_id,
+            )
+            folder_id = folder.get("id")
+            logger.info(f"Created folder: {folder_name} ({folder_id})")
+
+            documents: list[dict[str, Any]] = []
+
+            # 1. Create Niche Overview Document
+            overview_content = self._generate_overview_content(result)
+            overview_doc = await docs_client.create_document(
+                title=f"1. Niche Overview - {result.niche}",
+                parent_folder_id=folder_id,
+            )
+            await docs_client.insert_text(overview_doc["documentId"], overview_content)
+            documents.append(
+                {
+                    "name": "Niche Overview",
+                    "type": "overview",
+                    "doc_id": overview_doc["documentId"],
+                    "url": f"https://docs.google.com/document/d/{overview_doc['documentId']}/edit",
+                }
+            )
+            logger.info("Created Niche Overview doc")
+
+            # 2. Create Pain Points Document
+            pain_points_content = self._generate_pain_points_content(result)
+            pain_doc = await docs_client.create_document(
+                title=f"2. Pain Points Analysis - {result.niche}",
+                parent_folder_id=folder_id,
+            )
+            await docs_client.insert_text(pain_doc["documentId"], pain_points_content)
+            documents.append(
+                {
+                    "name": "Pain Points Analysis",
+                    "type": "pain_points",
+                    "doc_id": pain_doc["documentId"],
+                    "url": f"https://docs.google.com/document/d/{pain_doc['documentId']}/edit",
+                }
+            )
+            logger.info("Created Pain Points doc")
+
+            # 3. Create Market Insights Document
+            insights_content = self._generate_insights_content(result)
+            insights_doc = await docs_client.create_document(
+                title=f"3. Market Insights - {result.niche}",
+                parent_folder_id=folder_id,
+            )
+            await docs_client.insert_text(insights_doc["documentId"], insights_content)
+            documents.append(
+                {
+                    "name": "Market Insights",
+                    "type": "insights",
+                    "doc_id": insights_doc["documentId"],
+                    "url": f"https://docs.google.com/document/d/{insights_doc['documentId']}/edit",
+                }
+            )
+            logger.info("Created Market Insights doc")
+
+            # 4. Create Raw Data JSON
+            raw_data = {
+                "niche": result.niche,
+                "total_subscribers": result.total_subscribers,
+                "total_active_users": result.total_active_users,
+                "subreddits": [
+                    {
+                        "name": s.name,
+                        "title": s.title,
+                        "description": s.description,
+                        "subscriber_count": s.subscriber_count,
+                        "engagement_score": s.engagement_score,
+                        "relevance_score": s.relevance_score,
+                    }
+                    for s in result.subreddits
+                ],
+                "pain_points": [
+                    {
+                        "description": p.description,
+                        "severity": p.severity,
+                        "frequency": p.frequency,
+                        "source_subreddits": p.source_subreddits,
+                    }
+                    for p in result.pain_points
+                ],
+                "opportunities": [
+                    {
+                        "description": o.description,
+                        "target_audience": o.target_audience,
+                        "potential_reach": o.potential_reach,
+                        "confidence_score": o.confidence_score,
+                    }
+                    for o in result.opportunities
+                ],
+            }
+            raw_doc = await docs_client.create_document(
+                title=f"4. Raw Data - {result.niche}",
+                parent_folder_id=folder_id,
+            )
+            await docs_client.insert_text(
+                raw_doc["documentId"],
+                json.dumps(raw_data, indent=2, default=str),
+            )
+            documents.append(
+                {
+                    "name": "Raw Data",
+                    "type": "raw_data",
+                    "doc_id": raw_doc["documentId"],
+                    "url": f"https://docs.google.com/document/d/{raw_doc['documentId']}/edit",
+                }
+            )
+            logger.info("Created Raw Data doc")
+
+            # Make folder shareable
+            await drive_client.share_file(
+                file_id=folder_id,
+                share_type="anyone",
+                role="reader",
+            )
+
+            folder_url = f"https://drive.google.com/drive/folders/{folder_id}"
+
+            logger.info(f"Export complete: {folder_url}")
+
+            return {
+                "folder_id": folder_id,
+                "folder_url": folder_url,
+                "folder_name": folder_name,
+                "documents": documents,
+                "niche": result.niche,
+                "exported_at": datetime.now().isoformat(),
+            }
+
+        finally:
+            await drive_client.close()
+            await docs_client.close()
+
+    def _generate_overview_content(self, result: NicheResearchResult) -> str:
+        """Generate formatted content for Niche Overview document."""
+        lines = [
+            f"NICHE OVERVIEW: {result.niche.upper()}",
+            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            "",
+            "=" * 60,
+            "",
+            "EXECUTIVE SUMMARY",
+            "-" * 40,
+            f"Total Market Reach: {result.total_subscribers:,} subscribers",
+            f"Active Users: {result.total_active_users:,}",
+            f"Communities Found: {len(result.subreddits)}",
+            f"Pain Points Identified: {len(result.pain_points)}",
+            f"Business Opportunities: {len(result.opportunities)}",
+            "",
+            "=" * 60,
+            "",
+            "RELEVANT COMMUNITIES",
+            "-" * 40,
+        ]
+
+        for i, sub in enumerate(result.subreddits[:15], 1):
+            lines.extend(
+                [
+                    f"{i}. r/{sub.name}",
+                    f"   Subscribers: {sub.subscriber_count:,}",
+                    f"   Engagement Score: {sub.engagement_score:.1f}/10",
+                    f"   Relevance Score: {sub.relevance_score:.1f}/10",
+                    f"   Description: {sub.description[:200]}..."
+                    if len(sub.description) > 200
+                    else f"   Description: {sub.description}",
+                    "",
+                ]
+            )
+
+        return "\n".join(lines)
+
+    def _generate_pain_points_content(self, result: NicheResearchResult) -> str:
+        """Generate formatted content for Pain Points document."""
+        lines = [
+            f"PAIN POINTS ANALYSIS: {result.niche.upper()}",
+            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            "",
+            "=" * 60,
+            "",
+            f"Total Pain Points Discovered: {len(result.pain_points)}",
+            "",
+        ]
+
+        # Group by severity
+        high = [p for p in result.pain_points if p.severity == "high"]
+        medium = [p for p in result.pain_points if p.severity == "medium"]
+        low = [p for p in result.pain_points if p.severity == "low"]
+
+        if high:
+            lines.extend(
+                [
+                    "HIGH SEVERITY PAIN POINTS",
+                    "-" * 40,
+                ]
+            )
+            for i, pp in enumerate(high, 1):
+                lines.extend(
+                    [
+                        f"{i}. {pp.description}",
+                        f"   Frequency: {pp.frequency} mentions",
+                        f"   Sources: {', '.join(pp.source_subreddits[:5])}",
+                        "",
+                    ]
+                )
+
+        if medium:
+            lines.extend(
+                [
+                    "",
+                    "MEDIUM SEVERITY PAIN POINTS",
+                    "-" * 40,
+                ]
+            )
+            for i, pp in enumerate(medium, 1):
+                lines.extend(
+                    [
+                        f"{i}. {pp.description}",
+                        f"   Frequency: {pp.frequency} mentions",
+                        f"   Sources: {', '.join(pp.source_subreddits[:5])}",
+                        "",
+                    ]
+                )
+
+        if low:
+            lines.extend(
+                [
+                    "",
+                    "LOW SEVERITY PAIN POINTS",
+                    "-" * 40,
+                ]
+            )
+            for i, pp in enumerate(low, 1):
+                lines.extend(
+                    [
+                        f"{i}. {pp.description}",
+                        f"   Frequency: {pp.frequency} mentions",
+                        f"   Sources: {', '.join(pp.source_subreddits[:5])}",
+                        "",
+                    ]
+                )
+
+        return "\n".join(lines)
+
+    def _generate_insights_content(self, result: NicheResearchResult) -> str:
+        """Generate formatted content for Market Insights document."""
+        lines = [
+            f"MARKET INSIGHTS: {result.niche.upper()}",
+            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            "",
+            "=" * 60,
+            "",
+            "BUSINESS OPPORTUNITIES",
+            "-" * 40,
+        ]
+
+        for i, opp in enumerate(result.opportunities, 1):
+            confidence_pct = int(opp.confidence_score * 100)
+            lines.extend(
+                [
+                    f"{i}. {opp.description}",
+                    f"   Target Audience: {opp.target_audience}",
+                    f"   Potential Reach: {opp.potential_reach:,} users",
+                    f"   Confidence: {confidence_pct}%",
+                    "",
+                ]
+            )
+
+        # Add market insights from metadata if available
+        if hasattr(result, "research_metadata") and result.research_metadata:
+            metadata = result.research_metadata
+            if "market_insights" in metadata:
+                lines.extend(
+                    [
+                        "",
+                        "=" * 60,
+                        "",
+                        "ADDITIONAL MARKET INSIGHTS",
+                        "-" * 40,
+                    ]
+                )
+                for insight in metadata.get("market_insights", [])[:10]:
+                    if isinstance(insight, dict):
+                        lines.append(f"• {insight.get('insight', insight.get('title', ''))}")
+                        if insight.get("opportunity"):
+                            lines.append(f"  → {insight['opportunity']}")
+                        lines.append("")
+
+        lines.extend(
+            [
+                "",
+                "=" * 60,
+                "",
+                "RECOMMENDED NEXT STEPS",
+                "-" * 40,
+                "1. Validate top pain points with direct outreach",
+                "2. Research existing solutions and their gaps",
+                "3. Identify key influencers in these communities",
+                "4. Develop messaging angles based on pain points",
+                "5. Create lead lists from identified communities",
+            ]
+        )
+
+        return "\n".join(lines)
 
 
 # ============================================================================
