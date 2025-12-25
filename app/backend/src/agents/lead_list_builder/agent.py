@@ -16,6 +16,28 @@ Input: Niche + Persona data from Phase 1 → Output: Raw leads for validation
 
 Per LEARN-007: This agent is pure (no side effects). The orchestrator
 handles all database persistence.
+
+Database Interactions:
+=====================
+
+1. INPUT: Via function parameters (no direct DB reads)
+   - Source Agent: Niche Research Agent (Phase 1.1), Persona Research Agent (Phase 1.2)
+   - Required Fields: job_titles, industries, company_sizes, locations, seniority_levels
+   - Data Format: Lists of strings for each criteria
+   - Handoff Method: Direct function call from Phase 1 Orchestrator
+
+2. OUTPUT: LeadListBuilderResult (returned to orchestrator)
+   - Target Agent(s): Data Validation Agent (Phase 2.2)
+   - Written Fields: leads[], total_scraped, primary_actor_leads, fallback_actor_leads,
+                     total_cost_usd, apify_runs[], errors[], warnings[]
+   - Data Format: LeadListBuilderResult dataclass with leads as list[dict]
+   - Handoff Method: Return value to orchestrator (orchestrator persists to `leads` table)
+
+3. HANDOFF COORDINATION:
+   - Upstream Dependencies: [niche_research_agent, persona_research_agent]
+   - Downstream Consumers: [data_validation_agent, duplicate_detection_agent]
+   - Failure Handling: Returns LeadListBuilderResult with success=False, errors populated
+   - Partial Success: status="partial" when <50% of target leads scraped
 """
 
 import logging
@@ -25,7 +47,13 @@ from datetime import datetime
 from typing import Any
 
 from claude_agent_sdk import ClaudeAgentOptions, create_sdk_mcp_server, query, tool
-from claude_agent_sdk.types import AssistantMessage
+from claude_agent_sdk.types import (
+    AssistantMessage,
+    ResultMessage,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 
 from src.integrations.apify import (
     ApifyError,
@@ -135,14 +163,50 @@ class LeadListBuilderResult:
         "Multi (last resort). Returns lead data including name, email, title, company."
     ),
     input_schema={
-        "job_titles": list,
-        "seniority_levels": list,
-        "industries": list,
-        "company_sizes": list,
-        "locations": list,
-        "keywords": list,
-        "max_leads": int,
-        "apify_token": str,
+        "type": "object",
+        "properties": {
+            "job_titles": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Target job titles (e.g., VP, Director, CTO)",
+            },
+            "seniority_levels": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Seniority levels (e.g., VP, Director, CXO)",
+            },
+            "industries": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Target industries (e.g., Technology, Software)",
+            },
+            "company_sizes": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Company size ranges (e.g., 51-200, 201-500)",
+            },
+            "locations": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Geographic locations (e.g., San Francisco, New York)",
+            },
+            "keywords": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Additional search keywords",
+            },
+            "max_leads": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 10000,
+                "description": "Maximum number of leads to scrape",
+            },
+            "apify_token": {
+                "type": "string",
+                "description": "Apify API token for authentication",
+            },
+        },
+        "required": ["apify_token"],
     },
 )
 async def scrape_leads_tool(args: dict[str, Any]) -> dict[str, Any]:
@@ -386,27 +450,26 @@ Return a summary of scraped leads including count, actor used, and cost."""
 
             # Create SDK MCP server with our tools
             mcp_server = create_sdk_mcp_server(
-                name="lead_list_builder_tools",
-                tools=[
-                    scrape_leads_tool,
-                ],
+                name="lead_tools",
+                version="1.0.0",
+                tools=[scrape_leads_tool],
             )
 
             # Clear conflicting env var (LEARN-001)
             os.environ.pop("ANTHROPIC_API_KEY", None)
 
-            # Query Claude with tools
-            # Note: SDK API may vary - tests mock this
+            # Configure Claude Agent SDK options per SDK_PATTERNS.md
+            # - mcp_servers: dict with server name as key
+            # - allowed_tools: explicit list of tool names (mcp__servername__toolname)
+            # - permission_mode: 'acceptEdits' for automated workflows
+            # - system_prompt: goes in options, not query()
             options = ClaudeAgentOptions(
                 model=self.model,
-                max_tokens=self.max_tokens,
-                mcp_servers=[mcp_server],
-            )
-
-            response = await query(
-                prompt=task_prompt,
-                system=self.system_prompt,
-                options=options,
+                system_prompt=self.system_prompt,
+                mcp_servers={"lead_tools": mcp_server},
+                allowed_tools=["mcp__lead_tools__scrape_leads"],
+                permission_mode="acceptEdits",
+                setting_sources=["project"],
             )
 
             # Process response and extract leads
@@ -418,12 +481,24 @@ Return a summary of scraped leads including count, actor used, and cost."""
             # Primary actor ID for comparison
             primary_actor = "IoSHqwTR9YGhzccez"
 
-            for message in response.messages:
+            # Use async iterator pattern per SDK_PATTERNS.md
+            # query() returns an async iterator, not an awaitable response object
+            async for message in query(prompt=task_prompt, options=options):
                 if isinstance(message, AssistantMessage):
                     for block in message.content:
-                        if hasattr(block, "tool_result"):
-                            tool_data = getattr(block, "tool_result", {})
-                            if isinstance(tool_data, dict) and "data" in tool_data:
+                        # Use proper type checking per SDK_PATTERNS.md
+                        if isinstance(block, ToolUseBlock):
+                            logger.debug(f"[{self.name}] Tool call: {block.name}")
+                        elif isinstance(block, ToolResultBlock):
+                            # Check for errors first
+                            if block.is_error:
+                                logger.warning(f"[{self.name}] Tool error: {block.content}")
+                                continue
+
+                            # Parse tool result content
+                            # ToolResultBlock.content can be str or list[dict]
+                            tool_data = self._parse_tool_result(block.content)
+                            if tool_data and "data" in tool_data:
                                 data = tool_data["data"]
                                 leads = data.get("leads", [])
                                 all_leads.extend(leads)
@@ -448,6 +523,15 @@ Return a summary of scraped leads including count, actor used, and cost."""
                                     primary_count += len(leads)
                                 else:
                                     fallback_count += len(leads)
+                        elif isinstance(block, TextBlock):
+                            logger.debug(f"[{self.name}] Response: {block.text[:100]}...")
+
+                elif isinstance(message, ResultMessage):
+                    logger.info(
+                        f"[{self.name}] Session completed: "
+                        f"session_id={message.session_id}, "
+                        f"cost=${message.total_cost_usd or 0:.4f}"
+                    )
 
             # If we didn't get leads from tool results, try direct scraping
             if not all_leads:
@@ -644,6 +728,59 @@ Return a summary of scraped leads including count, actor used, and cost."""
         )
 
         return "\n".join(prompt_parts)
+
+    def _parse_tool_result(
+        self,
+        content: str | list[dict[str, Any]] | None,
+    ) -> dict[str, Any] | None:
+        """
+        Parse tool result content into structured data.
+
+        ToolResultBlock.content can be:
+        - str: JSON string or plain text
+        - list[dict]: List of content blocks
+        - None: No content
+
+        Args:
+            content: The tool result content.
+
+        Returns:
+            Parsed dictionary with 'data' key if available, None otherwise.
+        """
+        import json
+
+        if content is None:
+            return None
+
+        # If it's a string, try to parse as JSON
+        if isinstance(content, str):
+            try:
+                parsed = json.loads(content)
+                if isinstance(parsed, dict):
+                    return parsed
+                return {"content": [{"type": "text", "text": content}]}
+            except json.JSONDecodeError:
+                # Not JSON, return as text
+                return {"content": [{"type": "text", "text": content}]}
+
+        # If it's a list, look for data in text blocks
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    # Check if this block has our data structure
+                    if "data" in block:
+                        return block
+                    # Check for text content that might be JSON
+                    if block.get("type") == "text":
+                        text = block.get("text", "")
+                        try:
+                            parsed = json.loads(text)
+                            if isinstance(parsed, dict):
+                                return parsed
+                        except json.JSONDecodeError:
+                            continue
+
+        return None
 
 
 # =============================================================================
