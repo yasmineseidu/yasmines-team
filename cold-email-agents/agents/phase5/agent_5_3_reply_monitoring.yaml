@@ -1,0 +1,379 @@
+# ==============================================================================
+# AGENT 5.3: REPLY MONITORING AGENT
+# ==============================================================================
+# Phase: 5 - Campaign Execution
+# Purpose: Monitor and categorize email replies
+# Execution: Continuous polling with webhook support
+# Depends On: Email Sending Agent (5.2)
+# ==============================================================================
+
+agent:
+  id: reply_monitoring_agent
+  name: "Reply Monitoring Agent"
+  version: "2.0.0"
+  phase: 5
+  phase_name: "Campaign Execution"
+
+  description: |
+    Monitors email replies in real-time, categorizes them using AI
+    (interested, not interested, out of office, bounce), and triggers
+    appropriate follow-up actions.
+
+# ==============================================================================
+# TOOL CONFIGURATION
+# ==============================================================================
+
+tool_configuration:
+  discovery:
+    enabled: true
+
+  required_tools:
+    - name: instantly_api
+      type: api
+      required: true
+      endpoints:
+        - get_replies
+        - get_campaign_analytics
+        - mark_lead_status
+
+    - name: llm_classification
+      type: internal
+      description: "LLM for reply classification"
+      required: true
+      config:
+        model: claude-sonnet-4-20250514
+        temperature: 0.3
+
+  optional_tools:
+    - name: slack_api
+      type: api
+      use_for: interested_lead_notifications
+    - name: gohighlevel_api
+      type: api
+      use_for: crm_updates
+
+# ==============================================================================
+# EXECUTION CONFIGURATION
+# ==============================================================================
+
+execution:
+  mode: continuous_polling
+  polling_interval_seconds: 300  # Check every 5 minutes
+  timeout_seconds: null  # Runs continuously
+
+  webhook_support:
+    enabled: true
+    endpoint: "/webhooks/instantly/reply"
+    events: [reply, bounce, unsubscribe]
+
+  checkpoint:
+    enabled: true
+    save_last_processed: true
+    storage: postgresql
+
+# ==============================================================================
+# REPLY CLASSIFICATION
+# ==============================================================================
+
+reply_classification:
+  categories:
+    interested:
+      description: "Positive response, wants to learn more"
+      indicators:
+        - "yes"
+        - "interested"
+        - "tell me more"
+        - "let's chat"
+        - "set up a call"
+        - "send more info"
+      priority: 1
+      action: notify_sales
+
+    meeting_request:
+      description: "Wants to schedule a meeting"
+      indicators:
+        - "calendar"
+        - "schedule"
+        - "available"
+        - "what times"
+      priority: 1
+      action: send_calendar_link
+
+    not_interested:
+      description: "Declined or not a fit"
+      indicators:
+        - "not interested"
+        - "no thanks"
+        - "remove me"
+        - "unsubscribe"
+        - "don't contact"
+      priority: 2
+      action: mark_not_interested
+
+    out_of_office:
+      description: "Auto-reply, person is away"
+      indicators:
+        - "out of office"
+        - "on vacation"
+        - "will return"
+        - "limited access"
+        - "auto-reply"
+      priority: 3
+      action: reschedule_followup
+
+    wrong_person:
+      description: "Not the right contact"
+      indicators:
+        - "wrong person"
+        - "no longer"
+        - "left the company"
+        - "try reaching"
+      priority: 2
+      action: find_replacement
+
+    question:
+      description: "Has questions, needs more info"
+      indicators:
+        - "?"
+        - "what"
+        - "how"
+        - "can you explain"
+      priority: 2
+      action: queue_for_response
+
+    bounce:
+      description: "Email bounced or invalid"
+      indicators:
+        - "delivery failed"
+        - "mailbox not found"
+        - "address rejected"
+      priority: 1
+      action: mark_bounced
+
+# ==============================================================================
+# INPUTS & DATABASE
+# ==============================================================================
+
+inputs:
+  required:
+    - name: campaign_id
+      type: string
+      format: uuid
+      source: handoff.email_sending_agent.campaign_id
+    - name: instantly_campaign_id
+      type: string
+      source: handoff.email_sending_agent.instantly_campaign_id
+
+database:
+  reads:
+    - id: get_last_check
+      table: reply_monitoring_state
+      operation: SELECT
+      fields: [last_reply_id, last_checked_at]
+      filter: "campaign_id = :campaign_id"
+      required: false
+
+    - id: get_lead_by_email
+      table: leads
+      operation: SELECT
+      fields: [id, first_name, last_name, company_name, lead_tier, email]
+      filter: "campaign_id = :campaign_id AND email = :email"
+      required: true
+
+  writes:
+    - id: save_reply
+      table: email_replies
+      operation: INSERT
+      timing: per_reply
+      fields:
+        id: { source: generated, type: uuid }
+        campaign_id: { source: inputs, field: campaign_id }
+        lead_id: { source: lead, field: id }
+        instantly_reply_id: { source: reply, field: id }
+        reply_text: { source: reply, field: text }
+        reply_subject: { source: reply, field: subject }
+        category: { source: classification, field: category }
+        confidence: { source: classification, field: confidence }
+        sentiment: { source: classification, field: sentiment }
+        action_taken: { source: action, field: type }
+        received_at: { source: reply, field: timestamp }
+        processed_at: { source: now }
+
+    - id: update_lead_reply_status
+      table: leads
+      operation: UPDATE
+      timing: per_reply
+      filter: "id = :lead_id"
+      fields:
+        reply_status: { source: classification, field: category }
+        replied_at: { source: reply, field: timestamp }
+        reply_count: { value: "reply_count + 1" }
+        updated_at: { source: now }
+
+    - id: update_monitoring_state
+      table: reply_monitoring_state
+      operation: UPSERT
+      timing: after_batch
+      on_conflict: { columns: [campaign_id], action: UPDATE }
+      fields:
+        campaign_id: { source: inputs, field: campaign_id }
+        last_reply_id: { source: batch, field: last_id }
+        last_checked_at: { source: now }
+        total_replies: { source: batch, field: total }
+
+# ==============================================================================
+# AGENT STEPS
+# ==============================================================================
+
+steps:
+  - id: fetch_new_replies
+    name: "Fetch New Replies"
+    description: "Get new replies from Instantly"
+
+    tool: instantly_api
+    action: get_replies
+
+    input:
+      campaign_id: "{{ inputs.instantly_campaign_id }}"
+      since: "{{ db_reads.get_last_check.last_checked_at }}"
+
+    output:
+      replies: array
+      reply_count: integer
+
+  - id: classify_replies
+    name: "Classify Replies"
+    depends_on: [fetch_new_replies]
+
+    for_each: replies
+
+    classification:
+      tool: llm_classification
+
+      prompt: |
+        Classify this email reply:
+
+        Subject: {{ reply.subject }}
+        Body: {{ reply.text }}
+
+        Categories:
+        - interested: Wants to learn more or schedule a call
+        - meeting_request: Specifically asking to schedule
+        - not_interested: Declined or asked to stop contact
+        - out_of_office: Auto-reply, person is away
+        - wrong_person: Not the right contact
+        - question: Has questions
+        - bounce: Delivery failure
+
+        Return JSON: {"category": "...", "confidence": 0.0-1.0, "sentiment": "positive/neutral/negative"}
+
+    output:
+      classifications: array
+
+  - id: take_actions
+    name: "Take Actions Based on Classification"
+    depends_on: [classify_replies]
+
+    for_each: classified_replies
+
+    actions:
+      interested:
+        - notify_slack:
+            channel: "#hot-leads"
+            message: "Hot Lead: {{ lead.first_name }} {{ lead.last_name }} @ {{ lead.company_name }}"
+        - add_to_crm:
+            status: "interested"
+            priority: "high"
+
+      meeting_request:
+        - send_calendar_link:
+            to: "{{ lead.email }}"
+        - notify_slack:
+            channel: "#meetings"
+
+      not_interested:
+        - mark_in_instantly:
+            status: "not_interested"
+        - add_to_exclusion_list: true
+
+      out_of_office:
+        - pause_sequence: true
+        - reschedule_days: 7
+
+      bounce:
+        - mark_email_invalid: true
+        - update_email_status: "bounced"
+
+    output:
+      actions_taken: array
+
+  - id: update_state
+    name: "Update Monitoring State"
+    depends_on: [take_actions]
+
+    output:
+      total_processed: integer
+      by_category: object
+
+# ==============================================================================
+# SYSTEM PROMPT
+# ==============================================================================
+
+system_prompt: |
+  You are a reply classification specialist for cold email campaigns.
+
+  Classification Guidelines:
+  - "Interested": Any positive response or desire to learn more
+  - "Meeting request": Specifically wants to schedule a call/meeting
+  - "Not interested": Clear decline or unsubscribe request
+  - "Out of office": Auto-replies indicating absence
+  - "Wrong person": Contact no longer at company or wrong role
+  - "Question": Asking for more information
+  - "Bounce": Delivery failure messages
+
+  Sentiment Analysis:
+  - Positive: Excited, interested, engaged
+  - Neutral: Informational, matter-of-fact
+  - Negative: Annoyed, dismissive, requesting removal
+
+  Be conservative with "interested" - only use for genuine interest signals.
+
+# ==============================================================================
+# OUTPUT SCHEMA & SUCCESS CRITERIA
+# ==============================================================================
+
+outputs:
+  schema:
+    type: object
+    required: [total_processed, by_category]
+    properties:
+      total_processed: { type: integer }
+      interested_count: { type: integer }
+      meeting_requests: { type: integer }
+      not_interested_count: { type: integer }
+      bounces: { type: integer }
+      by_category: { type: object }
+
+success_criteria:
+  hard:
+    - id: processing_complete
+      condition: "total_processed == reply_count"
+  soft:
+    - id: actions_taken
+      condition: "actions_taken.length > 0"
+
+# ==============================================================================
+# HANDOFF
+# ==============================================================================
+
+handoff:
+  to_agent: campaign_analytics_agent
+  data:
+    - field: campaign_id
+      source: inputs.campaign_id
+      required: true
+    - field: instantly_campaign_id
+      source: inputs.instantly_campaign_id
+      required: true
+  conditions:
+    - always: true  # Continuous handoff for analytics

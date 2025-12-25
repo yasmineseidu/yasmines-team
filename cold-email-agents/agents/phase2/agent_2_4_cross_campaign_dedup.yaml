@@ -1,0 +1,367 @@
+# ==============================================================================
+# AGENT 2.4: CROSS-CAMPAIGN DEDUP AGENT
+# ==============================================================================
+# Phase: 2 - Lead Acquisition
+# Purpose: Detect leads already contacted in previous campaigns
+# Execution: Parallel matching against historical data
+# Depends On: Duplicate Detection Agent (2.3)
+# ==============================================================================
+
+agent:
+  id: cross_campaign_dedup_agent
+  name: "Cross-Campaign Dedup Agent"
+  version: "2.0.0"
+  phase: 2
+  phase_name: "Lead Acquisition"
+
+  description: |
+    Checks new leads against all historical campaigns to identify people
+    who have already been contacted. Respects exclusion rules (recent contact,
+    unsubscribed, bounced) and prevents contact fatigue.
+
+# ==============================================================================
+# TOOL CONFIGURATION
+# ==============================================================================
+
+tool_configuration:
+  discovery:
+    enabled: true
+
+  required_tools:
+    - name: database_connection
+      type: internal
+      required: true
+
+# ==============================================================================
+# PARALLEL EXECUTION
+# ==============================================================================
+
+parallel_execution:
+  enabled: true
+
+  batch_processing:
+    batch_size: 5000
+    max_parallel_batches: 5
+
+  historical_matching:
+    strategy: partition_by_first_letter
+    partitions: 26
+
+# ==============================================================================
+# EXECUTION CONFIGURATION
+# ==============================================================================
+
+execution:
+  mode: parallel_batch
+  timeout_seconds: 1800
+
+  idempotency:
+    enabled: true
+    key_template: "cross_campaign_dedup:{campaign_id}"
+    ttl_hours: 24
+
+  checkpoint:
+    enabled: true
+    after_batches: 5
+    storage: postgresql
+    table: workflow_checkpoints
+
+# ==============================================================================
+# RETRY CONFIGURATION
+# ==============================================================================
+
+retry:
+  default:
+    max_attempts: 3
+    strategy: exponential_jitter
+    base_delay_seconds: 5
+    max_delay_seconds: 60
+    retry_on: [ConnectionError, TimeoutError, DatabaseError]
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+
+inputs:
+  required:
+    - name: campaign_id
+      type: string
+      format: uuid
+      source: handoff.duplicate_detection_agent.campaign_id
+    - name: unique_leads
+      type: integer
+      source: handoff.duplicate_detection_agent.unique_leads
+
+  optional:
+    - name: lookback_days
+      type: integer
+      default: 90
+      description: "Don't contact if contacted within this many days"
+    - name: exclude_bounced
+      type: boolean
+      default: true
+    - name: exclude_unsubscribed
+      type: boolean
+      default: true
+
+# ==============================================================================
+# DATABASE OPERATIONS
+# ==============================================================================
+
+database:
+  reads:
+    - id: get_new_leads
+      table: leads
+      operation: SELECT
+      fields: [id, linkedin_url, email, first_name, last_name, company_name, company_domain]
+      filter: "campaign_id = :campaign_id AND status NOT IN ('duplicate', 'invalid')"
+      parameters:
+        campaign_id: "{{ inputs.campaign_id }}"
+      required: true
+
+    - id: get_historical_contacts
+      table: leads
+      operation: SELECT
+      fields: [id, campaign_id, linkedin_url, email, first_name, last_name,
+               company_name, company_domain, email_status, last_contacted_at]
+      filter: |
+        campaign_id != :campaign_id
+        AND status NOT IN ('duplicate', 'invalid')
+        AND (
+          last_contacted_at > NOW() - INTERVAL ':lookback_days days'
+          OR email_status IN ('bounced', 'unsubscribed', 'complained')
+        )
+      parameters:
+        campaign_id: "{{ inputs.campaign_id }}"
+        lookback_days: "{{ inputs.lookback_days }}"
+      required: true
+
+    - id: get_global_exclusions
+      table: suppression_list
+      operation: SELECT
+      fields: [email, notes, suppressed_at, added_by]
+      filter: "email IS NOT NULL"
+      required: false
+
+  writes:
+    - id: mark_cross_duplicates
+      table: leads
+      operation: BULK_UPDATE
+      timing: after_detection
+      filter: "id = ANY(:lead_ids)"
+      fields:
+        status: { value: "cross_campaign_duplicate" }
+        exclusion_reason: { source: match_result, field: reason }
+        excluded_due_to_campaign: { source: match_result, field: original_campaign_id }
+        updated_at: { source: now }
+
+    - id: log_cross_dedup
+      table: cross_campaign_dedup_logs
+      operation: INSERT
+      timing: on_complete
+      fields:
+        id: { source: generated, type: uuid }
+        campaign_id: { source: inputs, field: campaign_id }
+        total_checked: { source: agent_output, field: total_checked }
+        previously_contacted: { source: agent_output, field: previously_contacted }
+        bounced_excluded: { source: agent_output, field: bounced_excluded }
+        unsubscribed_excluded: { source: agent_output, field: unsubscribed_excluded }
+        suppression_list_excluded: { source: agent_output, field: suppression_list_excluded }
+        remaining_leads: { source: agent_output, field: remaining_leads }
+        created_at: { source: now }
+
+    - id: update_campaign_cross_dedup
+      table: campaigns
+      operation: UPDATE
+      timing: on_complete
+      filter: "id = :campaign_id"
+      fields:
+        total_cross_duplicates: { source: agent_output, field: total_excluded }
+        total_leads_available: { source: agent_output, field: remaining_leads }
+        cross_dedup_completed_at: { source: now }
+        status: { value: "cross_deduplicated" }
+        updated_at: { source: now }
+
+# ==============================================================================
+# EXCLUSION RULES
+# ==============================================================================
+
+exclusion_rules:
+  # Time-based exclusions
+  recently_contacted:
+    enabled: true
+    lookback_days: "{{ inputs.lookback_days }}"
+    match_by: [linkedin_url, email]
+    reason: "contacted_recently"
+
+  # Status-based exclusions
+  bounced:
+    enabled: "{{ inputs.exclude_bounced }}"
+    match_by: email
+    statuses: [bounced, invalid]
+    reason: "email_bounced"
+
+  unsubscribed:
+    enabled: "{{ inputs.exclude_unsubscribed }}"
+    match_by: email
+    statuses: [unsubscribed, complained, spam_reported]
+    reason: "unsubscribed"
+
+  # Global exclusions (suppression list)
+  global_list:
+    enabled: true
+    match_by: [email]  # Only email - suppression_list table doesn't have linkedin_url
+    reason: "suppression_list"
+
+  # Matching rules
+  matching:
+    linkedin_url:
+      type: exact
+      case_sensitive: false
+      normalize: true
+
+    email:
+      type: exact
+      case_sensitive: false
+      condition: "email IS NOT NULL"
+
+    name_company:
+      type: fuzzy
+      algorithm: composite_similarity
+      threshold: 0.90
+      fields: [first_name, last_name, company_name]
+
+# ==============================================================================
+# AGENT STEPS
+# ==============================================================================
+
+steps:
+  - id: load_data
+    name: "Load New and Historical Leads"
+    description: "Load current campaign leads and historical contact data"
+
+    parallel_load:
+      - new_leads: get_new_leads
+      - historical: get_historical_contacts
+      - exclusions: get_global_exclusions
+
+    output:
+      new_lead_count: integer
+      historical_count: integer
+      exclusion_count: integer
+
+  - id: match_historical
+    name: "Match Against Historical"
+    description: "Find leads already in historical campaigns"
+    depends_on: [load_data]
+
+    parallel_execution:
+      enabled: true
+      strategy: partition_by_email_domain
+      partitions: 20
+
+    matching:
+      primary: linkedin_url
+      secondary: email
+      fallback: name_company_fuzzy
+
+    output:
+      matches_found: array
+      match_count: integer
+
+  - id: apply_exclusions
+    name: "Apply Exclusion Rules"
+    description: "Mark leads for exclusion based on rules"
+    depends_on: [match_historical]
+
+    rules:
+      - recently_contacted
+      - bounced
+      - unsubscribed
+      - global_list
+
+    output:
+      exclusions_by_reason: object
+      total_excluded: integer
+
+  - id: update_records
+    name: "Update Lead Records"
+    description: "Mark excluded leads in database"
+    depends_on: [apply_exclusions]
+
+    output:
+      records_updated: integer
+      remaining_leads: integer
+
+# ==============================================================================
+# SYSTEM PROMPT
+# ==============================================================================
+
+system_prompt: |
+  You are a cross-campaign deduplication specialist preventing contact fatigue.
+
+  Exclusion Rules:
+  1. Recently contacted (within 90 days by default)
+  2. Previously bounced emails
+  3. Unsubscribed contacts
+  4. Suppression list (manual do-not-contact entries)
+
+  Matching Strategy:
+  - Primary: LinkedIn URL (exact)
+  - Secondary: Email (exact)
+  - Fallback: Name + Company (90%+ fuzzy)
+
+  Goals:
+  - Prevent contacting the same person too frequently
+  - Respect unsubscribes and bounces
+  - Maintain sender reputation
+
+# ==============================================================================
+# OUTPUT SCHEMA
+# ==============================================================================
+
+outputs:
+  schema:
+    type: object
+    required: [total_checked, total_excluded, remaining_leads]
+    properties:
+      total_checked: { type: integer }
+      previously_contacted: { type: integer }
+      bounced_excluded: { type: integer }
+      unsubscribed_excluded: { type: integer }
+      suppression_list_excluded: { type: integer }
+      total_excluded: { type: integer }
+      remaining_leads: { type: integer }
+      exclusion_rate: { type: number }
+
+# ==============================================================================
+# SUCCESS CRITERIA
+# ==============================================================================
+
+success_criteria:
+  hard:
+    - id: check_complete
+      condition: "total_checked == inputs.unique_leads"
+      description: "All leads were checked against historical campaigns"
+  soft:
+    - id: has_remaining_leads
+      condition: "remaining_leads >= 1"
+      description: "At least one lead remains after exclusions"
+    - id: reasonable_exclusion
+      condition: "exclusion_rate < 0.30"
+
+# ==============================================================================
+# HANDOFF
+# ==============================================================================
+
+handoff:
+  to_agent: lead_scoring_agent
+  data:
+    - field: campaign_id
+      source: inputs.campaign_id
+      required: true
+    - field: available_leads
+      source: outputs.remaining_leads
+      required: true
+  conditions:
+    - "remaining_leads >= 1"  # Proceed with whatever leads remain after exclusions

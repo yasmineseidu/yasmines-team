@@ -1,0 +1,332 @@
+# ==============================================================================
+# AGENT 2.2: DATA VALIDATION AGENT
+# ==============================================================================
+# Phase: 2 - Lead Acquisition
+# Purpose: Validate, normalize, and clean scraped lead data
+# Execution: Parallel batch processing
+# Depends On: Lead List Builder Agent (2.1)
+# ==============================================================================
+
+agent:
+  id: data_validation_agent
+  name: "Data Validation Agent"
+  version: "2.0.0"
+  phase: 2
+  phase_name: "Lead Acquisition"
+
+  description: |
+    Validates and normalizes all scraped lead data. Checks required fields,
+    normalizes company names and job titles, validates URLs and emails,
+    flags incomplete records, and prepares data for deduplication.
+
+# ==============================================================================
+# TOOL CONFIGURATION
+# ==============================================================================
+
+tool_configuration:
+  discovery:
+    enabled: true
+
+  priority_tiers:
+    tier_1_free:
+      - name: claude_web_search
+        type: builtin
+        use_for: company_verification
+        parallel_limit: 5
+
+    tier_2_cheap:
+      - name: clearbit_api
+        type: api
+        use_for: domain_validation
+        required: false
+
+# ==============================================================================
+# PARALLEL EXECUTION
+# ==============================================================================
+
+parallel_execution:
+  enabled: true
+  batch_processing:
+    batch_size: 1000
+    max_parallel_batches: 10
+  per_batch_parallelism:
+    validation_checks: parallel
+    normalization: parallel
+    database_updates: batch
+
+# ==============================================================================
+# EXECUTION CONFIGURATION
+# ==============================================================================
+
+execution:
+  mode: parallel_batch
+  timeout_seconds: 3600
+
+  idempotency:
+    enabled: true
+    key_template: "data_validation:{campaign_id}:{batch_number}"
+    ttl_hours: 24
+
+  checkpoint:
+    enabled: true
+    after_batches: 10
+    storage: postgresql
+    table: workflow_checkpoints
+
+# ==============================================================================
+# RETRY CONFIGURATION
+# ==============================================================================
+
+retry:
+  default:
+    max_attempts: 3
+    strategy: exponential_jitter
+    base_delay_seconds: 2
+    max_delay_seconds: 30
+    retry_on: [ConnectionError, TimeoutError, DatabaseError]
+    dont_retry_on: [ValidationError]
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+
+inputs:
+  required:
+    - name: campaign_id
+      type: string
+      format: uuid
+      source: handoff.lead_list_builder_agent.campaign_id
+    - name: total_leads
+      type: integer
+      source: handoff.lead_list_builder_agent.total_leads
+
+# ==============================================================================
+# DATABASE OPERATIONS
+# ==============================================================================
+
+database:
+  reads:
+    - id: get_campaign
+      table: campaigns
+      operation: SELECT
+      fields: [id, niche_id, name, status]
+      filter: "id = :campaign_id"
+      required: true
+
+    - id: get_leads_batch
+      table: leads
+      operation: SELECT
+      fields: [id, linkedin_url, first_name, last_name, full_name, email, job_title,
+               company_name, company_domain, company_linkedin_url, company_size,
+               company_industry, location, city, state, country, status]
+      filter: "campaign_id = :campaign_id AND status = 'new'"
+      pagination:
+        enabled: true
+        batch_size: 1000
+        order_by: created_at
+      required: true
+
+  writes:
+    - id: update_lead_validation
+      table: leads
+      operation: BULK_UPDATE
+      timing: per_batch
+      batch_size: 1000
+      filter: "id = ANY(:lead_ids)"
+      fields:
+        first_name: { source: validation_result, field: normalized_first_name }
+        last_name: { source: validation_result, field: normalized_last_name }
+        full_name: { source: validation_result, field: normalized_full_name }
+        job_title: { source: validation_result, field: normalized_job_title }
+        company_name: { source: validation_result, field: normalized_company_name }
+        company_domain: { source: validation_result, field: derived_domain }
+        validation_status: { source: validation_result, field: status }
+        validation_errors: { source: validation_result, field: errors, type: jsonb }
+        status: { source: validation_result, field: new_status }
+        updated_at: { source: now }
+
+    - id: update_campaign_validation
+      table: campaigns
+      operation: UPDATE
+      timing: on_complete
+      filter: "id = :campaign_id"
+      fields:
+        total_leads_valid: { source: agent_output, field: total_valid }
+        total_leads_invalid: { source: agent_output, field: total_invalid }
+        validation_completed_at: { source: now }
+        status: { value: "validated" }
+        updated_at: { source: now }
+
+# ==============================================================================
+# VALIDATION RULES
+# ==============================================================================
+
+validation_rules:
+  # Simple, clear validation rules
+  required_fields:
+    # Must have these - fail validation if missing
+    critical: [linkedin_url, first_name, last_name, company_name, job_title]
+
+    # Nice to have - don't fail if missing, but validate if present
+    optional: [email, phone, company_size, company_industry, company_domain, location]
+
+  # Email handling - essential for outreach
+  email_rules:
+    validate_if_present: true      # Check format if we have it
+    fail_if_missing: false         # Don't reject leads without email (can enrich later)
+    flag_missing: true             # Mark leads that need email enrichment
+
+  field_validations:
+    linkedin_url:
+      type: url
+      pattern: "^https?://(www\\.)?linkedin\\.com/(in|pub)/[a-zA-Z0-9_-]+/?$"
+      normalize: true
+    email:
+      type: email
+      validate_format: true
+      lowercase: true
+    first_name:
+      type: string
+      min_length: 1
+      max_length: 100
+      normalize: [trim, title_case, remove_special_chars]
+    last_name:
+      type: string
+      min_length: 1
+      max_length: 100
+      normalize: [trim, title_case, remove_special_chars]
+    job_title:
+      type: string
+      max_length: 200
+      normalize: [trim, standardize_title]
+    company_name:
+      type: string
+      min_length: 1
+      max_length: 200
+      normalize: [trim, remove_legal_suffixes, standardize_company_name]
+    company_size:
+      type: enum
+      allowed_values: ["1-10", "11-50", "51-200", "201-500", "501-1000", "1001-5000", "5001-10000", "10000+"]
+
+  cross_field_rules:
+    - rule: full_name_consistency
+      action: derive_full_name
+    - rule: domain_from_linkedin
+      action: derive_domain_from_linkedin
+    - rule: location_components
+      action: parse_location_components
+
+# ==============================================================================
+# NORMALIZATION
+# ==============================================================================
+
+normalization:
+  job_title:
+    mappings:
+      "VP": "Vice President"
+      "SVP": "Senior Vice President"
+      "Dir": "Director"
+      "Mgr": "Manager"
+      "CEO": "Chief Executive Officer"
+      "CFO": "Chief Financial Officer"
+      "CTO": "Chief Technology Officer"
+      "CMO": "Chief Marketing Officer"
+    seniority_patterns:
+      c_suite: ["Chief", "CEO", "CFO", "CTO", "CMO", "COO"]
+      vp: ["Vice President", "VP", "SVP", "EVP"]
+      director: ["Director", "Dir"]
+      manager: ["Manager", "Mgr", "Head of"]
+      senior: ["Senior", "Sr", "Lead", "Principal"]
+
+  company_name:
+    legal_suffixes: [", Inc.", " Inc", ", LLC", " LLC", ", Ltd.", " Ltd", ", Corp.", " Corp"]
+
+# ==============================================================================
+# AGENT STEPS
+# ==============================================================================
+
+steps:
+  - id: load_leads
+    name: "Load Leads for Validation"
+    pagination: { batch_size: 1000 }
+    output: { total_batches: integer, total_leads: integer }
+
+  - id: validate_batches
+    name: "Validate Lead Batches"
+    depends_on: [load_leads]
+    parallel_execution: { enabled: true, max_concurrent: 10 }
+    for_each: batches
+
+    validations:
+      - check_required_fields    # linkedin_url, first_name, last_name, company_name, job_title
+      - validate_formats         # Email format, LinkedIn URL format
+      - normalize_fields         # Title case names, expand job title abbreviations
+      - derive_fields            # Full name from first+last, domain from company LinkedIn
+      - flag_missing_email       # Mark leads that need email enrichment
+
+  - id: aggregate_results
+    name: "Aggregate Validation Results"
+    depends_on: [validate_batches]
+    output:
+      total_valid: integer
+      total_invalid: integer
+      validation_rate: number
+
+# ==============================================================================
+# SYSTEM PROMPT
+# ==============================================================================
+
+system_prompt: |
+  You are a data quality specialist validating and normalizing lead data.
+
+  Responsibilities:
+  - Validate required fields: linkedin_url, first_name, last_name, company_name, job_title
+  - Normalize data: title case names, expand job title abbreviations, clean company names
+  - Derive missing fields: full_name from first+last, domain from company LinkedIn
+  - Validate email format if present (don't reject leads without email)
+  - Flag leads missing email for later enrichment (Phase 3)
+
+  Email is essential for outreach, but we keep leads without email - they get enriched later.
+
+# ==============================================================================
+# OUTPUT SCHEMA & SUCCESS CRITERIA
+# ==============================================================================
+
+outputs:
+  schema:
+    type: object
+    required: [total_processed, total_valid, total_invalid, validation_rate]
+    properties:
+      total_processed: { type: integer }
+      total_valid: { type: integer }
+      total_invalid: { type: integer }
+      validation_rate: { type: number }
+      error_breakdown: { type: object }
+
+success_criteria:
+  hard:
+    - id: validation_complete
+      condition: "total_processed == inputs.total_leads"
+      description: "All leads were processed"
+  soft:
+    - id: has_valid_leads
+      condition: "total_valid >= 1"
+      description: "At least one valid lead"
+    - id: high_validity_rate
+      condition: "validation_rate >= 0.95"
+
+# ==============================================================================
+# HANDOFF
+# ==============================================================================
+
+handoff:
+  to_agent: duplicate_detection_agent
+  data:
+    - field: campaign_id
+      source: inputs.campaign_id
+      required: true
+    - field: total_valid_leads
+      source: outputs.total_valid
+      required: true
+  conditions:
+    - "total_valid >= 1"  # Proceed with whatever valid leads we have

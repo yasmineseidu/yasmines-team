@@ -1,0 +1,358 @@
+# ==============================================================================
+# AGENT 4.4: PERSONALIZATION FINALIZER AGENT
+# ==============================================================================
+# Phase: 4 - Research & Personalization
+# Purpose: Finalize personalization, export samples, trigger approval
+# Execution: Single execution - summary and human gate trigger
+# Depends On: Email Generation Agent (4.3)
+# Triggers: Human Gate for Phase 5 approval
+# ==============================================================================
+
+agent:
+  id: personalization_finalizer_agent
+  name: "Personalization Finalizer Agent"
+  version: "2.0.0"
+  phase: 4
+  phase_name: "Research & Personalization"
+
+  description: |
+    Finalizes the personalization phase, generates quality reports,
+    exports email samples for review, and triggers human approval
+    gate before proceeding to campaign execution.
+
+# ==============================================================================
+# TOOL CONFIGURATION
+# ==============================================================================
+
+tool_configuration:
+  discovery:
+    enabled: true
+
+  required_tools:
+    - name: database_connection
+      type: internal
+      required: true
+    - name: google_sheets_api
+      type: api
+      required: true
+      fallback: csv_export
+    - name: slack_api
+      type: api
+      required: false
+
+# ==============================================================================
+# EXECUTION CONFIGURATION
+# ==============================================================================
+
+execution:
+  mode: single
+  timeout_seconds: 600
+  idempotency:
+    enabled: true
+    key_template: "personalization_finalizer:{campaign_id}"
+    ttl_hours: 24
+
+# ==============================================================================
+# INPUTS & DATABASE
+# ==============================================================================
+
+inputs:
+  required:
+    - name: campaign_id
+      type: string
+      format: uuid
+      source: handoff.email_generation_agent.campaign_id
+    - name: total_generated
+      type: integer
+      source: handoff.email_generation_agent.total_generated
+
+database:
+  reads:
+    - id: get_campaign
+      table: campaigns
+      operation: SELECT
+      fields: [id, niche_id, name, status, total_leads_available]
+      filter: "id = :campaign_id"
+      required: true
+
+    - id: get_niche
+      table: niches
+      operation: SELECT
+      fields: [id, name, industry]
+      filter: "id = :niche_id"
+      required: true
+
+    - id: get_email_stats
+      table: generated_emails
+      operation: SELECT
+      custom_query: |
+        SELECT
+          l.lead_tier,
+          COUNT(*) as total,
+          AVG(ge.quality_score) as avg_quality,
+          COUNT(CASE WHEN ge.quality_score >= 70 THEN 1 END) as high_quality,
+          COUNT(CASE WHEN ge.quality_score >= 50 AND ge.quality_score < 70 THEN 1 END) as medium_quality,
+          COUNT(CASE WHEN ge.quality_score < 50 THEN 1 END) as low_quality
+        FROM generated_emails ge
+        JOIN leads l ON ge.lead_id = l.id
+        WHERE ge.campaign_id = :campaign_id
+        GROUP BY l.lead_tier
+        ORDER BY l.lead_tier
+      required: true
+
+    - id: get_email_samples
+      table: generated_emails
+      operation: SELECT
+      fields: [id, lead_id, subject_line, opening_line, body, cta, full_email,
+               quality_score, framework_used, personalization_level]
+      filter: "campaign_id = :campaign_id AND quality_score >= 70"
+      order_by: "quality_score DESC"
+      limit: 50
+      required: true
+
+    - id: get_lead_details_for_samples
+      table: leads
+      operation: SELECT
+      fields: [id, first_name, last_name, email, job_title, company_name, lead_tier]
+      filter: "id = ANY(:lead_ids)"
+      required: true
+
+  writes:
+    - id: update_campaign_personalization
+      table: campaigns
+      operation: UPDATE
+      timing: on_complete
+      filter: "id = :campaign_id"
+      fields:
+        email_samples_url: { source: agent_output, field: sheet_url }
+        personalization_summary: { source: agent_output, field: summary, type: jsonb }
+        total_emails_generated: { source: agent_output, field: total_generated }
+        avg_email_quality: { source: agent_output, field: avg_quality }
+        personalization_completed_at: { source: now }
+        status: { value: "personalization_complete" }
+        updated_at: { source: now }
+
+# ==============================================================================
+# AGENT STEPS
+# ==============================================================================
+
+steps:
+  - id: compile_summary
+    name: "Compile Personalization Summary"
+    description: "Gather all personalization statistics"
+
+    summary:
+      sections:
+        - id: generation_stats
+          metrics:
+            - total_generated
+            - tier_a_count
+            - tier_b_count
+            - tier_c_count
+
+        - id: quality_stats
+          metrics:
+            - avg_quality_score
+            - high_quality_count
+            - medium_quality_count
+            - low_quality_count
+
+        - id: cost_summary
+          metrics:
+            - research_cost
+            - total_personalization_cost
+
+    output:
+      summary: object
+
+  - id: export_samples
+    name: "Export Email Samples"
+    description: "Export sample emails to Google Sheets for review"
+    depends_on: [compile_summary]
+
+    tool: google_sheets_api
+    action: create_spreadsheet
+
+    config:
+      name: "{{ db_reads.get_niche.name }} - Email Samples - {{ current_date }}"
+
+      sheets:
+        - name: "Summary"
+          data:
+            - row: ["Personalization Summary"]
+            - row: ["Total Emails Generated", "{{ inputs.total_generated }}"]
+            - row: ["Average Quality Score", "{{ summary.avg_quality }}"]
+            - row: ["High Quality (70+)", "{{ summary.high_quality_count }}"]
+            - row: [""]
+            - row: ["By Tier"]
+            - row: ["Tier A", "{{ summary.tier_a_count }}"]
+            - row: ["Tier B", "{{ summary.tier_b_count }}"]
+            - row: ["Tier C", "{{ summary.tier_c_count }}"]
+
+        - name: "Best Emails (Score 70+)"
+          query: |
+            SELECT l.first_name, l.last_name, l.company_name, l.job_title,
+                   ge.subject_line, ge.opening_line, ge.body, ge.cta,
+                   ge.quality_score, l.lead_tier
+            FROM generated_emails ge
+            JOIN leads l ON ge.lead_id = l.id
+            WHERE ge.campaign_id = :campaign_id AND ge.quality_score >= 70
+            ORDER BY ge.quality_score DESC
+            LIMIT 25
+          columns: [first_name, last_name, company, title, subject, opening, body, cta, quality, tier]
+
+        - name: "Tier A Samples"
+          query: |
+            SELECT l.first_name, l.last_name, l.company_name,
+                   ge.subject_line, ge.full_email, ge.quality_score
+            FROM generated_emails ge
+            JOIN leads l ON ge.lead_id = l.id
+            WHERE ge.campaign_id = :campaign_id AND l.lead_tier = 'A'
+            ORDER BY ge.quality_score DESC
+            LIMIT 20
+
+        - name: "Tier B Samples"
+          query: |
+            SELECT l.first_name, l.last_name, l.company_name,
+                   ge.subject_line, ge.full_email, ge.quality_score
+            FROM generated_emails ge
+            JOIN leads l ON ge.lead_id = l.id
+            WHERE ge.campaign_id = :campaign_id AND l.lead_tier = 'B'
+            ORDER BY ge.quality_score DESC
+            LIMIT 20
+
+      share_settings:
+        anyone_with_link: view
+
+    output:
+      sheet_id: string
+      sheet_url: string
+
+  - id: send_notification
+    name: "Send Approval Notification"
+    depends_on: [export_samples]
+    optional: true
+
+    tool: slack_api
+    action: send_message
+    config:
+      channel: "#campaign-approvals"
+      message:
+        blocks:
+          - type: header
+            text: "Email Personalization Ready for Review"
+
+          - type: section
+            fields:
+              - type: mrkdwn
+                text: "*Campaign:* {{ db_reads.get_campaign.name }}"
+              - type: mrkdwn
+                text: "*Emails Generated:* {{ inputs.total_generated }}"
+              - type: mrkdwn
+                text: "*Avg Quality:* {{ summary.avg_quality }}/100"
+              - type: mrkdwn
+                text: "*High Quality:* {{ summary.high_quality_count }}"
+
+          - type: section
+            text:
+              type: mrkdwn
+              text: "<{{ steps.export_samples.sheet_url }}|Review Email Samples>"
+
+          - type: actions
+            elements:
+              - type: button
+                text: "Approve & Start Sending"
+                style: primary
+                action_id: "approve_emails_{{ inputs.campaign_id }}"
+              - type: button
+                text: "Request Revisions"
+                action_id: "revise_emails_{{ inputs.campaign_id }}"
+
+# ==============================================================================
+# OUTPUT SCHEMA & SUCCESS CRITERIA
+# ==============================================================================
+
+outputs:
+  schema:
+    type: object
+    required: [sheet_url, total_generated, avg_quality, summary]
+    properties:
+      sheet_url: { type: string, format: uri }
+      total_generated: { type: integer }
+      avg_quality: { type: number }
+      high_quality_count: { type: integer }
+      summary: { type: object }
+
+success_criteria:
+  hard:
+    - id: sheet_created
+      condition: "sheet_url IS NOT NULL"
+    - id: quality_threshold
+      condition: "avg_quality >= 60"
+  soft:
+    - id: high_quality_percentage
+      condition: "high_quality_count / total_generated >= 0.5"
+
+# ==============================================================================
+# HANDOFF - TRIGGERS HUMAN GATE
+# ==============================================================================
+
+handoff:
+  triggers_human_gate: true
+
+  human_gate:
+    id: approve_email_campaign
+    name: "Approve Email Campaign"
+    description: "Review personalized emails and approve for sending"
+
+    channel: slack
+    slack_config:
+      channel: "#campaign-approvals"
+      mention: ["@campaign-manager"]
+
+    timeout_hours: 24
+    timeout_action: remind_then_escalate
+
+    display:
+      sheet_url: "{{ outputs.sheet_url }}"
+      total_emails: "{{ outputs.total_generated }}"
+      avg_quality: "{{ outputs.avg_quality }}"
+      high_quality_count: "{{ outputs.high_quality_count }}"
+
+    actions:
+      - id: approve_and_send
+        label: "Approve & Start Campaign"
+        writes:
+          - table: campaigns
+            filter: "id = :campaign_id"
+            set:
+              status: "approved_for_sending"
+              sending_approved_at: "{{ now }}"
+              sending_approved_by: "{{ actor }}"
+        next_phase: phase_5_campaign_execution
+
+      - id: approve_tier_a_only
+        label: "Send Tier A Only"
+        writes:
+          - table: campaigns
+            filter: "id = :campaign_id"
+            set:
+              status: "approved_for_sending"
+              sending_scope: "tier_a_only"
+        next_phase: phase_5_campaign_execution
+
+      - id: request_revisions
+        label: "Request Revisions"
+        requires_feedback: true
+        next_phase: phase_4_regenerate
+
+      - id: reject
+        label: "Reject Campaign"
+        requires_feedback: true
+        next_phase: null
+
+    auto_approve:
+      enabled: true
+      conditions:
+        - "avg_quality >= 80"
+        - "high_quality_count >= total_generated * 0.6"

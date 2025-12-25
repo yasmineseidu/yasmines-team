@@ -1,0 +1,412 @@
+# ==============================================================================
+# AGENT 2.5: LEAD SCORING AGENT
+# ==============================================================================
+# Phase: 2 - Lead Acquisition
+# Purpose: Score leads based on fit with personas and industry
+# Execution: Parallel batch scoring using ML/rule-based hybrid
+# Depends On: Cross-Campaign Dedup Agent (2.4)
+# ==============================================================================
+
+agent:
+  id: lead_scoring_agent
+  name: "Lead Scoring Agent"
+  version: "2.0.0"
+  phase: 2
+  phase_name: "Lead Acquisition"
+
+  description: |
+    Scores each lead based on fit with target personas, industry alignment,
+    company size match, seniority level, and engagement signals. Uses a
+    weighted scoring model combining rule-based and ML predictions.
+
+# ==============================================================================
+# TOOL CONFIGURATION
+# ==============================================================================
+
+tool_configuration:
+  discovery:
+    enabled: true
+
+  priority_tiers:
+    tier_1_free:
+      - name: database_connection
+        type: internal
+        required: true
+
+# ==============================================================================
+# PARALLEL EXECUTION
+# ==============================================================================
+
+parallel_execution:
+  enabled: true
+
+  batch_processing:
+    batch_size: 2000
+    max_parallel_batches: 10
+
+  scoring_parallelism:
+    score_calculation: parallel
+    database_updates: batch
+
+# ==============================================================================
+# EXECUTION CONFIGURATION
+# ==============================================================================
+
+execution:
+  mode: parallel_batch
+  timeout_seconds: 1800
+
+  idempotency:
+    enabled: true
+    key_template: "lead_scoring:{campaign_id}"
+    ttl_hours: 24
+
+  checkpoint:
+    enabled: true
+    after_batches: 5
+    storage: postgresql
+    table: workflow_checkpoints
+
+# ==============================================================================
+# RETRY CONFIGURATION
+# ==============================================================================
+
+retry:
+  default:
+    max_attempts: 3
+    strategy: exponential_jitter
+    base_delay_seconds: 2
+    max_delay_seconds: 30
+    retry_on: [ConnectionError, TimeoutError, DatabaseError]
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+
+inputs:
+  required:
+    - name: campaign_id
+      type: string
+      format: uuid
+      source: handoff.cross_campaign_dedup_agent.campaign_id
+    - name: available_leads
+      type: integer
+      source: handoff.cross_campaign_dedup_agent.available_leads
+
+# ==============================================================================
+# DATABASE OPERATIONS
+# ==============================================================================
+
+database:
+  reads:
+    - id: get_campaign
+      table: campaigns
+      operation: SELECT
+      fields: [id, niche_id, name]
+      filter: "id = :campaign_id"
+      required: true
+
+    - id: get_niche
+      table: niches
+      operation: SELECT
+      fields: [id, industry, job_titles, company_size, location]
+      filter: "id = :niche_id"
+      parameters:
+        niche_id: "{{ db_reads.get_campaign.niche_id }}"
+      required: true
+
+    - id: get_personas
+      table: personas
+      operation: SELECT
+      fields: [id, job_titles, seniority_level, department, pain_points]
+      filter: "niche_id = :niche_id"
+      parameters:
+        niche_id: "{{ db_reads.get_campaign.niche_id }}"
+      required: true
+
+    - id: get_industry_scores
+      table: industry_fit_scores
+      operation: SELECT
+      fields: [industry, fit_score]
+      filter: "niche_id = :niche_id"
+      parameters:
+        niche_id: "{{ db_reads.get_campaign.niche_id }}"
+      required: false
+
+    - id: get_leads_for_scoring
+      table: leads
+      operation: SELECT
+      fields: [id, job_title, seniority, department, company_name, company_size,
+               company_industry, company_domain, location, city, state, country]
+      filter: "campaign_id = :campaign_id AND status NOT IN ('duplicate', 'invalid', 'cross_campaign_duplicate')"
+      parameters:
+        campaign_id: "{{ inputs.campaign_id }}"
+      pagination:
+        enabled: true
+        batch_size: 2000
+      required: true
+
+  writes:
+    - id: update_lead_scores
+      table: leads
+      operation: BULK_UPDATE
+      timing: per_batch
+      batch_size: 2000
+      filter: "id = ANY(:lead_ids)"
+      fields:
+        lead_score: { source: score_result, field: total_score, type: integer }
+        score_breakdown: { source: score_result, field: breakdown, type: jsonb }
+        persona_tags: { source: score_result, field: best_persona_tags, type: "text[]" }
+        lead_tier: { source: score_result, field: tier }
+        updated_at: { source: now }
+
+    - id: update_campaign_scoring
+      table: campaigns
+      operation: UPDATE
+      timing: on_complete
+      filter: "id = :campaign_id"
+      fields:
+        leads_scored: { source: agent_output, field: total_scored }
+        avg_lead_score: { source: agent_output, field: avg_score }
+        leads_tier_a: { source: agent_output, field: tier_a_count }
+        leads_tier_b: { source: agent_output, field: tier_b_count }
+        leads_tier_c: { source: agent_output, field: tier_c_count }
+        scoring_completed_at: { source: now }
+        status: { value: "scored" }
+        updated_at: { source: now }
+
+# ==============================================================================
+# SCORING MODEL
+# ==============================================================================
+
+scoring_model:
+  # Total score: 0-100
+  max_score: 100
+
+  # Score components with weights
+  components:
+    job_title_match:
+      weight: 0.30
+      max_points: 30
+      scoring:
+        exact_match: 30
+        similar_match: 20
+        seniority_match_only: 10
+        no_match: 0
+
+    seniority_match:
+      weight: 0.20
+      max_points: 20
+      scoring:
+        exact_match: 20
+        one_level_off: 15
+        two_levels_off: 10
+        no_match: 5
+
+    company_size_match:
+      weight: 0.15
+      max_points: 15
+      scoring:
+        exact_match: 15
+        adjacent_size: 10
+        no_match: 5
+
+    industry_fit:
+      weight: 0.20
+      max_points: 20
+      scoring:
+        use_industry_scores: true
+        normalize_to: 20
+        default_if_missing: 10
+
+    location_match:
+      weight: 0.10
+      max_points: 10
+      scoring:
+        exact_country: 10
+        same_region: 7
+        different_region: 3
+
+    data_completeness:
+      weight: 0.05
+      max_points: 5
+      fields: [email, phone, company_domain, linkedin_url]
+      points_per_field: 1.25
+
+  # Tier thresholds
+  tiers:
+    A:
+      min_score: 80
+      description: "High-priority leads - perfect fit"
+    B:
+      min_score: 60
+      description: "Good leads - strong fit"
+    C:
+      min_score: 40
+      description: "Moderate leads - acceptable fit"
+    D:
+      min_score: 0
+      description: "Low-priority leads - weak fit"
+
+  # Job title matching
+  job_title_matching:
+    algorithm: fuzzy_with_synonyms
+    threshold: 0.80
+
+    synonyms:
+      "VP Marketing": ["Vice President Marketing", "VP of Marketing", "Marketing VP"]
+      "Marketing Director": ["Director of Marketing", "Director, Marketing"]
+      "Head of Marketing": ["Marketing Lead", "Marketing Head"]
+      # ... more synonyms
+
+    seniority_extraction:
+      c_suite: 6
+      vp: 5
+      director: 4
+      senior_manager: 3
+      manager: 2
+      senior: 1
+      ic: 0
+
+# ==============================================================================
+# AGENT STEPS
+# ==============================================================================
+
+steps:
+  - id: load_scoring_context
+    name: "Load Scoring Context"
+    description: "Load niche, personas, and industry scores"
+
+    parallel_load:
+      - campaign: get_campaign
+      - niche: get_niche
+      - personas: get_personas
+      - industry_scores: get_industry_scores
+
+    output:
+      scoring_context: object
+
+  - id: score_leads
+    name: "Score Leads"
+    description: "Calculate scores for all leads in parallel batches"
+    depends_on: [load_scoring_context]
+
+    parallel_execution:
+      enabled: true
+      max_concurrent: 10
+
+    for_each: lead_batches
+
+    scoring:
+      model: scoring_model
+      context: scoring_context
+
+      calculations:
+        - job_title_match: compare_to_personas
+        - seniority_match: extract_and_compare
+        - company_size_match: range_comparison
+        - industry_fit: lookup_industry_score
+        - location_match: geographic_comparison
+        - data_completeness: count_filled_fields
+
+    output:
+      batch_scores: array
+      batch_stats: object
+
+  - id: aggregate_results
+    name: "Aggregate Scoring Results"
+    description: "Calculate overall scoring statistics"
+    depends_on: [score_leads]
+
+    aggregation:
+      total_scored: count
+      avg_score: average(total_score)
+      score_distribution: histogram(total_score, bins=10)
+      tier_counts:
+        tier_a: count(score >= 80)
+        tier_b: count(score >= 60 AND score < 80)
+        tier_c: count(score >= 40 AND score < 60)
+        tier_d: count(score < 40)
+
+    output:
+      total_scored: integer
+      avg_score: number
+      tier_a_count: integer
+      tier_b_count: integer
+      tier_c_count: integer
+      tier_d_count: integer
+
+# ==============================================================================
+# SYSTEM PROMPT
+# ==============================================================================
+
+system_prompt: |
+  You are a lead scoring specialist evaluating fit with target personas.
+
+  Scoring Components (100 points total):
+  - Job Title Match (30 pts): Exact/similar to target titles
+  - Seniority Match (20 pts): Correct decision-making level
+  - Company Size Match (15 pts): Within target range
+  - Industry Fit (20 pts): Based on industry scores from research
+  - Location Match (10 pts): Geographic alignment
+  - Data Completeness (5 pts): Email, phone, domain available
+
+  Tiers:
+  - Tier A (80+): High priority - prioritize for personalization
+  - Tier B (60-79): Good leads - include in campaign
+  - Tier C (40-59): Moderate - include if capacity allows
+  - Tier D (<40): Low priority - skip or use generic messaging
+
+# ==============================================================================
+# OUTPUT SCHEMA
+# ==============================================================================
+
+outputs:
+  schema:
+    type: object
+    required: [total_scored, avg_score, tier_a_count, tier_b_count, tier_c_count]
+    properties:
+      total_scored: { type: integer }
+      avg_score: { type: number }
+      tier_a_count: { type: integer }
+      tier_b_count: { type: integer }
+      tier_c_count: { type: integer }
+      tier_d_count: { type: integer }
+      score_distribution: { type: object }
+
+# ==============================================================================
+# SUCCESS CRITERIA
+# ==============================================================================
+
+success_criteria:
+  hard:
+    - id: scoring_complete
+      condition: "total_scored == inputs.available_leads"
+      description: "All available leads were scored"
+  soft:
+    - id: has_scored_leads
+      condition: "total_scored >= 1"
+      description: "At least one lead was scored"
+    - id: good_avg_score
+      condition: "avg_score >= 50"
+    - id: tier_ab_percentage
+      condition: "(tier_a_count + tier_b_count) / total_scored >= 0.5"
+
+# ==============================================================================
+# HANDOFF
+# ==============================================================================
+
+handoff:
+  to_agent: import_finalizer_agent
+  data:
+    - field: campaign_id
+      source: inputs.campaign_id
+      required: true
+    - field: total_scored
+      source: outputs.total_scored
+      required: true
+    - field: tier_a_count
+      source: outputs.tier_a_count
+      required: true
+  conditions:
+    - "total_scored >= 1"  # Proceed with whatever leads were scored

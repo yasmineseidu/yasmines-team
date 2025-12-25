@@ -1,0 +1,1252 @@
+# ==============================================================================
+# AGENT 1.2: PERSONA RESEARCH AGENT
+# ==============================================================================
+# Phase: 1 - Market Intelligence
+# Purpose: Deep-dive into target personas with pain points, language patterns
+# Execution: Single execution after niche research
+# Features: Dynamic tool discovery, parallel search, Reddit mining, LinkedIn scraping
+# Depends On: Niche Research Agent (1.1)
+# ==============================================================================
+
+agent:
+  id: persona_research_agent
+  name: "Persona Research Agent"
+  version: "2.0.0"
+  phase: 1
+  phase_name: "Market Intelligence"
+
+  description: |
+    Deep-dives into target personas within the approved niche. Uses parallel
+    searches across Reddit, LinkedIn, and web sources to extract real language
+    patterns, pain point quotes, objections, and messaging angles. Creates
+    detailed persona profiles and industry fit scores for lead scoring.
+
+# ==============================================================================
+# TOOL CONFIGURATION - PRIORITY-BASED WITH DISCOVERY
+# ==============================================================================
+
+tool_configuration:
+  discovery:
+    enabled: true
+    check_on_startup: true
+    cache_availability: true
+    cache_ttl_seconds: 300
+
+  priority_tiers:
+    # Tier 1: FREE - Always try these first
+    tier_1_free:
+      - name: claude_web_search
+        type: builtin
+        description: "Claude Agent SDK built-in WebSearch"
+        parallel_limit: 10
+        cost_per_call: 0.0
+        best_for: [general_queries, reddit_searches, linkedin_content]
+
+      - name: claude_web_fetch
+        type: builtin
+        description: "Claude Agent SDK built-in WebFetch"
+        parallel_limit: 5
+        cost_per_call: 0.0
+        best_for: [reading_full_articles, extracting_quotes]
+
+      - name: reddit_api
+        type: api
+        description: "Reddit public search API"
+        parallel_limit: 3
+        cost_per_call: 0.0
+        rate_limit_rpm: 30
+        best_for: [pain_points, real_conversations, language_patterns]
+
+    # Tier 2: CHEAP - Use for enrichment
+    tier_2_cheap:
+      - name: tavily_search
+        type: api
+        description: "Tavily AI search"
+        parallel_limit: 5
+        cost_per_call: 0.001
+        daily_budget: 10.00
+        best_for: [industry_reports, thought_leadership]
+
+      - name: brave_search
+        type: api
+        description: "Brave web search"
+        parallel_limit: 5
+        cost_per_call: 0.001
+        daily_budget: 10.00
+        best_for: [company_research, public_profiles]
+
+      - name: serper_search
+        type: api
+        description: "Serper Google search"
+        parallel_limit: 5
+        cost_per_call: 0.001
+        daily_budget: 10.00
+        best_for: [linkedin_profiles, industry_content]
+
+    # Tier 3: MODERATE - Use for specific deep research
+    tier_3_moderate:
+      - name: perplexity_search
+        type: api
+        description: "Perplexity AI with citations"
+        parallel_limit: 3
+        cost_per_call: 0.005
+        daily_budget: 25.00
+        best_for: [synthesis_queries, complex_questions, persona_summaries]
+
+      - name: apify_linkedin_posts
+        type: apify_actor
+        description: "LinkedIn company posts scraper"
+        parallel_limit: 2
+        cost_per_run: 0.10
+        daily_budget: 20.00
+        best_for: [linkedin_language_patterns, professional_tone]
+
+    # Tier 4: EXPENSIVE - Last resort
+    tier_4_expensive:
+      - name: exa_search
+        type: api
+        description: "Exa semantic search"
+        parallel_limit: 2
+        cost_per_call: 0.01
+        daily_budget: 20.00
+        best_for: [semantic_similarity, niche_content]
+
+  selection_strategy:
+    mode: parallel_tiered
+
+    parallel_tiered:
+      always_include: [tier_1_free]
+      enrich_with: [tier_2_cheap]
+      selective_use: [tier_3_moderate]
+      fallback_only: [tier_4_expensive]
+      min_results_per_query: 5
+      sufficient_results: 10
+
+# ==============================================================================
+# PARALLEL EXECUTION CONFIGURATION
+# ==============================================================================
+
+parallel_execution:
+  enabled: true
+
+  concurrency:
+    max_parallel_searches: 15
+    max_parallel_per_tool: 5
+    max_parallel_queries: 25
+    max_parallel_fetch: 10
+
+  fan_out:
+    strategy: broadcast_to_available
+    result_handling:
+      mode: return_as_complete
+      timeout_seconds: 45
+      min_results: 3
+
+  combine_results:
+    deduplicate: true
+    dedupe_key: url
+    ranking:
+      factors:
+        - relevance_score: 0.3
+        - source_authority: 0.2
+        - recency: 0.2
+        - quote_richness: 0.3  # Prioritize content with real quotes
+    max_results_per_query: 20
+    merge_similar:
+      enabled: true
+      similarity_threshold: 0.80
+
+# ==============================================================================
+# EXECUTION CONFIGURATION
+# ==============================================================================
+
+execution:
+  mode: single
+  timeout_seconds: 900  # 15 minutes max
+
+  idempotency:
+    enabled: true
+    key_template: "persona_research:{niche_id}:{date}"
+    ttl_hours: 24
+
+  checkpoint:
+    enabled: true
+    after_steps:
+      - tool_discovery
+      - reddit_deep_dive
+      - linkedin_research
+      - industry_content_research
+      - persona_synthesis
+    storage: postgresql
+    table: workflow_checkpoints
+
+# ==============================================================================
+# RETRY CONFIGURATION
+# ==============================================================================
+
+retry:
+  default:
+    max_attempts: 5
+    strategy: exponential_jitter
+    base_delay_seconds: 3
+    max_delay_seconds: 90
+    jitter: true
+    jitter_range: 0.5
+
+    retry_on:
+      - ConnectionError
+      - TimeoutError
+      - RateLimitError
+      - ServiceUnavailableError
+      - HTTPError_5xx
+
+    dont_retry_on:
+      - AuthenticationError
+      - ValidationError
+      - NotFoundError
+
+    on_retry:
+      log_level: WARNING
+      metrics: true
+      alert_after_attempt: 3
+
+    on_exhausted:
+      log_level: ERROR
+      alert: true
+      fallback_action: use_partial_results
+
+  tool_overrides:
+    reddit_api:
+      max_attempts: 3
+      base_delay_seconds: 10
+      max_delay_seconds: 120
+
+    apify_linkedin_posts:
+      max_attempts: 2
+      base_delay_seconds: 30
+      max_delay_seconds: 300
+      timeout_seconds: 180
+
+# ==============================================================================
+# RATE LIMITING
+# ==============================================================================
+
+rate_limits:
+  agent:
+    requests_per_minute: 100
+    requests_per_hour: 1000
+    burst_limit: 20
+
+  tools:
+    claude_web_search:
+      requests_per_minute: 60
+      concurrent_max: 10
+
+    claude_web_fetch:
+      requests_per_minute: 30
+      concurrent_max: 5
+
+    reddit_api:
+      requests_per_minute: 30
+      concurrent_max: 3
+
+    tavily_search:
+      requests_per_minute: 60
+      concurrent_max: 5
+      daily_limit: 1000
+
+    brave_search:
+      requests_per_minute: 60
+      concurrent_max: 5
+      daily_limit: 2000
+
+    serper_search:
+      requests_per_minute: 50
+      concurrent_max: 5
+      daily_limit: 2500
+
+    perplexity_search:
+      requests_per_minute: 20
+      concurrent_max: 3
+      daily_limit: 500
+
+    apify_linkedin_posts:
+      concurrent_actors: 2
+      daily_runs: 50
+
+# ==============================================================================
+# CIRCUIT BREAKER
+# ==============================================================================
+
+circuit_breaker:
+  enabled: true
+
+  global:
+    failure_threshold: 10
+    failure_rate_threshold: 0.5
+    minimum_calls: 20
+    recovery_timeout_seconds: 120
+    half_open_max_calls: 5
+
+  per_tool:
+    claude_web_search:
+      failure_threshold: 5
+      recovery_timeout_seconds: 60
+
+    reddit_api:
+      failure_threshold: 5
+      recovery_timeout_seconds: 300
+
+    apify_linkedin_posts:
+      failure_threshold: 2
+      recovery_timeout_seconds: 600
+
+  on_circuit_open:
+    action: use_alternative_tools
+    log: true
+    alert_if_critical: true
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+
+inputs:
+  required:
+    - name: niche_id
+      type: string
+      format: uuid
+      description: "UUID of the niche from previous agent"
+      source: handoff.niche_research_agent.niche_id
+
+  optional:
+    - name: pain_points_hint
+      type: array
+      items: string
+      description: "Pain points discovered in niche research"
+      source: handoff.niche_research_agent.pain_points
+      default: []
+
+    - name: competitors_hint
+      type: array
+      items: object
+      description: "Competitors found in niche research"
+      source: handoff.niche_research_agent.competitors
+      default: []
+
+    - name: max_personas
+      type: integer
+      description: "Maximum number of personas to create"
+      default: 3
+      validation:
+        min: 1
+        max: 5
+
+# ==============================================================================
+# DATABASE OPERATIONS
+# ==============================================================================
+
+database:
+  reads:
+    - id: get_niche
+      description: "Load niche details for persona research"
+      table: niches
+      operation: SELECT
+      fields:
+        - id
+        - name
+        - slug
+        - industry
+        - job_titles
+        - company_size
+        - location
+        - pain_points
+        - value_propositions
+      filter: "id = :niche_id"
+      parameters:
+        niche_id: "{{ inputs.niche_id }}"
+      required: true
+      on_not_found: fail
+      fail_message: "Niche not found - cannot proceed"
+
+    - id: get_niche_scores
+      description: "Load niche scores for context"
+      table: niche_scores
+      operation: SELECT
+      fields:
+        - overall_score
+        - pain_intensity_score
+        - reachability_score
+        - scoring_details
+      filter: "niche_id = :niche_id"
+      parameters:
+        niche_id: "{{ inputs.niche_id }}"
+      required: false
+      default: null
+
+    - id: get_niche_research_data
+      description: "Load full research findings from Niche Research Agent for downstream context"
+      table: niche_research_data
+      operation: SELECT
+      fields:
+        - market_size_estimate
+        - company_count_estimate
+        - persona_count_estimate
+        - growth_rate
+        - market_data_sources
+        - competitors_found
+        - saturation_level
+        - differentiation_opportunities
+        - inbox_fatigue_indicators
+        - linkedin_presence
+        - data_availability
+        - email_findability
+        - public_presence_level
+        - pain_points_detailed
+        - pain_intensity
+        - pain_urgency
+        - pain_point_quotes
+        - evidence_sources
+        - has_budget_authority
+        - typical_budget_range
+        - decision_process
+        - buying_triggers
+      filter: "niche_id = :niche_id"
+      parameters:
+        niche_id: "{{ inputs.niche_id }}"
+      required: false
+      default: null
+      on_not_found: warn
+      warn_message: "No detailed research data found - proceeding with limited context"
+
+  writes:
+    - id: create_personas
+      description: "Create persona records"
+      table: personas
+      operation: BULK_INSERT
+      timing: after_persona_synthesis
+      batch: true
+      iterate_over: agent_output.personas
+
+      fields:
+        id: { source: generated, type: uuid }
+        niche_id: { source: inputs, field: niche_id }
+        name: { source: iteration, field: name }
+        job_titles: { source: iteration, field: job_titles, type: jsonb }
+        seniority_level: { source: iteration, field: seniority_level }
+        department: { source: iteration, field: department }
+        pain_points: { source: iteration, field: pain_points, type: jsonb }
+        goals: { source: iteration, field: goals, type: jsonb }
+        objections: { source: iteration, field: objections, type: jsonb }
+        language_patterns: { source: iteration, field: language_patterns, type: jsonb }
+        trigger_events: { source: iteration, field: trigger_events, type: jsonb }
+        messaging_angles: { source: iteration, field: messaging_angles, type: jsonb }
+        created_at: { source: now }
+
+      returning: [id]
+      output_as: persona_ids
+
+    - id: create_persona_research_data
+      description: "Store raw research data"
+      table: persona_research_data
+      operation: BULK_INSERT
+      timing: after_persona_synthesis
+      depends_on: [create_personas]
+      batch: true
+      iterate_over: agent_output.research_data
+
+      fields:
+        id: { source: generated, type: uuid }
+        persona_id: { source: iteration, field: persona_id }
+        source: { source: iteration, field: source }
+        source_url: { source: iteration, field: url }
+        content_type: { source: iteration, field: type }
+        raw_content: { source: iteration, field: content }
+        extracted_insights: { source: iteration, field: insights, type: jsonb }
+        language_samples: { source: iteration, field: language_samples, type: jsonb }
+        pain_point_quotes: { source: iteration, field: quotes, type: jsonb }
+        created_at: { source: now }
+
+    - id: create_industry_fit_scores
+      description: "Store industry fit scores for lead scoring"
+      table: industry_fit_scores
+      operation: BULK_INSERT
+      timing: after_agent_complete
+      batch: true
+      iterate_over: agent_output.industry_scores
+
+      fields:
+        id: { source: generated, type: uuid }
+        niche_id: { source: inputs, field: niche_id }
+        industry: { source: iteration, field: industry }
+        fit_score: { source: iteration, field: score, type: integer }
+        reasoning: { source: iteration, field: reasoning }
+        pain_point_alignment: { source: iteration, field: alignment, type: jsonb }
+        created_at: { source: now }
+
+      on_conflict:
+        columns: [niche_id, industry]
+        action: UPDATE
+        update_fields: [fit_score, reasoning, pain_point_alignment]
+
+    - id: update_niche_consolidated
+      description: "Update niche with consolidated findings"
+      table: niches
+      operation: UPDATE
+      timing: after_agent_complete
+
+      filter: "id = :niche_id"
+      parameters:
+        niche_id: "{{ inputs.niche_id }}"
+
+      fields:
+        pain_points: { source: agent_output, field: consolidated_pain_points, type: jsonb }
+        value_propositions: { source: agent_output, field: value_propositions, type: jsonb }
+        messaging_tone: { source: agent_output, field: recommended_tone }
+        updated_at: { source: now }
+
+# ==============================================================================
+# AGENT STEPS WITH PARALLEL EXECUTION
+# ==============================================================================
+
+steps:
+  # Step 0: Tool Discovery
+  - id: tool_discovery
+    name: "Discover Available Tools"
+    description: "Check which tools are available"
+
+    actions:
+      - check_tool_availability:
+          tools:
+            - claude_web_search
+            - claude_web_fetch
+            - reddit_api
+            - tavily_search
+            - brave_search
+            - serper_search
+            - perplexity_search
+            - apify_linkedin_posts
+            - exa_search
+          health_check: true
+          timeout_per_tool_ms: 5000
+
+    output:
+      available_tools: array
+      tool_health_status: object
+
+  # Step 1: Reddit Deep Dive (PARALLEL - Most Important!)
+  - id: reddit_deep_dive
+    name: "Reddit Pain Point Mining"
+    description: "Deep dive into Reddit for real conversations, pain points, and language"
+    priority: highest
+
+    parallel_execution:
+      enabled: true
+      fan_out_queries: true
+      max_concurrent: 15
+
+    # Target subreddits based on niche
+    subreddits_by_industry:
+      SaaS: [SaaS, startups, sales, marketing, Entrepreneur, smallbusiness]
+      Technology: [technology, programming, sysadmin, ITManagers, devops]
+      Marketing: [marketing, digital_marketing, PPC, SEO, content_marketing]
+      Sales: [sales, salesforce, B2Bsales, InsideSales]
+      Finance: [finance, FinancialCareers, CFO, accounting]
+      Healthcare: [healthcare, healthIT, nursing, medicine]
+      eCommerce: [ecommerce, shopify, FulfillmentByAmazon, dropship]
+      default: [business, Entrepreneur, smallbusiness, startups]
+
+    queries:
+      # Pain point mining queries
+      - id: struggling_with
+        template: "site:reddit.com {{ job_titles[0] }} struggling with"
+        tools_priority: [claude_web_search, reddit_api]
+        purpose: "Find struggles and challenges"
+
+      - id: frustrated_by
+        template: "site:reddit.com {{ job_titles[0] }} frustrated OR frustrating"
+        tools_priority: [claude_web_search, reddit_api]
+        purpose: "Find frustrations"
+
+      - id: biggest_challenge
+        template: "site:reddit.com {{ job_titles[0] }} biggest challenge problem"
+        tools_priority: [claude_web_search, reddit_api]
+        purpose: "Find major challenges"
+
+      - id: hate_when
+        template: "site:reddit.com {{ job_titles[0] }} hate when OR pet peeve"
+        tools_priority: [claude_web_search, reddit_api]
+        purpose: "Find pet peeves"
+
+      - id: wish_i_could
+        template: "site:reddit.com {{ job_titles[0] }} wish I could OR if only"
+        tools_priority: [claude_web_search, reddit_api]
+        purpose: "Find desires"
+
+      - id: anyone_else
+        template: "site:reddit.com {{ job_titles[0] }} anyone else deal with"
+        tools_priority: [claude_web_search, reddit_api]
+        purpose: "Find common problems"
+
+      - id: advice_needed
+        template: "site:reddit.com {{ job_titles[0] }} advice needed help"
+        tools_priority: [claude_web_search, reddit_api]
+        purpose: "Find real questions"
+
+      - id: industry_specific
+        template: "site:reddit.com {{ industry[0] }} {{ job_titles[0] }} problem"
+        tools_priority: [claude_web_search, reddit_api]
+        purpose: "Industry-specific issues"
+
+      # Language pattern queries
+      - id: day_in_life
+        template: "site:reddit.com {{ job_titles[0] }} day in the life typical day"
+        tools_priority: [claude_web_search, reddit_api]
+        purpose: "Understand daily work"
+
+      - id: rant_vent
+        template: "site:reddit.com {{ job_titles[0] }} rant OR vent"
+        tools_priority: [claude_web_search, reddit_api]
+        purpose: "Find unfiltered language"
+
+    # Fetch full Reddit threads for context
+    fetch_content:
+      enabled: true
+      tool: claude_web_fetch
+      max_pages: 15
+      priority_by_engagement:
+        - min_comments: 10
+        - min_upvotes: 20
+      extract:
+        - original_post_text
+        - top_comments
+        - pain_point_quotes
+        - language_patterns
+        - emotional_indicators
+
+    extraction_rules:
+      pain_points:
+        patterns:
+          - "struggling with"
+          - "frustrated by"
+          - "biggest challenge"
+          - "hate when"
+          - "wish I could"
+          - "anyone else deal with"
+          - "drives me crazy"
+          - "nightmare"
+          - "pain in the"
+          - "waste of time"
+        min_context_chars: 100
+        max_context_chars: 500
+
+      language_samples:
+        min_length: 50
+        max_length: 500
+        exclude:
+          - promotional_content
+          - job_postings
+          - self_promotion
+        prefer:
+          - first_person_narrative
+          - emotional_language
+          - specific_examples
+
+      quotes:
+        format: exact_with_context
+        include_source_url: true
+        include_engagement_metrics: true
+        max_per_thread: 5
+
+    output:
+      reddit_pain_points: array
+      reddit_quotes: array
+      reddit_language_samples: array
+      subreddit_relevance_scores: object
+      emotional_intensity_indicators: array
+
+  # Step 2: LinkedIn & Professional Content Research (PARALLEL)
+  - id: linkedin_research
+    name: "LinkedIn & Professional Content"
+    description: "Research professional language patterns and industry content"
+
+    parallel_execution:
+      enabled: true
+      fan_out_queries: true
+      max_concurrent: 10
+
+    queries:
+      # LinkedIn profile searches
+      - id: linkedin_profiles
+        template: "site:linkedin.com/in {{ job_titles[0] }} {{ industry[0] }}"
+        tools_priority: [claude_web_search, serper_search, brave_search]
+        min_tools: 2
+        purpose: "Find LinkedIn profiles for language analysis"
+
+      # LinkedIn posts/articles
+      - id: linkedin_posts
+        template: "site:linkedin.com {{ job_titles[0] }} challenges {{ current_year }}"
+        tools_priority: [claude_web_search, serper_search]
+        min_tools: 1
+        purpose: "Find LinkedIn posts about challenges"
+
+      # Thought leadership
+      - id: thought_leadership
+        template: "{{ job_titles[0] }} {{ industry[0] }} thought leadership blog"
+        tools_priority: [claude_web_search, tavily_search, brave_search]
+        min_tools: 2
+        purpose: "Find industry thought leadership"
+
+      # Conference talks
+      - id: conference_talks
+        template: "{{ job_titles[0] }} {{ industry[0] }} conference talk presentation"
+        tools_priority: [claude_web_search, tavily_search]
+        min_tools: 1
+        purpose: "Find public speaking content"
+
+      # Podcasts
+      - id: podcast_appearances
+        template: "{{ job_titles[0] }} {{ industry[0] }} podcast interview"
+        tools_priority: [claude_web_search, tavily_search]
+        min_tools: 1
+        purpose: "Find podcast interviews"
+
+    # Optional: Use Apify for LinkedIn company posts if available
+    apify_scraping:
+      enabled_if_available: true
+      tool: apify_linkedin_posts
+
+      # First find relevant companies
+      company_discovery:
+        query: "{{ industry[0] }} company LinkedIn site:linkedin.com/company"
+        tools: [claude_web_search, serper_search]
+        extract_urls: true
+        max_companies: 10
+
+      # Then scrape their posts
+      scraping_config:
+        posts_per_company: 5
+        max_total_posts: 50
+
+      fallback_if_unavailable:
+        action: rely_on_web_search
+        message: "Apify unavailable - using web search for LinkedIn content"
+
+    fetch_content:
+      enabled: true
+      tool: claude_web_fetch
+      max_pages: 10
+      extract:
+        - professional_phrases
+        - industry_jargon
+        - tone_indicators
+        - success_metrics_mentioned
+
+    output:
+      linkedin_language_patterns: array
+      professional_tone_examples: array
+      industry_terminology: array
+      thought_leader_insights: array
+
+  # Step 3: Industry Content Deep Research (PARALLEL)
+  - id: industry_content_research
+    name: "Industry Reports & Content"
+    description: "Research industry reports, surveys, and content"
+
+    parallel_execution:
+      enabled: true
+      fan_out_queries: true
+      max_concurrent: 12
+
+    queries:
+      # State of industry reports
+      - id: state_of_industry
+        template: "state of {{ industry[0] }} report {{ current_year }}"
+        tools_priority: [claude_web_search, tavily_search, perplexity_search]
+        min_tools: 2
+        purpose: "Find industry reports"
+
+      # Challenges surveys
+      - id: challenges_survey
+        template: "{{ job_titles[0] }} challenges survey {{ current_year }}"
+        tools_priority: [claude_web_search, tavily_search, brave_search]
+        min_tools: 2
+        purpose: "Find survey data on challenges"
+
+      # Goals and priorities
+      - id: goals_priorities
+        template: "{{ job_titles[0] }} top priorities goals {{ current_year }}"
+        tools_priority: [claude_web_search, tavily_search]
+        min_tools: 1
+        purpose: "Understand priorities"
+
+      # KPIs and metrics
+      - id: kpis_metrics
+        template: "{{ job_titles[0] }} KPIs metrics measured on"
+        tools_priority: [claude_web_search, perplexity_search]
+        min_tools: 1
+        purpose: "Understand success metrics"
+
+      # Buying behavior
+      - id: buying_behavior
+        template: "{{ job_titles[0] }} B2B buying process decision criteria"
+        tools_priority: [claude_web_search, tavily_search, brave_search]
+        min_tools: 2
+        purpose: "Understand purchasing behavior"
+
+      # Tools and tech stack
+      - id: tools_tech_stack
+        template: "{{ job_titles[0] }} {{ industry[0] }} tools software stack"
+        tools_priority: [claude_web_search, tavily_search]
+        min_tools: 1
+        purpose: "Understand tech stack"
+
+      # Common objections
+      - id: common_objections
+        template: "{{ job_titles[0] }} objections sales B2B vendor"
+        tools_priority: [claude_web_search, tavily_search, brave_search]
+        min_tools: 2
+        purpose: "Find common sales objections"
+
+      # Trigger events
+      - id: trigger_events
+        template: "{{ job_titles[0] }} when to buy new solution trigger event"
+        tools_priority: [claude_web_search, perplexity_search]
+        min_tools: 1
+        purpose: "Identify buying triggers"
+
+    # Synthesis query using Perplexity if available
+    synthesis:
+      use_if_available: perplexity_search
+      query: |
+        Summarize the top 5 challenges, goals, and buying triggers for
+        {{ job_titles[0] }} in {{ industry[0] }}. Include specific statistics
+        and cite sources.
+      fallback_to_llm_synthesis: true
+
+    fetch_content:
+      enabled: true
+      tool: claude_web_fetch
+      max_pages: 10
+      priority_urls:
+        - contains: gartner.com
+        - contains: forrester.com
+        - contains: mckinsey.com
+        - contains: hbr.org
+        - contains: report
+        - contains: survey
+      extract:
+        - statistics
+        - pain_points
+        - priorities
+        - quotes
+
+    output:
+      industry_pain_points: array
+      persona_goals: array
+      success_metrics: array
+      buying_behavior: object
+      trigger_events: array
+      common_objections: array
+
+  # Step 4: Synthesize Personas
+  - id: persona_synthesis
+    name: "Synthesize Persona Profiles"
+    description: "Combine all research into detailed persona profiles"
+
+    inputs:
+      - reddit_deep_dive.output
+      - linkedin_research.output
+      - industry_content_research.output
+      - db_reads.get_niche
+      - db_reads.get_niche_scores
+      - db_reads.get_niche_research_data
+
+    # Use Perplexity for synthesis if available
+    synthesis_approach:
+      primary: perplexity_search
+      fallback: llm_synthesis
+
+      synthesis_queries:
+        - query: |
+            Based on this research data, create a detailed buyer persona for
+            {{ job_titles[0] }} in {{ industry[0] }}. Include their top 5 pain
+            points with exact quotes, professional goals, common objections,
+            and messaging angles.
+          purpose: "Generate persona profile"
+
+    persona_template:
+      name: string  # "The Scaling VP", "The Firefighting Director"
+      job_titles: array
+      seniority_level: string  # c_suite | vp | director | manager | senior_ic | ic
+      department: string
+
+      pain_points:
+        type: array
+        items:
+          pain: string
+          intensity: integer  # 1-10
+          quote: string  # Exact quote from research
+          source: string  # URL or source reference
+          frequency: string  # how often mentioned
+
+      goals:
+        type: array
+        items: string
+        max_items: 5
+
+      objections:
+        type: array
+        items:
+          objection: string
+          real_meaning: string
+          counter_approach: string
+
+      language_patterns:
+        type: array
+        items: string
+        description: "Exact phrases they use"
+
+      trigger_events:
+        type: array
+        items: string
+        description: "Events that create buying urgency"
+
+      messaging_angles:
+        primary:
+          angle: string
+          hook: string
+          supporting_pain: string
+        secondary:
+          angle: string
+          hook: string
+          supporting_pain: string
+        avoid: array  # Angles that won't work
+
+    industry_scoring:
+      for_each_industry: true
+      score_criteria:
+        pain_point_alignment: 0.40
+        language_match: 0.20
+        accessibility: 0.20
+        budget_indicators: 0.20
+      score_range: [0, 100]
+
+    output:
+      personas: array
+      consolidated_pain_points: array
+      value_propositions: array
+      recommended_tone: string
+      industry_scores: array
+      research_data: array
+
+# ==============================================================================
+# SYSTEM PROMPT
+# ==============================================================================
+
+system_prompt: |
+  You are an expert B2B buyer persona researcher and psychologist. Your mission is to deeply understand target personas by analyzing their real conversations, challenges, and professional context.
+
+  ## Available Tools
+  You have multiple search tools available. Use them strategically:
+
+  **FREE (Always Use First):**
+  - WebSearch: Fast, reliable - use for all queries
+  - WebFetch: Read full page content - use to extract quotes
+  - Reddit API: Direct Reddit search - goldmine for real conversations
+
+  **CHEAP (Use for Enrichment):**
+  - Tavily: AI-powered search - good for industry reports
+  - Brave: Privacy-focused search - good for company research
+  - Serper: Google search - good for LinkedIn content
+
+  **MODERATE (Use Selectively):**
+  - Perplexity: AI with citations - excellent for synthesis
+  - Apify LinkedIn: Scrape LinkedIn posts - if available
+
+  **EXPENSIVE (Last Resort):**
+  - Exa: Semantic search - only if needed
+
+  ## Research Strategy
+
+  ### Reddit is GOLD
+  Reddit is your most valuable source. Real people venting real frustrations:
+  - Search multiple subreddits relevant to the industry
+  - Look for posts with high engagement (comments, upvotes)
+  - Extract EXACT quotes - don't paraphrase
+  - Note emotional language (frustrated, hate, nightmare, etc.)
+  - Find recurring themes across multiple posts
+
+  ### Language Patterns Matter
+  The exact words people use are crucial for cold email:
+  - Capture industry jargon they actually use
+  - Note how they describe problems (not how marketers describe them)
+  - Find emotional triggers ("drives me crazy", "waste of time")
+  - Identify professional tone from LinkedIn vs casual from Reddit
+
+  ### Cross-Reference Everything
+  - A pain point mentioned on Reddit AND LinkedIn = high confidence
+  - Statistics from industry reports + Reddit complaints = powerful
+  - Multiple sources saying the same thing = include in persona
+
+  ## Persona Development
+
+  For each persona:
+
+  ### 1. Identity
+  - Memorable name ("The Scaling VP", "The Firefighting Director")
+  - Exact job titles they use
+  - Seniority and department
+
+  ### 2. Pain Points (RANKED)
+  For each pain point include:
+  - The problem IN THEIR WORDS (exact quote)
+  - Intensity score (1-10)
+  - Source URL
+  - How frequently mentioned
+
+  ### 3. Language Patterns
+  - Phrases they use to describe problems
+  - Industry jargon
+  - Emotional expressions
+
+  ### 4. Objections & Counters
+  - What they'll say to dismiss cold email
+  - What it really means
+  - How to address it
+
+  ### 5. Trigger Events
+  - New job/promotion
+  - Funding round
+  - Hiring spike
+  - Competitor pressure
+  - Quarter end
+
+  ### 6. Messaging Angles
+  - Primary angle (best approach)
+  - Secondary angle (for non-responders)
+  - Angles to AVOID
+
+  ## Output Requirements
+
+  - Create 2-3 distinct personas
+  - Include EXACT QUOTES from research (with sources)
+  - Rank pain points by intensity
+  - Be specific - avoid generic statements
+  - Include confidence levels
+  - NEVER fabricate quotes
+
+# ==============================================================================
+# OUTPUT SCHEMA
+# ==============================================================================
+
+outputs:
+  schema:
+    type: object
+    required:
+      - personas
+      - persona_ids
+      - consolidated_pain_points
+      - industry_scores
+      - sources_used
+
+    properties:
+      personas:
+        type: array
+        items:
+          type: object
+          required: [name, job_titles, pain_points, messaging_angles]
+          properties:
+            name: { type: string }
+            job_titles: { type: array, items: { type: string } }
+            seniority_level: { type: string, enum: [c_suite, vp, director, manager, senior_ic, ic] }
+            department: { type: string }
+            pain_points:
+              type: array
+              items:
+                type: object
+                properties:
+                  pain: { type: string }
+                  intensity: { type: integer, minimum: 1, maximum: 10 }
+                  quote: { type: string }
+                  source: { type: string }
+            goals: { type: array, items: { type: string } }
+            objections:
+              type: array
+              items:
+                type: object
+                properties:
+                  objection: { type: string }
+                  real_meaning: { type: string }
+                  counter: { type: string }
+            language_patterns: { type: array, items: { type: string } }
+            trigger_events: { type: array, items: { type: string } }
+            messaging_angles:
+              type: object
+              properties:
+                primary: { type: object }
+                secondary: { type: object }
+                avoid: { type: array }
+
+      persona_ids:
+        type: array
+        items: { type: string, format: uuid }
+
+      consolidated_pain_points:
+        type: array
+        items: { type: string }
+
+      value_propositions:
+        type: array
+        items: { type: string }
+
+      recommended_tone:
+        type: string
+        enum: [professional, casual, direct, consultative]
+
+      industry_scores:
+        type: array
+        items:
+          type: object
+          properties:
+            industry: { type: string }
+            score: { type: integer, minimum: 0, maximum: 100 }
+            reasoning: { type: string }
+            alignment: { type: array }
+
+      sources_used:
+        type: array
+        items:
+          type: object
+          properties:
+            tool: { type: string }
+            queries_count: { type: integer }
+            results_count: { type: integer }
+            urls: { type: array }
+
+      research_data:
+        type: array
+
+# ==============================================================================
+# SUCCESS CRITERIA
+# ==============================================================================
+
+success_criteria:
+  hard:
+    - id: personas_created
+      condition: "LENGTH(persona_ids) >= 1"
+      message: "At least one persona must be created"
+
+    - id: pain_points_found
+      condition: "LENGTH(consolidated_pain_points) >= 3"
+      message: "Must identify at least 3 pain points"
+
+    - id: quotes_collected
+      condition: "total_quotes >= 5"
+      message: "Must collect at least 5 real quotes"
+
+    - id: industry_scores_created
+      condition: "LENGTH(industry_scores) >= 1"
+      message: "Must create industry fit scores"
+
+  soft:
+    - id: multiple_personas
+      condition: "LENGTH(persona_ids) >= 2"
+      message: "Target 2+ personas"
+
+    - id: reddit_coverage
+      condition: "reddit_sources >= 10"
+      message: "Should have 10+ Reddit sources"
+
+    - id: language_patterns
+      condition: "total_language_patterns >= 15"
+      message: "Should identify 15+ language patterns"
+
+# ==============================================================================
+# ERROR HANDLING
+# ==============================================================================
+
+error_handling:
+  scenarios:
+    - error: reddit_unavailable
+      action: increase_web_search
+      alternative_queries: add_site_reddit_to_web_search
+
+    - error: apify_failed
+      action: skip_linkedin_scraping
+      proceed_with: web_search_linkedin_content
+
+    - error: insufficient_reddit_data
+      action: expand_subreddits
+      add_subreddits: [business, Entrepreneur, consulting, freelance]
+
+    - error: niche_not_found
+      action: fail_immediately
+      message: "Niche not found in database"
+
+  compensation:
+    on_failure:
+      - action: log_failure
+        table: campaign_audit_log
+
+# ==============================================================================
+# OBSERVABILITY
+# ==============================================================================
+
+observability:
+  logging:
+    level: INFO
+    include_tool_calls: true
+    include_parallel_timing: true
+    structured_fields:
+      - niche_id
+      - personas_created
+      - quotes_collected
+      - tools_used
+      - execution_time_ms
+
+  metrics:
+    - name: persona_research_duration
+      type: histogram
+
+    - name: reddit_quotes_extracted
+      type: counter
+
+    - name: tool_usage
+      type: counter
+      labels: [tool_name, success]
+
+  tracing:
+    enabled: true
+    service_name: "cold-email-workflow"
+    span_name: "persona_research_agent"
+
+# ==============================================================================
+# HANDOFF
+# ==============================================================================
+
+handoff:
+  to_agent: research_export_agent
+
+  data:
+    - field: niche_id
+      source: inputs.niche_id
+      required: true
+
+    - field: persona_ids
+      source: outputs.persona_ids
+      required: true
+
+    - field: consolidated_pain_points
+      source: outputs.consolidated_pain_points
+      required: true
+
+    - field: industry_scores
+      source: outputs.industry_scores
+      required: true
+
+  conditions:
+    - "LENGTH(persona_ids) >= 1"
+
+  on_conditions_not_met:
+    action: fail_workflow
+    reason: "Persona research failed - no personas created"

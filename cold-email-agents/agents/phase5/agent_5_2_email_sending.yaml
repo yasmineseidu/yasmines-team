@@ -1,0 +1,303 @@
+# ==============================================================================
+# AGENT 5.2: EMAIL SENDING AGENT
+# ==============================================================================
+# Phase: 5 - Campaign Execution
+# Purpose: Upload leads and manage email sending in Instantly
+# Execution: Batch upload with parallel processing
+# Depends On: Campaign Setup Agent (5.1)
+# ==============================================================================
+
+agent:
+  id: email_sending_agent
+  name: "Email Sending Agent"
+  version: "2.0.0"
+  phase: 5
+  phase_name: "Campaign Execution"
+
+  description: |
+    Uploads leads with personalized emails to Instantly.ai campaigns,
+    manages sending queues, monitors delivery, and handles bounces.
+
+# ==============================================================================
+# TOOL CONFIGURATION
+# ==============================================================================
+
+tool_configuration:
+  discovery:
+    enabled: true
+
+  required_tools:
+    - name: instantly_api
+      type: api
+      required: true
+      endpoints:
+        - add_leads_to_campaign
+        - get_campaign_status
+        - pause_campaign
+        - resume_campaign
+        - get_analytics
+
+# ==============================================================================
+# PARALLEL EXECUTION
+# ==============================================================================
+
+parallel_execution:
+  enabled: true
+  batch_upload:
+    batch_size: 100
+    max_parallel_batches: 5
+    delay_between_batches_seconds: 2
+
+# ==============================================================================
+# EXECUTION & RETRY
+# ==============================================================================
+
+execution:
+  mode: parallel_batch
+  timeout_seconds: 3600
+  idempotency:
+    enabled: true
+    key_template: "email_sending:{campaign_id}:{lead_id}"
+  checkpoint:
+    enabled: true
+    interval_leads: 500
+
+retry:
+  default:
+    max_attempts: 3
+    strategy: exponential_jitter
+    base_delay_seconds: 5
+    retry_on: [ConnectionError, TimeoutError, RateLimitError]
+
+# ==============================================================================
+# INPUTS & DATABASE
+# ==============================================================================
+
+inputs:
+  required:
+    - name: campaign_id
+      type: string
+      format: uuid
+      source: handoff.campaign_setup_agent.campaign_id
+    - name: instantly_campaign_id
+      type: string
+      source: handoff.campaign_setup_agent.instantly_campaign_id
+
+  optional:
+    - name: batch_size
+      type: integer
+      default: 100
+    - name: send_tier_a_first
+      type: boolean
+      default: true
+
+database:
+  reads:
+    - id: get_leads_to_send
+      table: leads
+      operation: SELECT
+      fields: [id, email, first_name, last_name, company_name, lead_tier, generated_email_id]
+      filter: |
+        campaign_id = :campaign_id
+        AND email_status = 'valid'
+        AND email_generation_status = 'generated'
+        AND sending_status IS NULL
+      order_by: "lead_score DESC"
+      pagination:
+        enabled: true
+        batch_size: 100
+      required: true
+
+    - id: get_generated_emails
+      table: generated_emails
+      operation: SELECT
+      fields: [id, lead_id, subject_line, full_email]
+      filter: "lead_id = ANY(:lead_ids)"
+      required: true
+
+  writes:
+    - id: update_lead_sending_status
+      table: leads
+      operation: BULK_UPDATE
+      timing: per_batch
+      filter: "id = ANY(:lead_ids)"
+      fields:
+        sending_status: { value: "queued" }
+        instantly_lead_id: { source: instantly_response, field: lead_id }
+        queued_at: { source: now }
+        updated_at: { source: now }
+
+    - id: log_sending_batch
+      table: sending_logs
+      operation: INSERT
+      timing: per_batch
+      fields:
+        id: { source: generated, type: uuid }
+        campaign_id: { source: inputs, field: campaign_id }
+        batch_number: { source: batch, field: number }
+        leads_uploaded: { source: batch, field: count }
+        status: { value: "uploaded" }
+        created_at: { source: now }
+
+    - id: update_campaign_sending
+      table: campaigns
+      operation: UPDATE
+      timing: periodic
+      interval_seconds: 60
+      filter: "id = :campaign_id"
+      fields:
+        leads_queued: { source: agent_state, field: total_queued }
+        sending_status: { value: "sending" }
+        updated_at: { source: now }
+
+# ==============================================================================
+# LEAD UPLOAD FORMAT
+# ==============================================================================
+
+lead_upload_format:
+  # Map internal fields to Instantly fields
+  field_mapping:
+    email: email
+    first_name: first_name
+    last_name: last_name
+    company_name: company_name
+    subject_line: custom_variables.subject
+    email_body: custom_variables.body
+
+  # Custom variables for personalization
+  custom_variables:
+    - name: subject
+      source: generated_email.subject_line
+    - name: body
+      source: generated_email.full_email
+    - name: first_name
+      source: lead.first_name
+    - name: company
+      source: lead.company_name
+
+# ==============================================================================
+# AGENT STEPS
+# ==============================================================================
+
+steps:
+  - id: load_leads
+    name: "Load Leads for Sending"
+    description: "Load leads with generated emails"
+
+    priority_order:
+      - tier_a_first: true
+      - then_tier_b: true
+      - then_tier_c: true
+
+    output:
+      total_leads: integer
+      by_tier: object
+
+  - id: upload_to_instantly
+    name: "Upload Leads to Instantly"
+    depends_on: [load_leads]
+
+    parallel_execution:
+      enabled: true
+      max_concurrent: 5
+
+    for_each: lead_batches
+
+    tool: instantly_api
+    action: add_leads_to_campaign
+
+    input:
+      campaign_id: "{{ inputs.instantly_campaign_id }}"
+      leads: "{{ batch.leads_formatted }}"
+
+    output:
+      batches_uploaded: integer
+      leads_uploaded: integer
+
+  - id: verify_upload
+    name: "Verify Upload Success"
+    depends_on: [upload_to_instantly]
+
+    tool: instantly_api
+    action: get_campaign_status
+
+    verify:
+      leads_count_matches: true
+      status: active
+
+    output:
+      verification_passed: boolean
+
+  - id: start_sending
+    name: "Start Campaign Sending"
+    depends_on: [verify_upload]
+
+    tool: instantly_api
+    action: resume_campaign
+
+    output:
+      sending_started: boolean
+      campaign_status: string
+
+# ==============================================================================
+# SYSTEM PROMPT
+# ==============================================================================
+
+system_prompt: |
+  You are a cold email sending specialist managing campaign execution.
+
+  Upload Strategy:
+  1. Upload leads in batches of 100
+  2. Prioritize Tier A leads first
+  3. Include personalized email content
+  4. Verify successful upload
+
+  Monitoring:
+  - Track successful uploads
+  - Handle rate limits gracefully
+  - Report any failures immediately
+
+# ==============================================================================
+# OUTPUT SCHEMA & SUCCESS CRITERIA
+# ==============================================================================
+
+outputs:
+  schema:
+    type: object
+    required: [total_uploaded, sending_started]
+    properties:
+      total_uploaded: { type: integer }
+      tier_a_uploaded: { type: integer }
+      tier_b_uploaded: { type: integer }
+      tier_c_uploaded: { type: integer }
+      sending_started: { type: boolean }
+      campaign_status: { type: string }
+
+success_criteria:
+  hard:
+    - id: leads_uploaded
+      condition: "total_uploaded >= 100"
+    - id: sending_started
+      condition: "sending_started = true"
+  soft:
+    - id: high_upload_rate
+      condition: "total_uploaded >= total_leads * 0.95"
+
+# ==============================================================================
+# HANDOFF
+# ==============================================================================
+
+handoff:
+  to_agent: reply_monitoring_agent
+  data:
+    - field: campaign_id
+      source: inputs.campaign_id
+      required: true
+    - field: instantly_campaign_id
+      source: inputs.instantly_campaign_id
+      required: true
+    - field: total_uploaded
+      source: outputs.total_uploaded
+      required: true
+  conditions:
+    - "sending_started = true"

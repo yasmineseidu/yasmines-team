@@ -1,0 +1,1202 @@
+# ==============================================================================
+# AGENT 1.1: NICHE RESEARCH AGENT
+# ==============================================================================
+# Phase: 1 - Market Intelligence
+# Purpose: Analyze market viability of target niche using all available tools
+# Execution: Single execution per workflow trigger
+# Features: Dynamic tool discovery, parallel search, multi-source enrichment
+# ==============================================================================
+
+agent:
+  id: niche_research_agent
+  name: "Niche Research Agent"
+  version: "2.0.0"
+  phase: 1
+  phase_name: "Market Intelligence"
+
+  description: |
+    Analyzes the viability of a target niche by researching market size,
+    competition intensity, lead reachability, pain point intensity, and
+    budget authority. Uses dynamic tool discovery to leverage all available
+    search tools in parallel for rich, comprehensive research.
+
+# ==============================================================================
+# TOOL CONFIGURATION - PRIORITY-BASED WITH DISCOVERY
+# ==============================================================================
+
+tool_configuration:
+  # Discovery: Agent checks which tools are available at runtime
+  discovery:
+    enabled: true
+    check_on_startup: true
+    cache_availability: true
+    cache_ttl_seconds: 300
+
+  # Priority tiers - use in order, fall back if unavailable
+  priority_tiers:
+    # Tier 1: FREE - Always try these first
+    tier_1_free:
+      - name: claude_web_search
+        type: builtin
+        description: "Claude Agent SDK built-in WebSearch"
+        parallel_limit: 10
+        cost_per_call: 0.0
+
+      - name: claude_web_fetch
+        type: builtin
+        description: "Claude Agent SDK built-in WebFetch"
+        parallel_limit: 5
+        cost_per_call: 0.0
+
+      - name: reddit_api
+        type: api
+        description: "Reddit public search API"
+        parallel_limit: 3
+        cost_per_call: 0.0
+        rate_limit_rpm: 30
+
+    # Tier 2: CHEAP - Use for enrichment
+    tier_2_cheap:
+      - name: tavily_search
+        type: api
+        description: "Tavily AI search"
+        parallel_limit: 5
+        cost_per_call: 0.001
+        daily_budget: 10.00
+
+      - name: brave_search
+        type: api
+        description: "Brave web search"
+        parallel_limit: 5
+        cost_per_call: 0.001
+        daily_budget: 10.00
+
+      - name: serper_search
+        type: api
+        description: "Serper Google search"
+        parallel_limit: 5
+        cost_per_call: 0.001
+        daily_budget: 10.00
+
+    # Tier 3: MODERATE - Use for specific deep research
+    tier_3_moderate:
+      - name: perplexity_search
+        type: api
+        description: "Perplexity AI with citations"
+        parallel_limit: 3
+        cost_per_call: 0.005
+        daily_budget: 25.00
+        use_for:
+          - complex_questions
+          - synthesis_queries
+          - fact_verification
+
+    # Tier 4: EXPENSIVE - Last resort for hard-to-find info
+    tier_4_expensive:
+      - name: exa_search
+        type: api
+        description: "Exa semantic search"
+        parallel_limit: 2
+        cost_per_call: 0.01
+        daily_budget: 20.00
+        use_for:
+          - semantic_similarity
+          - niche_content
+          - when_other_sources_fail
+
+  # Tool selection strategy
+  selection_strategy:
+    mode: parallel_tiered  # parallel_tiered | sequential | all_available
+
+    # For parallel_tiered mode:
+    parallel_tiered:
+      # Always start with Tier 1 (free)
+      always_include: [tier_1_free]
+
+      # Add Tier 2 for enrichment
+      enrich_with: [tier_2_cheap]
+
+      # Use Tier 3 for specific queries only
+      selective_use: [tier_3_moderate]
+
+      # Tier 4 only if results insufficient
+      fallback_only: [tier_4_expensive]
+
+      # Minimum results before considering query "answered"
+      min_results_per_query: 5
+
+      # If we get this many quality results, skip lower tiers
+      sufficient_results: 10
+
+# ==============================================================================
+# PARALLEL EXECUTION CONFIGURATION
+# ==============================================================================
+
+parallel_execution:
+  enabled: true
+
+  # Maximum concurrent operations
+  concurrency:
+    max_parallel_searches: 15  # Total across all tools
+    max_parallel_per_tool: 5   # Per individual tool
+    max_parallel_queries: 20   # Total query fan-out
+
+  # Fan-out strategy for search queries
+  fan_out:
+    # Each research step fans out to multiple tools simultaneously
+    strategy: broadcast_to_available
+
+    # How to handle results
+    result_handling:
+      # Wait for all or return as they complete
+      mode: return_as_complete  # all | return_as_complete | first_n
+
+      # Timeout for stragglers
+      timeout_seconds: 30
+
+      # Minimum results before proceeding
+      min_results: 3
+
+  # Result combination
+  combine_results:
+    # Deduplicate by URL
+    deduplicate: true
+    dedupe_key: url
+
+    # Rank combined results
+    ranking:
+      factors:
+        - relevance_score: 0.4
+        - source_authority: 0.3
+        - recency: 0.2
+        - uniqueness: 0.1
+
+    # Maximum results to keep per query
+    max_results_per_query: 15
+
+    # Merge similar content
+    merge_similar:
+      enabled: true
+      similarity_threshold: 0.85
+
+# ==============================================================================
+# EXECUTION CONFIGURATION
+# ==============================================================================
+
+execution:
+  mode: single
+  timeout_seconds: 600  # 10 minutes max
+
+  idempotency:
+    enabled: true
+    key_template: "niche_research:{niche_slug}:{date}"
+    ttl_hours: 24
+
+  checkpoint:
+    enabled: true
+    after_steps:
+      - tool_discovery
+      - market_size_research
+      - competition_research
+      - reachability_research
+      - pain_points_research
+      - budget_authority_research
+    storage: postgresql
+    table: workflow_checkpoints
+
+# ==============================================================================
+# RETRY CONFIGURATION
+# ==============================================================================
+
+retry:
+  default:
+    max_attempts: 5
+    strategy: exponential_jitter
+    base_delay_seconds: 2
+    max_delay_seconds: 60
+    jitter: true
+    jitter_range: 0.5
+
+    retry_on:
+      - ConnectionError
+      - TimeoutError
+      - RateLimitError
+      - ServiceUnavailableError
+      - HTTPError_5xx
+
+    dont_retry_on:
+      - AuthenticationError
+      - ValidationError
+      - NotFoundError
+      - HTTPError_4xx
+
+    on_retry:
+      log_level: WARNING
+      metrics: true
+      alert_after_attempt: 3
+
+    on_exhausted:
+      log_level: ERROR
+      alert: true
+      fallback_action: try_next_tool
+
+  # Per-tool retry overrides
+  tool_overrides:
+    claude_web_search:
+      max_attempts: 3
+      base_delay_seconds: 1
+
+    tavily_search:
+      max_attempts: 3
+      base_delay_seconds: 2
+
+    perplexity_search:
+      max_attempts: 2
+      base_delay_seconds: 5
+
+    reddit_api:
+      max_attempts: 3
+      base_delay_seconds: 10  # Reddit is strict on rate limits
+
+# ==============================================================================
+# RATE LIMITING
+# ==============================================================================
+
+rate_limits:
+  # Global agent rate limit
+  agent:
+    requests_per_minute: 100
+    requests_per_hour: 1000
+    burst_limit: 25
+
+  # Per-tool rate limits (respects API limits)
+  tools:
+    claude_web_search:
+      requests_per_minute: 60
+      concurrent_max: 10
+
+    claude_web_fetch:
+      requests_per_minute: 30
+      concurrent_max: 5
+
+    reddit_api:
+      requests_per_minute: 30
+      concurrent_max: 3
+
+    tavily_search:
+      requests_per_minute: 60
+      concurrent_max: 5
+      daily_limit: 1000
+
+    brave_search:
+      requests_per_minute: 60
+      concurrent_max: 5
+      daily_limit: 2000
+
+    serper_search:
+      requests_per_minute: 50
+      concurrent_max: 5
+      daily_limit: 2500
+
+    perplexity_search:
+      requests_per_minute: 20
+      concurrent_max: 3
+      daily_limit: 500
+
+    exa_search:
+      requests_per_minute: 20
+      concurrent_max: 2
+      daily_limit: 200
+
+# ==============================================================================
+# CIRCUIT BREAKER
+# ==============================================================================
+
+circuit_breaker:
+  enabled: true
+
+  # Global circuit breaker
+  global:
+    failure_threshold: 10
+    failure_rate_threshold: 0.5
+    minimum_calls: 20
+    recovery_timeout_seconds: 120
+    half_open_max_calls: 5
+
+  # Per-tool circuit breakers
+  per_tool:
+    claude_web_search:
+      failure_threshold: 5
+      recovery_timeout_seconds: 60
+
+    tavily_search:
+      failure_threshold: 3
+      recovery_timeout_seconds: 120
+
+    brave_search:
+      failure_threshold: 3
+      recovery_timeout_seconds: 120
+
+    serper_search:
+      failure_threshold: 3
+      recovery_timeout_seconds: 120
+
+    perplexity_search:
+      failure_threshold: 2
+      recovery_timeout_seconds: 180
+
+    reddit_api:
+      failure_threshold: 5
+      recovery_timeout_seconds: 300
+
+    exa_search:
+      failure_threshold: 2
+      recovery_timeout_seconds: 300
+
+  # What to do when a tool's circuit opens
+  on_circuit_open:
+    action: use_alternative_tools
+    log: true
+    alert_if_critical: true
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+
+inputs:
+  required:
+    - name: niche_name
+      type: string
+      description: "Human-readable name for the niche"
+      example: "SaaS Marketing Directors"
+      validation:
+        min_length: 3
+        max_length: 100
+
+    - name: industry
+      type: array
+      items: string
+      description: "Target industries"
+      example: ["SaaS", "Software", "Technology"]
+      validation:
+        min_items: 1
+        max_items: 5
+
+    - name: job_titles
+      type: array
+      items: string
+      description: "Target job titles"
+      example: ["Marketing Director", "VP Marketing", "Head of Marketing"]
+      validation:
+        min_items: 1
+        max_items: 10
+
+  optional:
+    - name: company_size
+      type: array
+      items: string
+      description: "Target company sizes"
+      default: ["51-200", "201-500"]
+      allowed_values: ["1-10", "11-50", "51-200", "201-500", "501-1000", "1001-5000", "5000+"]
+
+    - name: location
+      type: array
+      items: string
+      description: "Target geographic locations"
+      default: ["United States"]
+
+    - name: pain_points_hint
+      type: array
+      items: string
+      description: "Known pain points to validate"
+      default: []
+
+    - name: competitors_hint
+      type: array
+      items: string
+      description: "Known competitors to research"
+      default: []
+
+# ==============================================================================
+# DATABASE OPERATIONS
+# ==============================================================================
+
+database:
+  # Reads
+  reads:
+    - id: check_existing_niche
+      description: "Check if niche already exists"
+      table: niches
+      operation: SELECT
+      fields: [id, name, slug, status, created_at]
+      filter: "slug = :niche_slug"
+      parameters:
+        niche_slug: "{{ slugify(inputs.niche_name) }}"
+      required: false
+      on_found: check_if_should_reuse
+      on_not_found: proceed
+
+  # Writes
+  writes:
+    - id: create_niche
+      description: "Create niche record"
+      table: niches
+      operation: INSERT
+      timing: after_tool_discovery
+
+      fields:
+        id: { source: generated, type: uuid }
+        name: { source: inputs, field: niche_name }
+        slug: { source: computed, formula: "slugify(inputs.niche_name)" }
+        industry: { source: inputs, field: industry, type: jsonb }
+        job_titles: { source: inputs, field: job_titles, type: jsonb }
+        company_size: { source: inputs, field: company_size, type: jsonb }
+        location: { source: inputs, field: location, type: jsonb }
+        status: { value: "researching" }
+        created_at: { source: now }
+        updated_at: { source: now }
+
+      on_conflict:
+        columns: [slug]
+        action: DO_NOTHING
+        return_existing: true
+
+      returning: [id]
+      output_as: niche_id
+
+    - id: create_niche_scores
+      description: "Create scoring breakdown"
+      table: niche_scores
+      operation: INSERT
+      timing: after_agent_complete
+      depends_on: [create_niche]
+
+      fields:
+        id: { source: generated, type: uuid }
+        niche_id: { source: write_output, write_id: create_niche, field: niche_id }
+        overall_score: { source: agent_output, field: overall_score, type: integer }
+        market_size_score: { source: agent_output, field: scores.market_size, type: integer }
+        competition_score: { source: agent_output, field: scores.competition, type: integer }
+        reachability_score: { source: agent_output, field: scores.reachability, type: integer }
+        pain_intensity_score: { source: agent_output, field: scores.pain_intensity, type: integer }
+        budget_authority_score: { source: agent_output, field: scores.budget_authority, type: integer }
+        confidence: { source: agent_output, field: confidence, type: float }
+        recommendation: { source: agent_output, field: recommendation }
+        scoring_details: { source: agent_output, field: scoring_details, type: jsonb }
+        research_sources: { source: agent_output, field: sources_used, type: jsonb }
+        created_at: { source: now }
+
+    - id: update_niche_status
+      description: "Update niche with research results"
+      table: niches
+      operation: UPDATE
+      timing: after_agent_complete
+
+      filter: "id = :niche_id"
+      parameters:
+        niche_id: "{{ writes.create_niche.niche_id }}"
+
+      fields:
+        pain_points: { source: agent_output, field: discovered_pain_points, type: jsonb }
+        value_propositions: { source: agent_output, field: value_propositions, type: jsonb }
+        messaging_tone: { source: agent_output, field: recommended_tone }
+        status: { value: "pending_review" }
+        updated_at: { source: now }
+
+    - id: create_niche_research_data
+      description: "Store full research findings for downstream agents"
+      table: niche_research_data
+      operation: INSERT
+      timing: after_agent_complete
+      depends_on: [create_niche]
+
+      fields:
+        id: { source: generated, type: uuid }
+        niche_id: { source: write_output, write_id: create_niche, field: niche_id }
+
+        # Market Size Research
+        market_size_estimate: { source: step_output, step_id: market_size_research, field: market_size_estimate }
+        company_count_estimate: { source: step_output, step_id: market_size_research, field: company_count_estimate }
+        persona_count_estimate: { source: step_output, step_id: market_size_research, field: persona_count_estimate }
+        growth_rate: { source: step_output, step_id: market_size_research, field: growth_rate }
+        market_data_sources: { source: step_output, step_id: market_size_research, field: data_sources, type: jsonb }
+
+        # Competition Research
+        competitors_found: { source: step_output, step_id: competition_research, field: competitors_found, type: jsonb }
+        saturation_level: { source: step_output, step_id: competition_research, field: saturation_level }
+        differentiation_opportunities: { source: step_output, step_id: competition_research, field: differentiation_opportunities, type: jsonb }
+        inbox_fatigue_indicators: { source: step_output, step_id: competition_research, field: inbox_fatigue_indicators, type: jsonb }
+
+        # Reachability Research
+        linkedin_presence: { source: step_output, step_id: reachability_research, field: linkedin_presence }
+        data_availability: { source: step_output, step_id: reachability_research, field: data_availability }
+        email_findability: { source: step_output, step_id: reachability_research, field: email_findability }
+        public_presence_level: { source: step_output, step_id: reachability_research, field: public_presence_level }
+        data_sources_found: { source: step_output, step_id: reachability_research, field: data_sources_found, type: jsonb }
+
+        # Pain Points Research
+        pain_points_detailed: { source: step_output, step_id: pain_points_research, field: pain_points, type: jsonb }
+        pain_intensity: { source: step_output, step_id: pain_points_research, field: pain_intensity }
+        pain_urgency: { source: step_output, step_id: pain_points_research, field: pain_urgency }
+        pain_point_quotes: { source: step_output, step_id: pain_points_research, field: pain_point_quotes, type: jsonb }
+        evidence_sources: { source: step_output, step_id: pain_points_research, field: evidence_sources, type: jsonb }
+
+        # Budget Authority Research
+        has_budget_authority: { source: step_output, step_id: budget_authority_research, field: has_budget_authority }
+        typical_budget_range: { source: step_output, step_id: budget_authority_research, field: typical_budget_range }
+        decision_process: { source: step_output, step_id: budget_authority_research, field: decision_process }
+        buying_triggers: { source: step_output, step_id: budget_authority_research, field: buying_triggers, type: jsonb }
+
+        # Meta
+        research_duration_ms: { source: agent_metadata, field: execution_time_ms }
+        tools_used: { source: agent_output, field: sources_used, type: jsonb }
+        queries_executed: { source: agent_metadata, field: queries_by_step, type: jsonb }
+
+      on_conflict:
+        columns: [niche_id]
+        action: UPDATE
+
+# ==============================================================================
+# AGENT STEPS WITH PARALLEL EXECUTION
+# ==============================================================================
+
+steps:
+  # Step 0: Discover Available Tools
+  - id: tool_discovery
+    name: "Discover Available Tools"
+    description: "Check which search tools are available and healthy"
+
+    actions:
+      - check_tool_availability:
+          tools:
+            - claude_web_search
+            - claude_web_fetch
+            - tavily_search
+            - brave_search
+            - serper_search
+            - perplexity_search
+            - reddit_api
+            - exa_search
+
+          health_check: true
+          timeout_per_tool_ms: 5000
+
+      - build_tool_priority_list:
+          based_on: availability_and_cost
+          output_as: available_tools
+
+    output:
+      available_tools: array
+      tool_health_status: object
+
+  # Step 1: Market Size Research (PARALLEL)
+  - id: market_size_research
+    name: "Research Market Size"
+    description: "Estimate TAM/SAM/SOM with parallel searches"
+
+    parallel_execution:
+      enabled: true
+      fan_out_queries: true
+      max_concurrent: 10
+      combine_results: true
+
+    queries:
+      # Query 1: Market size reports
+      - id: market_size_reports
+        template: "{{ industry[0] }} market size {{ current_year }} report"
+        tools_priority: [claude_web_search, tavily_search, serper_search]
+        min_tools: 2
+        purpose: "Find market size data and reports"
+
+      # Query 2: Industry growth
+      - id: industry_growth
+        template: "{{ industry[0] }} industry growth forecast"
+        tools_priority: [claude_web_search, brave_search, tavily_search]
+        min_tools: 2
+        purpose: "Find growth projections"
+
+      # Query 3: Company count
+      - id: company_count
+        template: "number of {{ industry[0] }} companies {{ company_size[0] }} employees"
+        tools_priority: [claude_web_search, serper_search, perplexity_search]
+        min_tools: 2
+        purpose: "Estimate target company count"
+
+      # Query 4: Role prevalence
+      - id: role_count
+        template: "{{ job_titles[0] }} employment statistics LinkedIn"
+        tools_priority: [claude_web_search, tavily_search, brave_search]
+        min_tools: 2
+        purpose: "Estimate number of target personas"
+
+    # Fetch full content from top results
+    fetch_content:
+      enabled: true
+      tool: claude_web_fetch
+      max_pages: 5
+      extract:
+        - market_size_numbers
+        - growth_percentages
+        - company_counts
+        - data_sources
+
+    synthesis:
+      use: perplexity_search
+      query: "Synthesize: What is the total addressable market for {{ job_titles[0] }} in {{ industry[0] }}? Include company count and role count estimates."
+      fallback_to_llm_synthesis: true
+
+    output:
+      market_size_estimate: string
+      company_count_estimate: integer
+      persona_count_estimate: integer
+      growth_rate: string
+      data_sources: array
+      confidence: float
+
+  # Step 2: Competition Research (PARALLEL)
+  - id: competition_research
+    name: "Research Competition"
+    description: "Identify competitors and inbox saturation"
+
+    parallel_execution:
+      enabled: true
+      fan_out_queries: true
+      max_concurrent: 10
+
+    queries:
+      # Query 1: Direct competitors
+      - id: direct_competitors
+        template: "cold email agency targeting {{ industry[0] }} {{ job_titles[0] }}"
+        tools_priority: [claude_web_search, tavily_search, serper_search]
+        min_tools: 2
+        purpose: "Find direct competitors"
+
+      # Query 2: Outbound agencies
+      - id: outbound_agencies
+        template: "{{ industry[0] }} outbound sales lead generation agency"
+        tools_priority: [claude_web_search, brave_search, serper_search]
+        min_tools: 2
+        purpose: "Find outbound agencies in space"
+
+      # Query 3: Inbox saturation
+      - id: inbox_saturation
+        template: "{{ job_titles[0] }} too many cold emails spam"
+        tools_priority: [claude_web_search, reddit_api, tavily_search]
+        min_tools: 2
+        purpose: "Gauge inbox fatigue"
+
+      # Query 4: Reddit complaints
+      - id: reddit_saturation
+        template: "site:reddit.com {{ job_titles[0] }} cold email annoying"
+        tools_priority: [claude_web_search, reddit_api]
+        min_tools: 1
+        purpose: "Find real complaints about cold email"
+
+    output:
+      competitors_found: array
+      saturation_level: string  # low | medium | high
+      differentiation_opportunities: array
+      inbox_fatigue_indicators: array
+      confidence: float
+
+  # Step 3: Reachability Research (PARALLEL)
+  - id: reachability_research
+    name: "Research Reachability"
+    description: "Assess how easily leads can be found and contacted"
+
+    parallel_execution:
+      enabled: true
+      fan_out_queries: true
+      max_concurrent: 8
+
+    queries:
+      # Query 1: LinkedIn presence
+      - id: linkedin_presence
+        template: "{{ job_titles[0] }} {{ industry[0] }} LinkedIn profile"
+        tools_priority: [claude_web_search, serper_search, brave_search]
+        min_tools: 2
+        purpose: "Check LinkedIn presence"
+
+      # Query 2: Company directories
+      - id: company_directories
+        template: "{{ industry[0] }} companies directory database list"
+        tools_priority: [claude_web_search, tavily_search, serper_search]
+        min_tools: 2
+        purpose: "Find data sources"
+
+      # Query 3: Email patterns
+      - id: email_patterns
+        template: "{{ industry[0] }} company email format pattern"
+        tools_priority: [claude_web_search, brave_search]
+        min_tools: 1
+        purpose: "Assess email findability"
+
+      # Query 4: Public presence
+      - id: public_presence
+        template: "{{ job_titles[0] }} {{ industry[0] }} conference speaker podcast"
+        tools_priority: [claude_web_search, tavily_search]
+        min_tools: 1
+        purpose: "Find public visibility"
+
+    output:
+      linkedin_presence: string  # strong | moderate | weak
+      data_availability: string  # high | medium | low
+      email_findability: string  # easy | moderate | difficult
+      public_presence_level: string
+      data_sources_found: array
+      confidence: float
+
+  # Step 4: Pain Points Research (PARALLEL + DEEP)
+  - id: pain_points_research
+    name: "Research Pain Points"
+    description: "Deep dive into challenges and pain points"
+
+    parallel_execution:
+      enabled: true
+      fan_out_queries: true
+      max_concurrent: 12
+
+    queries:
+      # Query 1: General challenges
+      - id: general_challenges
+        template: "{{ job_titles[0] }} biggest challenges {{ current_year }}"
+        tools_priority: [claude_web_search, tavily_search, perplexity_search]
+        min_tools: 2
+        purpose: "Find documented challenges"
+
+      # Query 2: Reddit pain points
+      - id: reddit_pain_points
+        template: "site:reddit.com {{ job_titles[0] }} struggling frustrated problem"
+        tools_priority: [claude_web_search, reddit_api]
+        min_tools: 1
+        purpose: "Find real complaints on Reddit"
+
+      # Query 3: Industry pain points
+      - id: industry_pain_points
+        template: "{{ industry[0] }} {{ job_titles[0] }} pain points challenges"
+        tools_priority: [claude_web_search, tavily_search, brave_search]
+        min_tools: 2
+        purpose: "Industry-specific challenges"
+
+      # Query 4: Day in the life
+      - id: day_in_life
+        template: "{{ job_titles[0] }} day in the life responsibilities"
+        tools_priority: [claude_web_search, tavily_search]
+        min_tools: 1
+        purpose: "Understand daily frustrations"
+
+      # Query 5: Tool frustrations
+      - id: tool_frustrations
+        template: "{{ job_titles[0] }} software tools problems hate"
+        tools_priority: [claude_web_search, reddit_api, brave_search]
+        min_tools: 2
+        purpose: "Find tool/process pain"
+
+      # Query 6: What they wish for
+      - id: wishlist
+        template: "{{ job_titles[0] }} wish I could automation help"
+        tools_priority: [claude_web_search, reddit_api, tavily_search]
+        min_tools: 2
+        purpose: "Find desired solutions"
+
+    # Deep fetch on pain point content
+    fetch_content:
+      enabled: true
+      tool: claude_web_fetch
+      max_pages: 10
+      priority_urls:
+        - contains: reddit.com
+        - contains: quora.com
+        - contains: linkedin.com
+      extract:
+        - pain_point_quotes
+        - frequency_indicators
+        - intensity_language
+
+    # Use Perplexity to synthesize if available
+    synthesis:
+      use: perplexity_search
+      query: "What are the top 5 pain points for {{ job_titles[0] }} in {{ industry[0] }}? Include specific examples and quotes."
+      fallback_to_llm_synthesis: true
+
+    output:
+      pain_points: array  # Ranked list with quotes
+      pain_intensity: string  # high | medium | low
+      pain_urgency: string  # urgent | important | nice_to_have
+      pain_point_quotes: array
+      evidence_sources: array
+      confidence: float
+
+  # Step 5: Budget Authority Research (PARALLEL)
+  - id: budget_authority_research
+    name: "Research Budget Authority"
+    description: "Assess decision-making power and budget"
+
+    parallel_execution:
+      enabled: true
+      fan_out_queries: true
+      max_concurrent: 8
+
+    queries:
+      # Query 1: Budget control
+      - id: budget_control
+        template: "{{ job_titles[0] }} budget authority spending power"
+        tools_priority: [claude_web_search, tavily_search, serper_search]
+        min_tools: 2
+        purpose: "Understand budget control"
+
+      # Query 2: Decision process
+      - id: decision_process
+        template: "{{ job_titles[0] }} purchasing decision process B2B"
+        tools_priority: [claude_web_search, tavily_search, brave_search]
+        min_tools: 2
+        purpose: "Map decision process"
+
+      # Query 3: Tech spending
+      - id: tech_spending
+        template: "{{ industry[0] }} {{ company_size[0] }} employees technology budget"
+        tools_priority: [claude_web_search, serper_search, perplexity_search]
+        min_tools: 2
+        purpose: "Find budget benchmarks"
+
+      # Query 4: Buying triggers
+      - id: buying_triggers
+        template: "{{ job_titles[0] }} when to buy new solution vendor"
+        tools_priority: [claude_web_search, tavily_search]
+        min_tools: 1
+        purpose: "Identify buying triggers"
+
+    output:
+      has_budget_authority: boolean
+      typical_budget_range: string
+      decision_process: string  # solo | committee | executive_approval
+      buying_triggers: array
+      confidence: float
+
+  # Step 6: Calculate Scores
+  - id: calculate_scores
+    name: "Calculate Final Scores"
+    description: "Synthesize all research into scores and recommendation"
+
+    scoring:
+      weights:
+        market_size: 0.20
+        competition: 0.20
+        reachability: 0.20
+        pain_intensity: 0.25
+        budget_authority: 0.15
+
+      thresholds:
+        proceed: 70
+        review: 50
+        reject: 0
+
+    output:
+      overall_score: integer
+      scores:
+        market_size: integer
+        competition: integer
+        reachability: integer
+        pain_intensity: integer
+        budget_authority: integer
+      recommendation: string
+      confidence: float
+      scoring_details: object
+      sources_used: array
+
+# ==============================================================================
+# SYSTEM PROMPT
+# ==============================================================================
+
+system_prompt: |
+  You are an expert market research analyst specializing in B2B cold email campaign targeting. Your role is to thoroughly research and evaluate the viability of target niches for cold outreach campaigns.
+
+  ## Available Tools
+  You have access to multiple search tools. Use them intelligently:
+
+  **FREE (Use First):**
+  - WebSearch: Claude's built-in web search - fast, reliable, use for general queries
+  - WebFetch: Fetch full page content from URLs - use to read articles/reports
+  - Reddit API: Search Reddit for real discussions and pain points
+
+  **CHEAP (Use for Enrichment):**
+  - Tavily: AI-powered search with good summaries
+  - Brave: Privacy-focused web search
+  - Serper: Google search API
+
+  **MODERATE (Use Selectively):**
+  - Perplexity: AI search with citations - great for synthesis queries
+
+  **EXPENSIVE (Last Resort):**
+  - Exa: Semantic search - only use if other sources fail
+
+  ## Research Strategy
+
+  1. **Fan Out Searches**: Run multiple queries in parallel across different tools
+  2. **Combine Results**: Merge and deduplicate results from all sources
+  3. **Fetch Key Pages**: Use WebFetch to read full content from important URLs
+  4. **Prioritize Reddit**: Real user discussions > marketing content
+  5. **Verify Claims**: Cross-reference findings across multiple sources
+
+  ## Scoring Guidelines (0-100 per dimension)
+
+  **Market Size (20%)**
+  - 90-100: >100K leads, large growing market
+  - 70-89: 50K-100K leads, stable market
+  - 50-69: 10K-50K leads, niche market
+  - <50: <10K leads, very small market
+
+  **Competition (20%)**
+  - 90-100: Few competitors, low saturation
+  - 70-89: Moderate competition, manageable
+  - 50-69: Competitive, differentiation needed
+  - <50: Highly saturated, difficult
+
+  **Reachability (20%)**
+  - 90-100: Easy to find, strong LinkedIn presence
+  - 70-89: Moderate difficulty, some data gaps
+  - 50-69: Challenging, limited sources
+  - <50: Very difficult, poor data
+
+  **Pain Intensity (25%)**
+  - 90-100: Urgent, high-impact problems
+  - 70-89: Important problems
+  - 50-69: Nice-to-have
+  - <50: No clear pain points
+
+  **Budget Authority (15%)**
+  - 90-100: Direct budget control
+  - 70-89: Budget influence
+  - 50-69: Limited authority
+  - <50: No budget authority
+
+  ## Output Requirements
+  - Cite sources for all claims
+  - Include confidence levels (0.0-1.0)
+  - Extract exact quotes where possible
+  - Recommend: proceed (>=70), review (50-69), reject (<50)
+
+# ==============================================================================
+# OUTPUT SCHEMA
+# ==============================================================================
+
+outputs:
+  schema:
+    type: object
+    required:
+      - niche_id
+      - overall_score
+      - scores
+      - recommendation
+      - confidence
+      - discovered_pain_points
+      - sources_used
+
+    properties:
+      niche_id:
+        type: string
+        format: uuid
+
+      overall_score:
+        type: integer
+        minimum: 0
+        maximum: 100
+
+      scores:
+        type: object
+        properties:
+          market_size: { type: integer, minimum: 0, maximum: 100 }
+          competition: { type: integer, minimum: 0, maximum: 100 }
+          reachability: { type: integer, minimum: 0, maximum: 100 }
+          pain_intensity: { type: integer, minimum: 0, maximum: 100 }
+          budget_authority: { type: integer, minimum: 0, maximum: 100 }
+
+      recommendation:
+        type: string
+        enum: [proceed, review, reject]
+
+      confidence:
+        type: number
+        minimum: 0
+        maximum: 1
+
+      discovered_pain_points:
+        type: array
+        items:
+          type: object
+          properties:
+            pain: { type: string }
+            intensity: { type: integer }
+            quote: { type: string }
+            source: { type: string }
+
+      value_propositions:
+        type: array
+        items: { type: string }
+
+      recommended_tone:
+        type: string
+        enum: [professional, casual, direct, consultative]
+
+      competitors_found:
+        type: array
+        items:
+          type: object
+          properties:
+            name: { type: string }
+            url: { type: string }
+            threat_level: { type: string }
+
+      sources_used:
+        type: array
+        items:
+          type: object
+          properties:
+            tool: { type: string }
+            query: { type: string }
+            results_count: { type: integer }
+            urls: { type: array }
+
+      scoring_details:
+        type: object
+
+# ==============================================================================
+# SUCCESS CRITERIA
+# ==============================================================================
+
+success_criteria:
+  hard:
+    - id: niche_created
+      condition: "niche_id IS NOT NULL"
+      message: "Niche record must be created"
+
+    - id: valid_score
+      condition: "overall_score >= 0 AND overall_score <= 100"
+      message: "Score must be 0-100"
+
+    - id: has_recommendation
+      condition: "recommendation IN ('proceed', 'review', 'reject')"
+      message: "Must provide recommendation"
+
+    - id: minimum_sources
+      condition: "LENGTH(sources_used) >= 3"
+      message: "Must use at least 3 search sources"
+
+  soft:
+    - id: high_confidence
+      condition: "confidence >= 0.7"
+      message: "Target 70%+ confidence"
+
+    - id: pain_points_found
+      condition: "LENGTH(discovered_pain_points) >= 3"
+      message: "Should find at least 3 pain points"
+
+    - id: execution_time
+      condition: "execution_time_seconds < 300"
+      message: "Should complete in under 5 minutes"
+
+# ==============================================================================
+# ERROR HANDLING
+# ==============================================================================
+
+error_handling:
+  scenarios:
+    - error: all_free_tools_failed
+      action: try_paid_tools
+      escalate_to_tier: tier_2_cheap
+
+    - error: all_tools_failed
+      action: fail_with_checkpoint
+      message: "All search tools unavailable"
+      alert: true
+
+    - error: insufficient_results
+      action: expand_queries
+      strategy: broaden_search_terms
+      retry_with_different_tools: true
+
+    - error: rate_limited
+      action: switch_to_alternative_tool
+      wait_if_no_alternative: true
+      max_wait_seconds: 120
+
+  compensation:
+    on_failure:
+      - action: update_niche_status
+        table: niches
+        filter: "id = :niche_id"
+        set: { status: "research_failed" }
+
+      - action: log_failure
+        table: campaign_audit_log
+
+# ==============================================================================
+# OBSERVABILITY
+# ==============================================================================
+
+observability:
+  logging:
+    level: INFO
+    include_tool_calls: true
+    include_parallel_timing: true
+    structured_fields:
+      - niche_name
+      - tools_used
+      - parallel_queries_count
+      - overall_score
+      - execution_time_ms
+
+  metrics:
+    - name: niche_research_duration
+      type: histogram
+      labels: [recommendation]
+
+    - name: tool_usage
+      type: counter
+      labels: [tool_name, success]
+
+    - name: parallel_queries_executed
+      type: counter
+      labels: [step]
+
+    - name: search_results_per_tool
+      type: histogram
+      labels: [tool_name]
+
+  tracing:
+    enabled: true
+    service_name: "cold-email-workflow"
+    span_name: "niche_research_agent"
+    trace_parallel_calls: true
+
+# ==============================================================================
+# HANDOFF
+# ==============================================================================
+
+handoff:
+  to_agent: persona_research_agent
+
+  data:
+    - field: niche_id
+      source: outputs.niche_id
+      required: true
+
+    - field: pain_points
+      source: outputs.discovered_pain_points
+      required: false
+
+    - field: competitors
+      source: outputs.competitors_found
+      required: false
+
+    - field: recommended_tone
+      source: outputs.recommended_tone
+      required: false
+
+  conditions:
+    - "recommendation IN ('proceed', 'review')"
+    - "niche_id IS NOT NULL"
+
+  on_conditions_not_met:
+    action: end_workflow
+    reason: "Niche rejected - not viable for cold email"

@@ -1,0 +1,240 @@
+# ==============================================================================
+# AGENT 4.2: LEAD RESEARCH AGENT
+# ==============================================================================
+# Phase: 4 - Research & Personalization
+# Purpose: Individual lead research for personalization
+# Depends On: Company Research Agent (4.1)
+# ==============================================================================
+
+agent:
+  id: lead_research_agent
+  name: "Lead Research Agent"
+  version: "2.0.0"
+  phase: 4
+  phase_name: "Research & Personalization"
+
+  description: |
+    Conducts individual research on leads using LinkedIn posts, articles,
+    and web presence for hyper-personalized email opening lines.
+
+# ==============================================================================
+# TOOL CONFIGURATION
+# ==============================================================================
+
+tool_configuration:
+  discovery:
+    enabled: true
+
+  priority_tiers:
+    tier_1_free:
+      - name: claude_web_search
+        type: builtin
+        parallel_limit: 20
+        cost_per_call: 0.0
+      - name: claude_web_fetch
+        type: builtin
+        parallel_limit: 10
+        cost_per_call: 0.0
+
+    tier_2_cheap:
+      - name: tavily_search
+        type: api
+        cost_per_call: 0.001
+      - name: serper_search
+        type: api
+        cost_per_call: 0.001
+
+    tier_3_moderate:
+      - name: perplexity_search
+        type: api
+        cost_per_call: 0.005
+      - name: apify_linkedin_posts
+        type: apify_actor
+        cost_per_run: 0.05
+        use_for: tier_a_leads_only
+
+# ==============================================================================
+# RESEARCH DEPTH BY TIER
+# ==============================================================================
+
+research_depth:
+  tier_a:
+    depth: deep
+    queries: 5
+    max_cost: 0.15
+    include: [linkedin_posts, articles, podcasts, talks]
+
+  tier_b:
+    depth: standard
+    queries: 3
+    max_cost: 0.05
+    include: [linkedin_posts, articles]
+
+  tier_c:
+    depth: basic
+    queries: 1
+    max_cost: 0.01
+    include: [headline_analysis]
+
+# ==============================================================================
+# PARALLEL EXECUTION & CONFIGURATION
+# ==============================================================================
+
+parallel_execution:
+  enabled: true
+  lead_research:
+    max_concurrent_leads: 30
+    queries_per_lead: 3
+    max_concurrent_queries: 60
+
+execution:
+  mode: parallel_batch
+  timeout_seconds: 10800
+  idempotency:
+    enabled: true
+    key_template: "lead_research:{campaign_id}:{lead_id}"
+    ttl_hours: 168
+  checkpoint:
+    enabled: true
+    interval_leads: 100
+
+# ==============================================================================
+# INPUTS & DATABASE
+# ==============================================================================
+
+inputs:
+  required:
+    - name: campaign_id
+      type: string
+      format: uuid
+      source: handoff.company_research_agent.campaign_id
+
+database:
+  reads:
+    - id: get_leads_for_research
+      table: leads
+      operation: SELECT
+      fields: [id, first_name, last_name, email, job_title, headline,
+               linkedin_url, company_name, lead_score, lead_tier, company_research_id]
+      filter: "campaign_id = :campaign_id AND email_status = 'valid'"
+      order_by: "lead_score DESC"
+      required: true
+
+  writes:
+    - id: save_lead_research
+      table: lead_research
+      operation: UPSERT
+      timing: per_lead
+      on_conflict: { columns: [lead_id], action: UPDATE }
+      fields:
+        id: { source: generated, type: uuid }
+        lead_id: { source: research, field: lead_id }
+        linkedin_posts: { source: research, field: linkedin_posts, type: jsonb }
+        articles: { source: research, field: articles, type: jsonb }
+        personalization_hooks: { source: research, field: hooks, type: jsonb }
+        opening_line_suggestions: { source: research, field: opening_lines, type: jsonb }
+        research_depth: { source: research, field: depth }
+        researched_at: { source: now }
+
+# ==============================================================================
+# RESEARCH QUERIES
+# ==============================================================================
+
+research_queries:
+  linkedin_posts:
+    query_template: "site:linkedin.com/posts {{ first_name }} {{ last_name }}"
+    tools_priority: [claude_web_search, serper_search]
+    extract: [post_content, post_date, topics]
+    max_results: 5
+
+  linkedin_profile:
+    query_template: "site:linkedin.com/in {{ first_name }} {{ last_name }} {{ job_title }}"
+    tools_priority: [claude_web_search, serper_search]
+    fetch_url: true
+    extract: [about_section, experience_summary]
+
+  articles_authored:
+    query_template: "\"{{ first_name }} {{ last_name }}\" article"
+    tools_priority: [claude_web_search, tavily_search]
+    extract: [article_title, publication, key_points]
+    max_results: 3
+
+  podcast_appearances:
+    query_template: "\"{{ first_name }} {{ last_name }}\" podcast interview"
+    tools_priority: [claude_web_search, tavily_search]
+    tier_a_only: true
+    extract: [podcast_name, episode_title]
+
+# ==============================================================================
+# PERSONALIZATION HOOKS
+# ==============================================================================
+
+personalization_hooks:
+  linkedin_post_hook:
+    trigger: "linkedin_posts.length > 0"
+    templates:
+      - "Loved your post about {{ linkedin_posts[0].topic }}"
+      - "Your take on {{ linkedin_posts[0].topic }} resonated"
+    priority: 1
+
+  article_hook:
+    trigger: "articles.length > 0"
+    templates:
+      - "Your article in {{ articles[0].publication }} was insightful"
+    priority: 2
+
+  company_fallback:
+    trigger: "hooks.length == 0"
+    use: company_research.personalization_hooks[0]
+    priority: 5
+
+# ==============================================================================
+# STEPS & OUTPUT
+# ==============================================================================
+
+steps:
+  - id: load_leads
+    name: "Load Leads"
+    output: { total_leads: integer, tier_a_count: integer }
+
+  - id: research_tier_a
+    name: "Deep Research Tier A"
+    depends_on: [load_leads]
+    parallel_execution: { enabled: true, max_concurrent: 10 }
+    research_depth: deep
+    output: { researched: integer }
+
+  - id: research_tier_b
+    name: "Standard Research Tier B"
+    depends_on: [load_leads]
+    parallel_execution: { enabled: true, max_concurrent: 20 }
+    research_depth: standard
+    output: { researched: integer }
+
+  - id: generate_opening_lines
+    name: "Generate Opening Lines"
+    depends_on: [research_tier_a, research_tier_b]
+    output: { opening_lines_generated: integer }
+
+outputs:
+  schema:
+    type: object
+    required: [total_researched, opening_lines_generated]
+    properties:
+      total_researched: { type: integer }
+      opening_lines_generated: { type: integer }
+      avg_hooks_per_lead: { type: number }
+
+success_criteria:
+  hard:
+    - id: minimum_researched
+      condition: "total_researched >= tier_a_count + tier_b_count"
+
+handoff:
+  to_agent: email_generation_agent
+  data:
+    - field: campaign_id
+      source: inputs.campaign_id
+      required: true
+  conditions:
+    - "total_researched >= 100"

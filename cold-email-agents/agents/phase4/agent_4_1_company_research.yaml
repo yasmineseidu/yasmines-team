@@ -1,0 +1,195 @@
+# ==============================================================================
+# AGENT 4.1: COMPANY RESEARCH AGENT
+# ==============================================================================
+# Phase: 4 - Research & Personalization
+# Purpose: Deep research on companies for personalization context
+# Execution: Parallel batch processing with web search
+# Depends On: Human Gate Approval from Phase 3
+# ==============================================================================
+
+agent:
+  id: company_research_agent
+  name: "Company Research Agent"
+  version: "2.0.0"
+  phase: 4
+  phase_name: "Research & Personalization"
+
+  description: |
+    Conducts deep research on target companies using web search, news,
+    and public data. Gathers company context for email personalization.
+
+# ==============================================================================
+# TOOL CONFIGURATION
+# ==============================================================================
+
+tool_configuration:
+  discovery:
+    enabled: true
+
+  priority_tiers:
+    tier_1_free:
+      - name: claude_web_search
+        type: builtin
+        parallel_limit: 15
+        cost_per_call: 0.0
+      - name: claude_web_fetch
+        type: builtin
+        parallel_limit: 10
+        cost_per_call: 0.0
+
+    tier_2_cheap:
+      - name: tavily_search
+        type: api
+        cost_per_call: 0.001
+        daily_budget: 20.00
+      - name: serper_search
+        type: api
+        cost_per_call: 0.001
+        daily_budget: 20.00
+
+    tier_3_moderate:
+      - name: perplexity_search
+        type: api
+        cost_per_call: 0.005
+        daily_budget: 25.00
+
+# ==============================================================================
+# PARALLEL EXECUTION & CONFIGURATION
+# ==============================================================================
+
+parallel_execution:
+  enabled: true
+  company_research:
+    max_concurrent_companies: 20
+    queries_per_company: 5
+    max_concurrent_queries: 50
+
+execution:
+  mode: parallel_batch
+  timeout_seconds: 7200
+  idempotency:
+    enabled: true
+    key_template: "company_research:{campaign_id}:{company_domain}"
+    ttl_hours: 168
+  checkpoint:
+    enabled: true
+    interval_companies: 50
+
+# ==============================================================================
+# INPUTS & DATABASE
+# ==============================================================================
+
+inputs:
+  required:
+    - name: campaign_id
+      type: string
+      format: uuid
+  optional:
+    - name: research_depth
+      type: string
+      default: standard
+    - name: max_companies
+      type: integer
+      default: 1000
+
+database:
+  reads:
+    - id: get_unique_companies
+      table: leads
+      operation: SELECT
+      custom_query: |
+        SELECT DISTINCT ON (company_domain) company_name, company_domain,
+               company_linkedin_url, company_industry, company_size,
+               COUNT(*) OVER (PARTITION BY company_domain) as lead_count,
+               MAX(lead_score) OVER (PARTITION BY company_domain) as max_lead_score
+        FROM leads WHERE campaign_id = :campaign_id AND email_status = 'valid'
+        ORDER BY company_domain, lead_score DESC LIMIT :max_companies
+      required: true
+
+  writes:
+    - id: save_company_research
+      table: company_research
+      operation: UPSERT
+      timing: per_company
+      on_conflict: { columns: [company_domain], action: UPDATE }
+      fields:
+        id: { source: generated, type: uuid }
+        company_name: { source: research, field: company_name }
+        company_domain: { source: research, field: domain }
+        company_description: { source: research, field: description }
+        recent_news: { source: research, field: recent_news, type: jsonb }
+        funding_info: { source: research, field: funding, type: jsonb }
+        hiring_signals: { source: research, field: hiring, type: jsonb }
+        personalization_hooks: { source: research, field: hooks, type: jsonb }
+        research_sources: { source: research, field: sources, type: jsonb }
+        researched_at: { source: now }
+
+# ==============================================================================
+# RESEARCH QUERIES
+# ==============================================================================
+
+research_queries:
+  recent_news:
+    query_template: "{{ company_name }} news {{ current_year }}"
+    tools_priority: [claude_web_search, tavily_search, serper_search]
+    extract: [headline, date, summary, url]
+    max_results: 5
+
+  funding_growth:
+    query_template: "{{ company_name }} funding investment growth"
+    tools_priority: [claude_web_search, tavily_search]
+    extract: [funding_amount, funding_round, investors, date]
+
+  hiring_signals:
+    query_template: "{{ company_name }} hiring careers jobs"
+    tools_priority: [claude_web_search, serper_search]
+    extract: [open_positions, departments_hiring, growth_indicators]
+
+  tech_initiatives:
+    query_template: "{{ company_name }} product launch technology"
+    tools_priority: [claude_web_search, tavily_search]
+    extract: [new_products, tech_investments]
+
+# ==============================================================================
+# STEPS & OUTPUT
+# ==============================================================================
+
+steps:
+  - id: identify_companies
+    name: "Identify Unique Companies"
+    output: { total_companies: integer, companies_to_research: integer }
+
+  - id: research_companies
+    name: "Research Companies"
+    depends_on: [identify_companies]
+    parallel_execution: { enabled: true, max_concurrent: 20 }
+    for_each: companies_to_research
+    output: { companies_researched: integer }
+
+  - id: generate_hooks
+    name: "Generate Personalization Hooks"
+    depends_on: [research_companies]
+    output: { hooks_generated: integer }
+
+outputs:
+  schema:
+    type: object
+    required: [total_companies, companies_researched, hooks_generated]
+    properties:
+      total_companies: { type: integer }
+      companies_researched: { type: integer }
+      hooks_generated: { type: integer }
+
+success_criteria:
+  hard:
+    - id: minimum_researched
+      condition: "companies_researched >= total_companies * 0.9"
+
+handoff:
+  to_agent: lead_research_agent
+  data:
+    - field: campaign_id
+      source: inputs.campaign_id
+      required: true
+  conditions:
+    - "companies_researched >= 100"

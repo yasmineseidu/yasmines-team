@@ -1,0 +1,440 @@
+# ==============================================================================
+# AGENT 2.6: IMPORT FINALIZER AGENT
+# ==============================================================================
+# Phase: 2 - Lead Acquisition
+# Purpose: Finalize lead import and prepare for Phase 3
+# Execution: Single execution - summary and export
+# Depends On: Lead Scoring Agent (2.5)
+# Next: Phase 3 (auto-proceeds, human gate optional)
+# ==============================================================================
+
+agent:
+  id: import_finalizer_agent
+  name: "Import Finalizer Agent"
+  version: "2.0.0"
+  phase: 2
+  phase_name: "Lead Acquisition"
+
+  description: |
+    Finalizes the lead import process, generates comprehensive summary
+    reports, exports lead list to Google Sheets for review. Auto-proceeds
+    to next phase by default - human approval gate is optional.
+
+# ==============================================================================
+# TOOL CONFIGURATION
+# ==============================================================================
+#
+# IMPORTANT (LEARN-006): Google Sheets API requires domain-wide delegation.
+# Service accounts have NO storage quota by default. You MUST:
+# 1. Enable domain-wide delegation in Google Admin Console
+# 2. Set GOOGLE_DELEGATED_USER environment variable to a real user email
+# 3. The service account will impersonate this user for quota purposes
+#
+# Without this, you will get: GoogleDocsQuotaError: Quota exceeded
+# ==============================================================================
+
+tool_configuration:
+  discovery:
+    enabled: true
+
+  required_tools:
+    - name: database_connection
+      type: internal
+      required: true
+
+    - name: google_sheets_api
+      type: api
+      description: "Export leads to Google Sheets"
+      required: true
+      fallback: csv_export
+      # LEARN-006: Domain-wide delegation configuration
+      config:
+        use_domain_delegation: true
+        delegated_user_env: "GOOGLE_DELEGATED_USER"
+        required_scopes:
+          - "https://www.googleapis.com/auth/spreadsheets"
+          - "https://www.googleapis.com/auth/drive"
+
+    - name: slack_api
+      type: api
+      description: "Send approval notification"
+      required: false
+
+  # Environment variable requirements
+  required_env_vars:
+    - name: GOOGLE_DELEGATED_USER
+      description: "Email of user to impersonate for Google API quota (LEARN-006)"
+      required: true
+    - name: GOOGLE_APPLICATION_CREDENTIALS
+      description: "Path to service account JSON file"
+      required: true
+
+# ==============================================================================
+# EXECUTION CONFIGURATION
+# ==============================================================================
+
+execution:
+  mode: single
+  timeout_seconds: 600
+
+  idempotency:
+    enabled: true
+    key_template: "import_finalizer:{campaign_id}"
+    ttl_hours: 24
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+
+inputs:
+  required:
+    - name: campaign_id
+      type: string
+      format: uuid
+      source: handoff.lead_scoring_agent.campaign_id
+    - name: total_scored
+      type: integer
+      source: handoff.lead_scoring_agent.total_scored
+    - name: tier_a_count
+      type: integer
+      source: handoff.lead_scoring_agent.tier_a_count
+
+# ==============================================================================
+# DATABASE OPERATIONS
+# ==============================================================================
+
+database:
+  reads:
+    - id: get_campaign_full
+      table: campaigns
+      operation: SELECT
+      fields: [id, niche_id, name, status, target_leads, total_leads_scraped,
+               scraping_cost, total_leads_valid, total_leads_invalid,
+               total_duplicates_found, total_cross_duplicates, total_leads_available,
+               leads_scored, avg_lead_score, leads_tier_a, leads_tier_b, leads_tier_c]
+      filter: "id = :campaign_id"
+      required: true
+
+    - id: get_niche
+      table: niches
+      operation: SELECT
+      fields: [id, name, industry, job_titles]
+      filter: "id = :niche_id"
+      required: true
+
+    - id: get_lead_sample
+      table: leads
+      operation: SELECT
+      fields: [id, first_name, last_name, email, job_title, company_name,
+               company_domain, lead_score, lead_tier]
+      filter: "campaign_id = :campaign_id AND status NOT IN ('duplicate', 'invalid', 'cross_campaign_duplicate')"
+      order_by: "lead_score DESC"
+      limit: 100
+      required: true
+
+    - id: get_tier_breakdown
+      table: leads
+      operation: SELECT
+      custom_query: |
+        SELECT
+          lead_tier,
+          COUNT(*) as count,
+          AVG(lead_score) as avg_score,
+          COUNT(CASE WHEN email IS NOT NULL THEN 1 END) as has_email
+        FROM leads
+        WHERE campaign_id = :campaign_id
+          AND status NOT IN ('duplicate', 'invalid', 'cross_campaign_duplicate')
+        GROUP BY lead_tier
+        ORDER BY lead_tier
+      parameters:
+        campaign_id: "{{ inputs.campaign_id }}"
+      required: true
+
+  writes:
+    - id: update_campaign_final
+      table: campaigns
+      operation: UPDATE
+      timing: on_complete
+      filter: "id = :campaign_id"
+      fields:
+        lead_list_url: { source: agent_output, field: sheet_url }
+        import_summary: { source: agent_output, field: summary, type: jsonb }
+        status: { value: "import_complete" }
+        import_completed_at: { source: now }
+        updated_at: { source: now }
+
+    - id: log_import_completion
+      table: campaign_audit_log
+      operation: INSERT
+      timing: on_complete
+      fields:
+        id: { source: generated, type: uuid }
+        campaign_id: { source: inputs, field: campaign_id }
+        action: { value: "import_completed" }
+        actor: { value: "import_finalizer_agent" }
+        actor_type: { value: "agent" }
+        details: { source: agent_output, field: summary, type: jsonb }
+        created_at: { source: now }
+
+# ==============================================================================
+# AGENT STEPS
+# ==============================================================================
+
+steps:
+  - id: compile_summary
+    name: "Compile Import Summary"
+    description: "Gather all stats from the import process"
+
+    summary:
+      sections:
+        - id: scraping
+          title: "Lead Scraping"
+          metrics:
+            - target_leads: "{{ db_reads.get_campaign_full.target_leads }}"
+            - total_scraped: "{{ db_reads.get_campaign_full.total_leads_scraped }}"
+            - scraping_cost: "{{ db_reads.get_campaign_full.scraping_cost }}"
+            - cost_per_lead: "{{ scraping_cost / total_scraped }}"
+
+        - id: validation
+          title: "Data Validation"
+          metrics:
+            - total_valid: "{{ db_reads.get_campaign_full.total_leads_valid }}"
+            - total_invalid: "{{ db_reads.get_campaign_full.total_leads_invalid }}"
+            - validity_rate: "{{ total_valid / total_scraped }}"
+
+        - id: deduplication
+          title: "Deduplication"
+          metrics:
+            - within_campaign_dupes: "{{ db_reads.get_campaign_full.total_duplicates_found }}"
+            - cross_campaign_dupes: "{{ db_reads.get_campaign_full.total_cross_duplicates }}"
+            - available_after_dedup: "{{ db_reads.get_campaign_full.total_leads_available }}"
+
+        - id: scoring
+          title: "Lead Scoring"
+          metrics:
+            - total_scored: "{{ db_reads.get_campaign_full.leads_scored }}"
+            - avg_score: "{{ db_reads.get_campaign_full.avg_lead_score }}"
+            - tier_a: "{{ db_reads.get_campaign_full.leads_tier_a }}"
+            - tier_b: "{{ db_reads.get_campaign_full.leads_tier_b }}"
+            - tier_c: "{{ db_reads.get_campaign_full.leads_tier_c }}"
+
+    output:
+      summary: object
+
+  - id: export_to_sheets
+    name: "Export to Google Sheets"
+    description: "Create Google Sheet with all leads for review"
+    depends_on: [compile_summary]
+
+    tool: google_sheets_api
+    action: create_spreadsheet
+
+    config:
+      name: "{{ db_reads.get_niche.name }} - Lead List - {{ current_date }}"
+
+      sheets:
+        - name: "Summary"
+          data:
+            - row: ["Campaign Summary"]
+            - row: ["Niche", "{{ db_reads.get_niche.name }}"]
+            - row: ["Target Leads", "{{ db_reads.get_campaign_full.target_leads }}"]
+            - row: ["Total Scraped", "{{ db_reads.get_campaign_full.total_leads_scraped }}"]
+            - row: ["Total Valid", "{{ db_reads.get_campaign_full.total_leads_valid }}"]
+            - row: ["Available for Campaign", "{{ db_reads.get_campaign_full.total_leads_available }}"]
+            - row: [""]
+            - row: ["Tier Distribution"]
+            - row: ["Tier A (80+)", "{{ db_reads.get_campaign_full.leads_tier_a }}"]
+            - row: ["Tier B (60-79)", "{{ db_reads.get_campaign_full.leads_tier_b }}"]
+            - row: ["Tier C (40-59)", "{{ db_reads.get_campaign_full.leads_tier_c }}"]
+
+        - name: "Tier A Leads"
+          query: "SELECT * FROM leads WHERE campaign_id = :campaign_id AND lead_tier = 'A' ORDER BY lead_score DESC"
+          columns: [first_name, last_name, email, job_title, company_name, company_domain, lead_score]
+
+        - name: "Tier B Leads"
+          query: "SELECT * FROM leads WHERE campaign_id = :campaign_id AND lead_tier = 'B' ORDER BY lead_score DESC"
+          columns: [first_name, last_name, email, job_title, company_name, company_domain, lead_score]
+
+        - name: "All Leads"
+          query: "SELECT * FROM leads WHERE campaign_id = :campaign_id AND status NOT IN ('duplicate', 'invalid') ORDER BY lead_score DESC"
+          columns: [first_name, last_name, email, job_title, company_name, company_domain, company_size, location, lead_score, lead_tier]
+
+      share_settings:
+        anyone_with_link: view
+
+    fallback:
+      action: export_csv
+      path: "/tmp/exports/{{ campaign_id }}_leads.csv"
+
+    output:
+      sheet_id: string
+      sheet_url: string
+
+  - id: send_notification
+    name: "Send Completion Notification"
+    description: "Notify that Phase 2 is complete with Google Sheets link"
+    depends_on: [export_to_sheets]
+    required: true
+
+    tool: slack_api
+    action: send_message
+
+    config:
+      channel: "#agent-approvals"
+      message:
+        blocks:
+          - type: header
+            text: ":white_check_mark: Lead List Ready!"
+
+          - type: section
+            text:
+              type: mrkdwn
+              text: "*<{{ steps.export_to_sheets.sheet_url }}|:arrow_right: Click here to view your leads>*"
+
+          - type: divider
+
+          - type: section
+            fields:
+              - type: mrkdwn
+                text: "*Campaign:*\n{{ db_reads.get_campaign_full.name }}"
+              - type: mrkdwn
+                text: "*Niche:*\n{{ db_reads.get_niche.name }}"
+              - type: mrkdwn
+                text: "*Total Leads:*\n{{ db_reads.get_campaign_full.total_leads_available }}"
+              - type: mrkdwn
+                text: "*Tier A Leads:*\n{{ db_reads.get_campaign_full.leads_tier_a }}"
+              - type: mrkdwn
+                text: "*Tier B Leads:*\n{{ db_reads.get_campaign_full.leads_tier_b }}"
+              - type: mrkdwn
+                text: "*Avg Score:*\n{{ db_reads.get_campaign_full.avg_lead_score }}"
+
+          - type: divider
+
+          - type: section
+            fields:
+              - type: mrkdwn
+                text: "*Scraped:*\n{{ db_reads.get_campaign_full.total_leads_scraped }}"
+              - type: mrkdwn
+                text: "*Valid:*\n{{ db_reads.get_campaign_full.total_leads_valid }}"
+              - type: mrkdwn
+                text: "*Duplicates Removed:*\n{{ db_reads.get_campaign_full.total_duplicates_found }}"
+              - type: mrkdwn
+                text: "*Cost:*\n${{ db_reads.get_campaign_full.scraping_cost }}"
+
+          - type: context
+            elements:
+              - type: mrkdwn
+                text: "Phase 2 complete. Leads saved to database. Proceeding to Phase 3 (Email Verification)."
+
+# ==============================================================================
+# SYSTEM PROMPT
+# ==============================================================================
+
+system_prompt: |
+  You are an import finalization specialist preparing lead lists for approval.
+
+  Responsibilities:
+  - Compile comprehensive import statistics
+  - Export leads to Google Sheets for review
+  - Generate clear summary for stakeholders
+  - Trigger approval workflow
+
+  The lead list should be easy to review with clear tier breakdowns.
+
+# ==============================================================================
+# OUTPUT SCHEMA
+# ==============================================================================
+
+outputs:
+  schema:
+    type: object
+    required: [sheet_url, summary]
+    properties:
+      sheet_url: { type: string, format: uri }
+      sheet_id: { type: string }
+      summary:
+        type: object
+        properties:
+          total_scraped: { type: integer }
+          total_available: { type: integer }
+          tier_breakdown: { type: object }
+          cost_summary: { type: object }
+
+# ==============================================================================
+# SUCCESS CRITERIA
+# ==============================================================================
+
+success_criteria:
+  hard:
+    - id: sheet_created
+      condition: "sheet_url IS NOT NULL"
+      description: "Google Sheet with leads was created"
+    - id: summary_generated
+      condition: "summary IS NOT NULL"
+      description: "Summary report was generated"
+    - id: notification_sent
+      condition: "notification_sent = true"
+      description: "Slack notification with link was sent"
+
+# ==============================================================================
+# HANDOFF - TRIGGERS HUMAN GATE
+# ==============================================================================
+
+handoff:
+  triggers_human_gate: false  # Auto-proceed by default
+  human_gate_optional: true   # Can be enabled per-campaign if manual review needed
+
+  human_gate:
+    id: approve_lead_list
+    name: "Approve Lead List (Optional)"
+    description: "Optional review - auto-proceeds unless manual review requested"
+
+    channel: slack
+    slack_config:
+      channel: "#agent-approvals"
+      mention: ["@campaign-manager"]
+
+    timeout_hours: 48
+    timeout_action: remind_then_escalate
+
+    display:
+      sheet_url: "{{ outputs.sheet_url }}"
+      total_leads: "{{ db_reads.get_campaign_full.total_leads_available }}"
+      tier_a_leads: "{{ db_reads.get_campaign_full.leads_tier_a }}"
+      tier_b_leads: "{{ db_reads.get_campaign_full.leads_tier_b }}"
+      avg_score: "{{ db_reads.get_campaign_full.avg_lead_score }}"
+      cost: "{{ db_reads.get_campaign_full.scraping_cost }}"
+
+    actions:
+      - id: approve
+        label: "Approve & Start Verification"
+        writes:
+          - table: campaigns
+            filter: "id = :campaign_id"
+            set:
+              status: "leads_approved"
+              leads_approved_at: "{{ now }}"
+              leads_approved_by: "{{ actor }}"
+        next_phase: phase_3_email_verification
+
+      - id: request_more_leads
+        label: "Need More Leads"
+        requires_feedback: true
+        next_phase: phase_2_rescrape
+
+      - id: reject
+        label: "Reject List"
+        requires_feedback: true
+        writes:
+          - table: campaigns
+            filter: "id = :campaign_id"
+            set:
+              status: "leads_rejected"
+              rejection_reason: "{{ feedback }}"
+        next_phase: null
+
+    auto_approve:
+      enabled: true
+      description: "Auto-approve by default - manual review is optional"
+      conditions:
+        - "total_leads >= 1"  # Any leads are ready for next phase

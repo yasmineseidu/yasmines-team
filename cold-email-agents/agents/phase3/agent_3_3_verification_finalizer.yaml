@@ -1,0 +1,430 @@
+# ==============================================================================
+# AGENT 3.3: VERIFICATION FINALIZER AGENT
+# ==============================================================================
+# Phase: 3 - Email Verification & Enrichment
+# Purpose: Finalize verification, export results, trigger approval gate
+# Execution: Single execution - summary and approval trigger
+# Depends On: Waterfall Enrichment Agent (3.2)
+# Triggers: Human Gate for Phase 4 approval
+# ==============================================================================
+
+agent:
+  id: verification_finalizer_agent
+  name: "Verification Finalizer Agent"
+  version: "2.0.0"
+  phase: 3
+  phase_name: "Email Verification & Enrichment"
+
+  description: |
+    Finalizes the verification and enrichment phase, generates quality
+    reports, exports enriched lead data for review, and triggers human
+    approval gate before proceeding to personalization.
+
+# ==============================================================================
+# TOOL CONFIGURATION
+# ==============================================================================
+
+tool_configuration:
+  discovery:
+    enabled: true
+
+  required_tools:
+    - name: database_connection
+      type: internal
+      required: true
+
+    - name: google_sheets_api
+      type: api
+      required: true
+      fallback: csv_export
+
+    - name: slack_api
+      type: api
+      required: false
+
+# ==============================================================================
+# EXECUTION CONFIGURATION
+# ==============================================================================
+
+execution:
+  mode: single
+  timeout_seconds: 600
+
+  idempotency:
+    enabled: true
+    key_template: "verification_finalizer:{campaign_id}"
+    ttl_hours: 24
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+
+inputs:
+  required:
+    - name: campaign_id
+      type: string
+      format: uuid
+      source: handoff.waterfall_enrichment_agent.campaign_id
+    - name: total_enriched
+      type: integer
+      source: handoff.waterfall_enrichment_agent.total_enriched
+
+# ==============================================================================
+# DATABASE OPERATIONS
+# ==============================================================================
+
+database:
+  reads:
+    - id: get_campaign_full
+      table: campaigns
+      operation: SELECT
+      fields: [id, niche_id, name, status, total_leads_scraped, total_leads_available,
+               leads_scored, emails_found, emails_verified, leads_enriched,
+               scraping_cost, enrichment_cost]
+      filter: "id = :campaign_id"
+      required: true
+
+    - id: get_niche
+      table: niches
+      operation: SELECT
+      fields: [id, name, industry, job_titles]
+      filter: "id = :niche_id"
+      required: true
+
+    - id: get_email_stats
+      table: leads
+      operation: SELECT
+      custom_query: |
+        SELECT
+          email_status,
+          COUNT(*) as count,
+          AVG(lead_score) as avg_score
+        FROM leads
+        WHERE campaign_id = :campaign_id
+          AND status NOT IN ('duplicate', 'invalid', 'cross_campaign_duplicate')
+        GROUP BY email_status
+      required: true
+
+    - id: get_enrichment_quality
+      table: leads
+      operation: SELECT
+      custom_query: |
+        SELECT
+          lead_tier,
+          COUNT(*) as total,
+          COUNT(CASE WHEN email_status = 'valid' THEN 1 END) as valid_email,
+          COUNT(CASE WHEN company_description IS NOT NULL THEN 1 END) as has_description,
+          COUNT(CASE WHEN company_tech_stack IS NOT NULL THEN 1 END) as has_tech_stack,
+          AVG(enrichment_cost) as avg_enrichment_cost
+        FROM leads
+        WHERE campaign_id = :campaign_id
+          AND status NOT IN ('duplicate', 'invalid', 'cross_campaign_duplicate')
+        GROUP BY lead_tier
+        ORDER BY lead_tier
+      required: true
+
+    - id: get_ready_leads
+      table: leads
+      operation: SELECT
+      fields: [id, first_name, last_name, email, job_title, company_name,
+               company_domain, company_description, lead_score, lead_tier,
+               enrichment_data]
+      filter: |
+        campaign_id = :campaign_id
+        AND email_status = 'valid'
+        AND enrichment_status = 'enriched'
+      order_by: "lead_score DESC"
+      required: true
+
+  writes:
+    - id: update_campaign_verification
+      table: campaigns
+      operation: UPDATE
+      timing: on_complete
+      filter: "id = :campaign_id"
+      fields:
+        verified_lead_list_url: { source: agent_output, field: sheet_url }
+        verification_summary: { source: agent_output, field: summary, type: jsonb }
+        total_leads_ready: { source: agent_output, field: total_ready }
+        verification_completed_at: { source: now }
+        status: { value: "verification_complete" }
+        updated_at: { source: now }
+
+    - id: log_verification_completion
+      table: campaign_audit_log
+      operation: INSERT
+      timing: on_complete
+      fields:
+        id: { source: generated, type: uuid }
+        campaign_id: { source: inputs, field: campaign_id }
+        action: { value: "verification_completed" }
+        actor: { value: "verification_finalizer_agent" }
+        actor_type: { value: "agent" }
+        details: { source: agent_output, field: summary, type: jsonb }
+        created_at: { source: now }
+
+# ==============================================================================
+# AGENT STEPS
+# ==============================================================================
+
+steps:
+  - id: compile_verification_summary
+    name: "Compile Verification Summary"
+    description: "Gather all verification and enrichment statistics"
+
+    summary:
+      sections:
+        - id: email_verification
+          title: "Email Verification"
+          metrics:
+            - emails_found
+            - emails_verified
+            - verification_rate
+            - valid_emails
+            - invalid_emails
+            - risky_emails
+
+        - id: data_enrichment
+          title: "Data Enrichment"
+          metrics:
+            - leads_enriched
+            - enrichment_cost
+            - avg_cost_per_lead
+            - data_completeness
+
+        - id: quality_breakdown
+          title: "Quality by Tier"
+          metrics:
+            - tier_a_ready
+            - tier_b_ready
+            - tier_c_ready
+
+        - id: cost_summary
+          title: "Cost Summary"
+          metrics:
+            - total_scraping_cost
+            - total_enrichment_cost
+            - total_cost
+            - cost_per_ready_lead
+
+    output:
+      summary: object
+
+  - id: export_verified_leads
+    name: "Export Verified Leads"
+    description: "Export enriched leads to Google Sheets"
+    depends_on: [compile_verification_summary]
+
+    tool: google_sheets_api
+    action: create_spreadsheet
+
+    config:
+      name: "{{ db_reads.get_niche.name }} - Verified Leads - {{ current_date }}"
+
+      sheets:
+        - name: "Summary"
+          data:
+            - row: ["Verification Summary"]
+            - row: ["Total Leads Ready", "{{ agent_state.total_ready }}"]
+            - row: ["Valid Emails", "{{ db_reads.get_email_stats.valid }}"]
+            - row: ["Enrichment Rate", "{{ agent_state.enrichment_rate }}%"]
+            - row: [""]
+            - row: ["Tier Distribution"]
+            - row: ["Tier A Ready", "{{ agent_state.tier_a_ready }}"]
+            - row: ["Tier B Ready", "{{ agent_state.tier_b_ready }}"]
+            - row: ["Tier C Ready", "{{ agent_state.tier_c_ready }}"]
+            - row: [""]
+            - row: ["Cost Summary"]
+            - row: ["Total Enrichment Cost", "${{ db_reads.get_campaign_full.enrichment_cost }}"]
+            - row: ["Cost per Ready Lead", "${{ agent_state.cost_per_lead }}"]
+
+        - name: "Tier A Leads"
+          query: "SELECT * FROM leads WHERE campaign_id = :campaign_id AND lead_tier = 'A' AND email_status = 'valid' ORDER BY lead_score DESC"
+          columns: [first_name, last_name, email, job_title, company_name, company_domain, company_description, lead_score]
+
+        - name: "Tier B Leads"
+          query: "SELECT * FROM leads WHERE campaign_id = :campaign_id AND lead_tier = 'B' AND email_status = 'valid' ORDER BY lead_score DESC"
+          columns: [first_name, last_name, email, job_title, company_name, company_domain, company_description, lead_score]
+
+        - name: "All Ready Leads"
+          query: "SELECT * FROM leads WHERE campaign_id = :campaign_id AND email_status = 'valid' ORDER BY lead_score DESC"
+          columns: [first_name, last_name, email, job_title, company_name, company_domain, company_description, company_tech_stack, lead_score, lead_tier]
+
+      share_settings:
+        anyone_with_link: view
+
+    output:
+      sheet_id: string
+      sheet_url: string
+
+  - id: calculate_ready_leads
+    name: "Calculate Ready Leads"
+    description: "Count leads ready for personalization"
+    depends_on: [export_verified_leads]
+
+    calculation:
+      total_ready: count(email_status = 'valid' AND enrichment_status = 'enriched')
+      tier_a_ready: count(... AND lead_tier = 'A')
+      tier_b_ready: count(... AND lead_tier = 'B')
+      tier_c_ready: count(... AND lead_tier = 'C')
+
+    output:
+      total_ready: integer
+      tier_a_ready: integer
+      tier_b_ready: integer
+      tier_c_ready: integer
+
+  - id: send_notification
+    name: "Send Approval Notification"
+    depends_on: [calculate_ready_leads]
+    optional: true
+
+    tool: slack_api
+    action: send_message
+
+    config:
+      channel: "#campaign-approvals"
+      message:
+        blocks:
+          - type: header
+            text: "Verified Leads Ready for Personalization"
+
+          - type: section
+            fields:
+              - type: mrkdwn
+                text: "*Campaign:* {{ db_reads.get_campaign_full.name }}"
+              - type: mrkdwn
+                text: "*Total Ready:* {{ steps.calculate_ready_leads.total_ready }}"
+              - type: mrkdwn
+                text: "*Tier A:* {{ steps.calculate_ready_leads.tier_a_ready }}"
+              - type: mrkdwn
+                text: "*Total Cost:* ${{ total_cost }}"
+
+          - type: section
+            text:
+              type: mrkdwn
+              text: "<{{ steps.export_verified_leads.sheet_url }}|View Verified Leads>"
+
+          - type: actions
+            elements:
+              - type: button
+                text: "Start Personalization"
+                style: primary
+                action_id: "start_personalization_{{ inputs.campaign_id }}"
+              - type: button
+                text: "Review First"
+                action_id: "review_leads_{{ inputs.campaign_id }}"
+
+# ==============================================================================
+# SYSTEM PROMPT
+# ==============================================================================
+
+system_prompt: |
+  You are a verification quality specialist preparing leads for personalization.
+
+  Quality Checks:
+  - Valid email addresses only
+  - Enrichment data complete
+  - Proper tier classification
+
+  Export Requirements:
+  - Clear summary with key metrics
+  - Leads organized by tier
+  - All enrichment data visible
+
+# ==============================================================================
+# OUTPUT SCHEMA
+# ==============================================================================
+
+outputs:
+  schema:
+    type: object
+    required: [sheet_url, total_ready, summary]
+    properties:
+      sheet_url: { type: string, format: uri }
+      total_ready: { type: integer }
+      tier_a_ready: { type: integer }
+      tier_b_ready: { type: integer }
+      tier_c_ready: { type: integer }
+      summary: { type: object }
+
+# ==============================================================================
+# SUCCESS CRITERIA
+# ==============================================================================
+
+success_criteria:
+  hard:
+    - id: sheet_created
+      condition: "sheet_url IS NOT NULL"
+    - id: minimum_ready
+      condition: "total_ready >= 1000"
+  soft:
+    - id: tier_a_minimum
+      condition: "tier_a_ready >= 100"
+
+# ==============================================================================
+# HANDOFF - TRIGGERS HUMAN GATE
+# ==============================================================================
+
+handoff:
+  triggers_human_gate: true
+
+  human_gate:
+    id: approve_for_personalization
+    name: "Approve for Personalization"
+    description: "Review verified leads and approve for AI personalization"
+
+    channel: slack
+    slack_config:
+      channel: "#campaign-approvals"
+      mention: ["@campaign-manager"]
+
+    timeout_hours: 24
+    timeout_action: remind_then_escalate
+
+    display:
+      sheet_url: "{{ outputs.sheet_url }}"
+      total_ready: "{{ outputs.total_ready }}"
+      tier_a_ready: "{{ outputs.tier_a_ready }}"
+      tier_b_ready: "{{ outputs.tier_b_ready }}"
+      total_cost: "{{ summary.total_cost }}"
+
+    actions:
+      - id: approve_full
+        label: "Start Full Personalization"
+        description: "Personalize all tier A & B leads"
+        writes:
+          - table: campaigns
+            filter: "id = :campaign_id"
+            set:
+              status: "approved_for_personalization"
+              personalization_scope: "tier_a_and_b"
+              approved_at: "{{ now }}"
+        next_phase: phase_4_personalization
+
+      - id: approve_tier_a_only
+        label: "Tier A Only"
+        description: "Only personalize Tier A leads"
+        writes:
+          - table: campaigns
+            filter: "id = :campaign_id"
+            set:
+              status: "approved_for_personalization"
+              personalization_scope: "tier_a_only"
+        next_phase: phase_4_personalization
+
+      - id: request_more_enrichment
+        label: "Need More Data"
+        requires_feedback: true
+        next_phase: phase_3_re_enrich
+
+      - id: reject
+        label: "Reject"
+        requires_feedback: true
+        next_phase: null
+
+    auto_approve:
+      enabled: true
+      conditions:
+        - "tier_a_ready >= 500"
+        - "total_ready >= 5000"

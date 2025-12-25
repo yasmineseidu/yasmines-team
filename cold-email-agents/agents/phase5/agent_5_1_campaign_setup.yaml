@@ -1,0 +1,182 @@
+# ==============================================================================
+# AGENT 5.1: CAMPAIGN SETUP AGENT
+# ==============================================================================
+# Phase: 5 - Campaign Execution
+# Purpose: Set up email campaigns in Instantly.ai
+# Depends On: Human Gate Approval from Phase 4
+# ==============================================================================
+
+agent:
+  id: campaign_setup_agent
+  name: "Campaign Setup Agent"
+  version: "2.0.0"
+  phase: 5
+  phase_name: "Campaign Execution"
+
+  description: |
+    Sets up email campaigns in Instantly.ai including campaign creation,
+    sequence configuration, sending schedule, and warmup settings.
+
+# ==============================================================================
+# TOOL CONFIGURATION
+# ==============================================================================
+
+tool_configuration:
+  discovery:
+    enabled: true
+
+  required_tools:
+    - name: instantly_api
+      type: api
+      description: "Instantly.ai API"
+      required: true
+      endpoints: [create_campaign, add_sequence, configure_schedule]
+
+    - name: database_connection
+      type: internal
+      required: true
+
+# ==============================================================================
+# EXECUTION & RETRY
+# ==============================================================================
+
+execution:
+  mode: single
+  timeout_seconds: 300
+  idempotency:
+    enabled: true
+    key_template: "campaign_setup:{campaign_id}"
+
+retry:
+  default:
+    max_attempts: 3
+    strategy: exponential_jitter
+    base_delay_seconds: 5
+
+# ==============================================================================
+# INPUTS & DATABASE
+# ==============================================================================
+
+inputs:
+  required:
+    - name: campaign_id
+      type: string
+      format: uuid
+  optional:
+    - name: sending_limit_per_day
+      type: integer
+      default: 50
+    - name: sequence_delay_days
+      type: array
+      default: [3, 5, 7]
+
+database:
+  reads:
+    - id: get_campaign
+      table: campaigns
+      filter: "id = :campaign_id AND status = 'approved_for_sending'"
+      required: true
+    - id: get_sending_accounts
+      table: email_accounts
+      filter: "status = 'active'"
+      required: true
+
+  writes:
+    - id: create_instantly_campaign
+      table: instantly_campaigns
+      operation: INSERT
+      timing: after_setup
+      fields:
+        id: { source: generated, type: uuid }
+        campaign_id: { source: inputs, field: campaign_id }
+        instantly_campaign_id: { source: instantly_response, field: id }
+        status: { value: "created" }
+        created_at: { source: now }
+
+    - id: update_campaign_status
+      table: campaigns
+      operation: UPDATE
+      timing: after_setup
+      filter: "id = :campaign_id"
+      fields:
+        instantly_campaign_id: { source: instantly_response, field: id }
+        sending_status: { value: "ready" }
+        setup_completed_at: { source: now }
+
+# ==============================================================================
+# CAMPAIGN CONFIG
+# ==============================================================================
+
+campaign_config:
+  sequence:
+    - step: 1
+      delay: 0
+    - step: 2
+      delay_days: 3
+      condition: no_reply
+    - step: 3
+      delay_days: 5
+      condition: no_reply
+    - step: 4
+      delay_days: 7
+      condition: no_reply
+
+  schedule:
+    days: [monday, tuesday, wednesday, thursday, friday]
+    start_time: "09:00"
+    end_time: "17:00"
+    timezone: "America/New_York"
+
+  limits:
+    per_account_daily: 50
+    gap_between_emails_seconds: 120
+
+# ==============================================================================
+# STEPS & OUTPUT
+# ==============================================================================
+
+steps:
+  - id: validate_prerequisites
+    name: "Validate Prerequisites"
+    output: { total_leads: integer }
+
+  - id: create_instantly_campaign
+    name: "Create Campaign in Instantly"
+    depends_on: [validate_prerequisites]
+    tool: instantly_api
+    output: { instantly_campaign_id: string }
+
+  - id: configure_sequence
+    name: "Configure Sequence"
+    depends_on: [create_instantly_campaign]
+    output: { sequence_configured: boolean }
+
+  - id: finalize_setup
+    name: "Finalize Setup"
+    depends_on: [configure_sequence]
+    output: { setup_complete: boolean }
+
+outputs:
+  schema:
+    type: object
+    required: [instantly_campaign_id, setup_complete]
+    properties:
+      instantly_campaign_id: { type: string }
+      setup_complete: { type: boolean }
+
+success_criteria:
+  hard:
+    - id: campaign_created
+      condition: "instantly_campaign_id IS NOT NULL"
+
+handoff:
+  to_agent: email_sending_agent
+  data:
+    - field: campaign_id
+      source: inputs.campaign_id
+      required: true
+    - field: instantly_campaign_id
+      source: outputs.instantly_campaign_id
+      required: true
+  conditions:
+    - "setup_complete = true"

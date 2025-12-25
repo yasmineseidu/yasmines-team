@@ -1,0 +1,521 @@
+# ==============================================================================
+# AGENT 3.1: EMAIL VERIFICATION AGENT
+# ==============================================================================
+# Phase: 3 - Email Verification & Enrichment
+# Purpose: Find and verify emails using waterfall enrichment
+# Execution: Parallel batch processing with multiple providers
+# Depends On: Human Gate Approval from Phase 2
+# ==============================================================================
+
+agent:
+  id: email_verification_agent
+  name: "Email Verification Agent"
+  version: "2.0.0"
+  phase: 3
+  phase_name: "Email Verification & Enrichment"
+
+  description: |
+    Finds and verifies email addresses for leads using a waterfall approach
+    across multiple email finder providers. Prioritizes by lead score (Tier A first),
+    uses cheapest providers first, and validates all found emails.
+
+# ==============================================================================
+# TOOL CONFIGURATION - WATERFALL PROVIDERS
+# ==============================================================================
+
+tool_configuration:
+  discovery:
+    enabled: true
+    check_on_startup: true
+
+  # Email finder waterfall - cheapest to most expensive
+  email_finder_waterfall:
+    # Tier 1: Free/Cheapest
+    tier_1_cheap:
+      - name: tomba_io
+        type: api
+        cost_per_lookup: 0.002
+        accuracy: 0.85
+        daily_limit: 5000
+        priority: 1
+
+      - name: hunter_io
+        type: api
+        cost_per_lookup: 0.003
+        accuracy: 0.88
+        daily_limit: 3000
+        priority: 2
+
+    # Tier 2: Moderate
+    tier_2_moderate:
+      - name: findymail
+        type: api
+        cost_per_lookup: 0.008
+        accuracy: 0.90
+        daily_limit: 2000
+        priority: 3
+
+      - name: icypeas
+        type: api
+        cost_per_lookup: 0.010
+        accuracy: 0.88
+        daily_limit: 2000
+        priority: 4
+
+      - name: muraena
+        type: api
+        cost_per_lookup: 0.012
+        accuracy: 0.87
+        daily_limit: 1500
+        priority: 5
+
+    # Tier 3: Premium
+    tier_3_premium:
+      - name: voila_norbert
+        type: api
+        cost_per_lookup: 0.015
+        accuracy: 0.92
+        daily_limit: 1000
+        priority: 6
+
+      - name: apollo_enrichment
+        type: api
+        cost_per_lookup: 0.020
+        accuracy: 0.90
+        daily_limit: 1000
+        priority: 7
+
+  # Email verification
+  email_verification:
+    - name: reoon_verifier
+      type: api
+      cost_per_verify: 0.003
+      accuracy: 0.98
+      required: true
+
+    - name: neverbounce
+      type: api
+      cost_per_verify: 0.008
+      accuracy: 0.99
+      required: false
+      use_for: high_value_leads
+
+  waterfall_strategy:
+    mode: stop_on_success
+    max_providers_per_lead: 3
+    verify_all_found: true
+    fallback_to_pattern_guess: true
+
+# ==============================================================================
+# PARALLEL EXECUTION
+# ==============================================================================
+
+parallel_execution:
+  enabled: true
+
+  batch_processing:
+    batch_size: 500
+    max_parallel_batches: 10
+
+  provider_parallelism:
+    concurrent_providers: 3
+    requests_per_provider: 50
+
+  priority_order:
+    - tier_a_leads_first: true
+    - then_tier_b: true
+    - then_tier_c: true
+
+# ==============================================================================
+# EXECUTION CONFIGURATION
+# ==============================================================================
+
+execution:
+  mode: parallel_batch
+  timeout_seconds: 14400  # 4 hours
+
+  idempotency:
+    enabled: true
+    key_template: "email_verification:{campaign_id}:{lead_id}"
+    ttl_hours: 168  # 7 days
+
+  checkpoint:
+    enabled: true
+    interval_leads: 500
+    storage: postgresql
+    table: workflow_checkpoints
+
+  resume:
+    enabled: true
+    skip_already_verified: true
+
+# ==============================================================================
+# RETRY CONFIGURATION
+# ==============================================================================
+
+retry:
+  default:
+    max_attempts: 3
+    strategy: exponential_jitter
+    base_delay_seconds: 5
+    max_delay_seconds: 60
+
+    retry_on:
+      - ConnectionError
+      - TimeoutError
+      - RateLimitError
+      - ProviderTemporaryError
+
+    dont_retry_on:
+      - AuthenticationError
+      - InsufficientCreditsError
+      - InvalidInputError
+
+  provider_overrides:
+    tomba_io:
+      max_attempts: 2
+      base_delay_seconds: 2
+    apollo_enrichment:
+      max_attempts: 3
+      base_delay_seconds: 10
+
+# ==============================================================================
+# RATE LIMITING & COST CONTROLS
+# ==============================================================================
+
+rate_limits:
+  agent:
+    lookups_per_minute: 200
+    lookups_per_hour: 5000
+
+  providers:
+    tomba_io: { rpm: 60, daily: 5000 }
+    hunter_io: { rpm: 50, daily: 3000 }
+    findymail: { rpm: 40, daily: 2000 }
+    icypeas: { rpm: 40, daily: 2000 }
+    muraena: { rpm: 30, daily: 1500 }
+    voila_norbert: { rpm: 30, daily: 1000 }
+    apollo_enrichment: { rpm: 30, daily: 1000 }
+    reoon_verifier: { rpm: 100, daily: 10000 }
+
+cost_controls:
+  enabled: true
+  budget:
+    max_per_campaign: 200.00
+    max_per_lead: 0.10
+    alert_at_percent: 80
+
+  on_budget_exceeded:
+    action: stop_enrichment
+    use_partial_results: true
+    alert: true
+
+# ==============================================================================
+# CIRCUIT BREAKER
+# ==============================================================================
+
+circuit_breaker:
+  enabled: true
+
+  per_provider:
+    default:
+      failure_threshold: 5
+      failure_rate_threshold: 0.3
+      recovery_timeout_seconds: 300
+      half_open_max_calls: 3
+
+    apollo_enrichment:
+      failure_threshold: 3
+      recovery_timeout_seconds: 600
+
+  on_circuit_open:
+    action: skip_to_next_provider
+    log: true
+    alert_if_multiple_open: true
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+
+inputs:
+  required:
+    - name: campaign_id
+      type: string
+      format: uuid
+
+  optional:
+    - name: max_budget
+      type: number
+      default: 200.00
+    - name: priority_tiers
+      type: array
+      default: ["A", "B", "C"]
+    - name: verify_existing_emails
+      type: boolean
+      default: true
+
+# ==============================================================================
+# DATABASE OPERATIONS
+# ==============================================================================
+
+database:
+  reads:
+    - id: get_leads_for_enrichment
+      table: leads
+      operation: SELECT
+      fields: [id, first_name, last_name, email, company_name, company_domain,
+               linkedin_url, lead_score, lead_tier]
+      filter: |
+        campaign_id = :campaign_id
+        AND status NOT IN ('duplicate', 'invalid', 'cross_campaign_duplicate')
+        AND lead_tier = ANY(:priority_tiers)
+      parameters:
+        campaign_id: "{{ inputs.campaign_id }}"
+        priority_tiers: "{{ inputs.priority_tiers }}"
+      order_by: "lead_score DESC"
+      pagination:
+        enabled: true
+        batch_size: 500
+      required: true
+
+  writes:
+    - id: log_enrichment_attempt
+      table: enrichment_attempts
+      operation: INSERT
+      timing: per_attempt
+      fields:
+        id: { source: generated, type: uuid }
+        lead_id: { source: current_lead, field: id }
+        provider: { source: attempt, field: provider }
+        email_found: { source: attempt, field: email }
+        confidence: { source: attempt, field: confidence }
+        cost: { source: attempt, field: cost }
+        response_time_ms: { source: attempt, field: response_time }
+        status: { source: attempt, field: status }
+        created_at: { source: now }
+
+    - id: update_lead_email
+      table: leads
+      operation: UPDATE
+      timing: after_verification
+      filter: "id = :lead_id"
+      fields:
+        email: { source: enrichment_result, field: verified_email }
+        email_status: { source: enrichment_result, field: verification_status }
+        email_provider: { source: enrichment_result, field: provider }
+        email_confidence: { source: enrichment_result, field: confidence }
+        email_verified_at: { source: now }
+        enrichment_cost: { source: enrichment_result, field: total_cost }
+        updated_at: { source: now }
+
+    - id: update_campaign_enrichment
+      table: campaigns
+      operation: UPDATE
+      timing: periodic
+      interval_seconds: 60
+      filter: "id = :campaign_id"
+      fields:
+        emails_found: { source: agent_state, field: total_found }
+        emails_verified: { source: agent_state, field: total_verified }
+        enrichment_cost: { source: agent_state, field: total_cost }
+        updated_at: { source: now }
+
+# ==============================================================================
+# WATERFALL LOGIC
+# ==============================================================================
+
+waterfall_logic:
+  # Step 1: Check if email already exists
+  check_existing:
+    condition: "lead.email IS NOT NULL"
+    action: skip_to_verification
+
+  # Step 2: Try pattern-based guess first (free)
+  pattern_guess:
+    enabled: true
+    patterns:
+      - "{first}.{last}@{domain}"
+      - "{first}{last}@{domain}"
+      - "{f}{last}@{domain}"
+      - "{first}@{domain}"
+    verify_immediately: true
+
+  # Step 3: Waterfall through providers
+  provider_waterfall:
+    strategy: cheapest_first_stop_on_success
+
+    for_each_provider:
+      - lookup_email:
+          input:
+            first_name: "{{ lead.first_name }}"
+            last_name: "{{ lead.last_name }}"
+            company_domain: "{{ lead.company_domain }}"
+            linkedin_url: "{{ lead.linkedin_url }}"
+
+          on_success:
+            action: verify_email
+            then: stop_waterfall
+
+          on_not_found:
+            action: try_next_provider
+
+          on_error:
+            action: log_and_try_next
+
+  # Step 4: Verify found email
+  verification:
+    provider: reoon_verifier
+
+    valid_statuses:
+      - valid
+      - risky  # Accept but flag
+
+    invalid_statuses:
+      - invalid
+      - disposable
+      - role_based
+      - catch_all  # Flag but may accept
+
+# ==============================================================================
+# AGENT STEPS
+# ==============================================================================
+
+steps:
+  - id: load_leads
+    name: "Load Leads for Enrichment"
+    description: "Load leads prioritized by score"
+    output:
+      total_leads: integer
+      leads_with_email: integer
+      leads_needing_email: integer
+
+  - id: enrich_emails
+    name: "Find Emails via Waterfall"
+    description: "Use waterfall providers to find emails"
+    depends_on: [load_leads]
+
+    parallel_execution:
+      enabled: true
+      max_concurrent: 10
+      priority_order: lead_score_desc
+
+    for_each: leads_needing_email
+
+    waterfall:
+      providers: "{{ available_providers }}"
+      stop_on_success: true
+      max_providers: 3
+
+    output:
+      emails_found: integer
+      provider_stats: object
+
+  - id: verify_emails
+    name: "Verify Found Emails"
+    description: "Verify all found and existing emails"
+    depends_on: [enrich_emails]
+
+    parallel_execution:
+      enabled: true
+      max_concurrent: 50
+
+    verification:
+      provider: reoon_verifier
+      batch_size: 100
+
+    output:
+      emails_verified: integer
+      emails_valid: integer
+      emails_invalid: integer
+      emails_risky: integer
+
+  - id: finalize
+    name: "Finalize Enrichment"
+    description: "Update final stats and prepare for next phase"
+    depends_on: [verify_emails]
+
+    output:
+      total_with_valid_email: integer
+      enrichment_rate: number
+      total_cost: number
+
+# ==============================================================================
+# SYSTEM PROMPT
+# ==============================================================================
+
+system_prompt: |
+  You are an email enrichment specialist finding and verifying business emails.
+
+  Waterfall Strategy:
+  1. Check if email already exists
+  2. Try pattern-based guess (free)
+  3. Use cheapest provider first (Tomba, Hunter)
+  4. Escalate to premium providers only if needed
+  5. Always verify found emails
+
+  Provider Priority (cheapest first):
+  1. Tomba.io ($0.002/lookup)
+  2. Hunter.io ($0.003/lookup)
+  3. Findymail ($0.008/lookup)
+  4. Icypeas ($0.010/lookup)
+  5. Muraena ($0.012/lookup)
+  6. Voila Norbert ($0.015/lookup)
+  7. Apollo ($0.020/lookup)
+
+  Quality Goals:
+  - Find rate: 70%+ of leads
+  - Verification rate: 95%+ of found emails
+  - Cost per verified email: < $0.05
+
+# ==============================================================================
+# OUTPUT SCHEMA
+# ==============================================================================
+
+outputs:
+  schema:
+    type: object
+    required: [total_processed, emails_found, emails_verified, total_cost]
+    properties:
+      total_processed: { type: integer }
+      emails_found: { type: integer }
+      emails_verified: { type: integer }
+      emails_valid: { type: integer }
+      emails_invalid: { type: integer }
+      emails_risky: { type: integer }
+      find_rate: { type: number }
+      verification_rate: { type: number }
+      total_cost: { type: number }
+      cost_per_verified: { type: number }
+      provider_breakdown: { type: object }
+
+# ==============================================================================
+# SUCCESS CRITERIA
+# ==============================================================================
+
+success_criteria:
+  hard:
+    - id: minimum_emails
+      condition: "emails_valid >= 1000"
+    - id: within_budget
+      condition: "total_cost <= inputs.max_budget"
+  soft:
+    - id: good_find_rate
+      condition: "find_rate >= 0.70"
+    - id: good_verification_rate
+      condition: "verification_rate >= 0.95"
+
+# ==============================================================================
+# HANDOFF
+# ==============================================================================
+
+handoff:
+  to_agent: waterfall_enrichment_agent
+  data:
+    - field: campaign_id
+      source: inputs.campaign_id
+      required: true
+    - field: leads_with_email
+      source: outputs.emails_valid
+      required: true
+  conditions:
+    - "emails_valid >= 1000"

@@ -1,0 +1,390 @@
+# ==============================================================================
+# AGENT 2.3: DUPLICATE DETECTION AGENT
+# ==============================================================================
+# Phase: 2 - Lead Acquisition
+# Purpose: Detect and merge duplicate leads within campaign
+# Execution: Parallel batch processing with fuzzy matching
+# Depends On: Data Validation Agent (2.2)
+# ==============================================================================
+
+agent:
+  id: duplicate_detection_agent
+  name: "Duplicate Detection Agent"
+  version: "2.0.0"
+  phase: 2
+  phase_name: "Lead Acquisition"
+
+  description: |
+    Identifies and handles duplicate leads within the current campaign using
+    exact matching (LinkedIn URL, email) and fuzzy matching (name + company).
+    Merges duplicate records, preserving the most complete data.
+
+# ==============================================================================
+# TOOL CONFIGURATION
+# ==============================================================================
+
+tool_configuration:
+  discovery:
+    enabled: true
+
+  required_tools:
+    - name: database_connection
+      type: internal
+      description: "PostgreSQL for duplicate queries"
+      required: true
+
+# ==============================================================================
+# PARALLEL EXECUTION
+# ==============================================================================
+
+parallel_execution:
+  enabled: true
+
+  batch_processing:
+    batch_size: 5000
+    max_parallel_batches: 5
+
+  matching_strategy:
+    exact_matching: parallel
+    fuzzy_matching: parallel
+    merge_operations: sequential
+
+# ==============================================================================
+# EXECUTION CONFIGURATION
+# ==============================================================================
+
+execution:
+  mode: parallel_batch
+  timeout_seconds: 1800  # 30 minutes
+
+  idempotency:
+    enabled: true
+    key_template: "duplicate_detection:{campaign_id}"
+    ttl_hours: 24
+
+  checkpoint:
+    enabled: true
+    after_steps: [exact_match, fuzzy_match]
+    storage: postgresql
+    table: workflow_checkpoints
+
+# ==============================================================================
+# RETRY CONFIGURATION
+# ==============================================================================
+
+retry:
+  default:
+    max_attempts: 3
+    strategy: exponential_jitter
+    base_delay_seconds: 5
+    max_delay_seconds: 60
+    retry_on: [ConnectionError, TimeoutError, DatabaseError]
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+
+inputs:
+  required:
+    - name: campaign_id
+      type: string
+      format: uuid
+      source: handoff.data_validation_agent.campaign_id
+    - name: total_valid_leads
+      type: integer
+      source: handoff.data_validation_agent.total_valid_leads
+
+# ==============================================================================
+# DATABASE OPERATIONS
+# ==============================================================================
+
+database:
+  reads:
+    - id: get_leads_for_dedup
+      table: leads
+      operation: SELECT
+      fields: [id, linkedin_url, email, first_name, last_name, company_name,
+               company_domain, job_title, created_at]
+      filter: "campaign_id = :campaign_id AND status IN ('new', 'validated')"
+      parameters:
+        campaign_id: "{{ inputs.campaign_id }}"
+      required: true
+
+  writes:
+    - id: mark_duplicates
+      table: leads
+      operation: BULK_UPDATE
+      timing: after_detection
+      filter: "id = ANY(:duplicate_ids)"
+      fields:
+        status: { value: "duplicate" }
+        duplicate_of: { source: merge_result, field: primary_id }
+        updated_at: { source: now }
+
+    - id: update_primary_records
+      table: leads
+      operation: BULK_UPDATE
+      timing: after_merge
+      filter: "id = ANY(:primary_ids)"
+      fields:
+        merged_from: { source: merge_result, field: merged_ids, type: jsonb }
+        email: { source: merge_result, field: best_email }
+        updated_at: { source: now }
+
+    - id: log_dedup_results
+      table: dedup_logs
+      operation: INSERT
+      timing: on_complete
+      fields:
+        id: { source: generated, type: uuid }
+        campaign_id: { source: inputs, field: campaign_id }
+        total_checked: { source: agent_output, field: total_checked }
+        exact_duplicates: { source: agent_output, field: exact_duplicates }
+        fuzzy_duplicates: { source: agent_output, field: fuzzy_duplicates }
+        total_merged: { source: agent_output, field: total_merged }
+        detection_details: { source: agent_output, field: details, type: jsonb }
+        created_at: { source: now }
+
+    - id: update_campaign_dedup
+      table: campaigns
+      operation: UPDATE
+      timing: on_complete
+      filter: "id = :campaign_id"
+      fields:
+        total_duplicates_found: { source: agent_output, field: total_merged }
+        total_leads_unique: { source: agent_output, field: unique_leads }
+        dedup_completed_at: { source: now }
+        status: { value: "deduplicated" }
+        updated_at: { source: now }
+
+# ==============================================================================
+# DUPLICATE DETECTION RULES
+# ==============================================================================
+
+detection_rules:
+  # Exact matching - highest confidence
+  exact_match:
+    priority: 1
+    confidence: 1.0
+
+    rules:
+      - id: linkedin_url_match
+        field: linkedin_url
+        type: exact
+        case_sensitive: false
+        description: "Same LinkedIn URL = definite duplicate"
+
+      - id: email_match
+        field: email
+        type: exact
+        case_sensitive: false
+        condition: "email IS NOT NULL"
+        description: "Same email = definite duplicate"
+
+  # Fuzzy matching - requires multiple signals
+  fuzzy_match:
+    priority: 2
+    min_confidence: 0.85
+
+    rules:
+      - id: name_company_match
+        type: composite
+        fields:
+          - field: first_name
+            weight: 0.3
+            algorithm: jaro_winkler
+            threshold: 0.9
+          - field: last_name
+            weight: 0.3
+            algorithm: jaro_winkler
+            threshold: 0.9
+          - field: company_name
+            weight: 0.4
+            algorithm: jaro_winkler
+            threshold: 0.85
+        min_composite_score: 0.85
+        description: "Similar name + company = likely duplicate"
+
+      - id: name_domain_match
+        type: composite
+        fields:
+          - field: first_name
+            weight: 0.3
+            algorithm: jaro_winkler
+            threshold: 0.9
+          - field: last_name
+            weight: 0.3
+            algorithm: jaro_winkler
+            threshold: 0.9
+          - field: company_domain
+            weight: 0.4
+            algorithm: exact
+        min_composite_score: 0.85
+        condition: "company_domain IS NOT NULL"
+        description: "Similar name + same domain = likely duplicate"
+
+  # Merge strategy
+  merge_strategy:
+    primary_selection:
+      prefer:
+        - has_email: true
+        - more_fields_populated: true
+        - created_first: true
+
+    field_merge:
+      email:
+        strategy: first_non_null
+      phone:
+        strategy: first_non_null
+      job_title:
+        strategy: longest_value
+      company_size:
+        strategy: first_non_null
+      location:
+        strategy: most_specific
+
+# ==============================================================================
+# AGENT STEPS
+# ==============================================================================
+
+steps:
+  - id: load_leads
+    name: "Load Leads for Deduplication"
+    description: "Load all validated leads from campaign"
+    output:
+      total_leads: integer
+      leads_data: array
+
+  - id: exact_match_detection
+    name: "Exact Match Detection"
+    description: "Find duplicates by LinkedIn URL and email"
+    depends_on: [load_leads]
+
+    parallel_execution:
+      enabled: true
+      strategy: partition_by_hash
+      partitions: 10
+
+    matching:
+      - by: linkedin_url
+        index: true
+      - by: email
+        condition: "email IS NOT NULL"
+        index: true
+
+    output:
+      exact_duplicate_groups: array
+      exact_duplicate_count: integer
+
+  - id: fuzzy_match_detection
+    name: "Fuzzy Match Detection"
+    description: "Find duplicates by name + company similarity"
+    depends_on: [exact_match_detection]
+
+    parallel_execution:
+      enabled: true
+      strategy: blocking_key
+      blocking_keys:
+        - first_name_soundex
+        - company_name_first3
+
+    matching:
+      algorithm: composite_similarity
+      min_score: 0.85
+
+    output:
+      fuzzy_duplicate_groups: array
+      fuzzy_duplicate_count: integer
+
+  - id: merge_duplicates
+    name: "Merge Duplicate Records"
+    description: "Merge duplicate groups, keeping best data"
+    depends_on: [fuzzy_match_detection]
+
+    merge_strategy:
+      select_primary: most_complete_record
+      merge_fields: true
+      mark_others_as_duplicate: true
+
+    output:
+      merged_count: integer
+      primary_ids: array
+
+  - id: update_records
+    name: "Update Database Records"
+    description: "Apply deduplication results to database"
+    depends_on: [merge_duplicates]
+
+    output:
+      records_updated: integer
+      unique_leads: integer
+
+# ==============================================================================
+# SYSTEM PROMPT
+# ==============================================================================
+
+system_prompt: |
+  You are a data deduplication specialist identifying duplicate leads.
+
+  Detection Strategy:
+  1. Exact matching (LinkedIn URL, email) - 100% confidence
+  2. Fuzzy matching (name + company) - 85%+ confidence threshold
+
+  Merge Strategy:
+  - Keep record with most complete data as primary
+  - Merge fields from duplicates (first non-null wins)
+  - Mark duplicates with reference to primary
+
+  Quality Goals:
+  - Catch all true duplicates
+  - Minimize false positives (don't merge different people)
+  - Preserve data integrity
+
+# ==============================================================================
+# OUTPUT SCHEMA
+# ==============================================================================
+
+outputs:
+  schema:
+    type: object
+    required: [total_checked, total_merged, unique_leads]
+    properties:
+      total_checked: { type: integer }
+      exact_duplicates: { type: integer }
+      fuzzy_duplicates: { type: integer }
+      total_merged: { type: integer }
+      unique_leads: { type: integer }
+      duplicate_rate: { type: number }
+      details: { type: object }
+
+# ==============================================================================
+# SUCCESS CRITERIA
+# ==============================================================================
+
+success_criteria:
+  hard:
+    - id: dedup_complete
+      condition: "total_checked == inputs.total_valid_leads"
+      description: "All leads were checked for duplicates"
+  soft:
+    - id: has_unique_leads
+      condition: "unique_leads >= 1"
+      description: "At least one unique lead remains"
+    - id: reasonable_dup_rate
+      condition: "duplicate_rate < 0.15"
+
+# ==============================================================================
+# HANDOFF
+# ==============================================================================
+
+handoff:
+  to_agent: cross_campaign_dedup_agent
+  data:
+    - field: campaign_id
+      source: inputs.campaign_id
+      required: true
+    - field: unique_leads
+      source: outputs.unique_leads
+      required: true
+  conditions:
+    - "unique_leads >= 1"  # Proceed with whatever unique leads remain

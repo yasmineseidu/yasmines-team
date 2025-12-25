@@ -1,0 +1,460 @@
+# ==============================================================================
+# AGENT 4.3: EMAIL GENERATION AGENT
+# ==============================================================================
+# Phase: 4 - Research & Personalization
+# Purpose: Generate personalized cold emails using AI
+# Execution: Parallel batch generation with quality scoring
+# Depends On: Lead Research Agent (4.2)
+# ==============================================================================
+
+agent:
+  id: email_generation_agent
+  name: "Email Generation Agent"
+  version: "2.0.0"
+  phase: 4
+  phase_name: "Research & Personalization"
+
+  description: |
+    Generates personalized cold emails for each lead using research data,
+    persona insights, and proven email frameworks. Creates subject lines,
+    opening lines, body copy, and CTAs tailored to each recipient.
+
+# ==============================================================================
+# TOOL CONFIGURATION
+# ==============================================================================
+
+tool_configuration:
+  discovery:
+    enabled: true
+
+  required_tools:
+    - name: llm_generation
+      type: internal
+      description: "LLM for email generation"
+      required: true
+      config:
+        model: claude-sonnet-4-20250514
+        temperature: 0.7
+        max_tokens: 1000
+
+# ==============================================================================
+# EMAIL FRAMEWORKS
+# ==============================================================================
+
+email_frameworks:
+  # Framework 1: Pain-Agitate-Solution
+  pas:
+    name: "Pain-Agitate-Solution"
+    structure:
+      - opening: personalization_hook
+      - pain: identify_pain_point
+      - agitate: amplify_consequences
+      - solution: introduce_solution
+      - cta: soft_ask
+    best_for: ["high_pain_intensity", "tier_a"]
+
+  # Framework 2: Before-After-Bridge
+  bab:
+    name: "Before-After-Bridge"
+    structure:
+      - opening: personalization_hook
+      - before: current_state
+      - after: desired_state
+      - bridge: how_we_help
+      - cta: soft_ask
+    best_for: ["aspirational_messaging", "tier_b"]
+
+  # Framework 3: AIDA
+  aida:
+    name: "Attention-Interest-Desire-Action"
+    structure:
+      - attention: hook
+      - interest: relevant_insight
+      - desire: benefit
+      - action: cta
+    best_for: ["shorter_emails", "tier_c"]
+
+  # Framework 4: Question-Based
+  question:
+    name: "Question-Based"
+    structure:
+      - opening: personalized_question
+      - context: why_asking
+      - value: what_we_offer
+      - cta: soft_ask
+    best_for: ["engagement_focused"]
+
+# ==============================================================================
+# EMAIL TEMPLATES BY TIER
+# ==============================================================================
+
+email_templates:
+  tier_a:
+    personalization_level: hyper_personalized
+    frameworks: [pas, bab]
+    subject_line:
+      personalized: true
+      max_length: 50
+      include_name: optional
+    opening_line:
+      source: lead_research.opening_line_suggestions
+      fallback: company_research.personalization_hooks
+    body:
+      max_words: 150
+      include_specific_pain: true
+      reference_research: true
+    cta:
+      type: soft_question
+      examples:
+        - "Would you be open to a quick chat?"
+        - "Worth a 15-minute call?"
+        - "Is this something you're exploring?"
+
+  tier_b:
+    personalization_level: personalized
+    frameworks: [bab, aida]
+    subject_line:
+      personalized: true
+      max_length: 50
+    opening_line:
+      source: company_research.personalization_hooks
+      fallback: role_based_hook
+    body:
+      max_words: 120
+      include_specific_pain: true
+    cta:
+      type: soft_question
+
+  tier_c:
+    personalization_level: semi_personalized
+    frameworks: [aida, question]
+    subject_line:
+      personalized: false
+      template_based: true
+    opening_line:
+      source: role_based_template
+    body:
+      max_words: 100
+    cta:
+      type: simple_ask
+
+# ==============================================================================
+# QUALITY SCORING
+# ==============================================================================
+
+quality_scoring:
+  dimensions:
+    personalization:
+      weight: 0.30
+      criteria:
+        - uses_specific_research: 10
+        - mentions_company_context: 8
+        - references_role: 5
+        - generic: 0
+
+    clarity:
+      weight: 0.25
+      criteria:
+        - clear_value_prop: 10
+        - easy_to_understand: 8
+        - confusing: 0
+
+    length:
+      weight: 0.15
+      criteria:
+        - optimal_50_100_words: 10
+        - acceptable_100_150: 7
+        - too_short_under_50: 4
+        - too_long_over_150: 3
+
+    cta_quality:
+      weight: 0.15
+      criteria:
+        - soft_low_friction: 10
+        - clear_ask: 7
+        - pushy_or_vague: 3
+
+    tone:
+      weight: 0.15
+      criteria:
+        - conversational_human: 10
+        - professional_warm: 8
+        - corporate_stiff: 3
+        - too_casual: 4
+
+  thresholds:
+    excellent: 85
+    good: 70
+    acceptable: 55
+    regenerate: 0
+
+# ==============================================================================
+# PARALLEL EXECUTION & CONFIGURATION
+# ==============================================================================
+
+parallel_execution:
+  enabled: true
+  batch_processing:
+    batch_size: 100
+    max_parallel_batches: 10
+  generation:
+    max_concurrent: 50
+
+execution:
+  mode: parallel_batch
+  timeout_seconds: 7200
+  idempotency:
+    enabled: true
+    key_template: "email_generation:{campaign_id}:{lead_id}"
+    ttl_hours: 168
+  checkpoint:
+    enabled: true
+    interval_leads: 100
+
+# ==============================================================================
+# INPUTS & DATABASE
+# ==============================================================================
+
+inputs:
+  required:
+    - name: campaign_id
+      type: string
+      format: uuid
+      source: handoff.lead_research_agent.campaign_id
+
+database:
+  reads:
+    - id: get_niche
+      table: niches
+      operation: SELECT
+      fields: [id, name, industry, job_titles, pain_points, value_propositions, messaging_tone]
+      filter: "id = (SELECT niche_id FROM campaigns WHERE id = :campaign_id)"
+      required: true
+
+    - id: get_personas
+      table: personas
+      operation: SELECT
+      fields: [id, name, pain_points, objections, language_patterns, messaging_angles]
+      filter: "niche_id = :niche_id"
+      required: true
+
+    - id: get_leads_with_research
+      table: leads
+      operation: SELECT
+      fields: [id, first_name, last_name, email, job_title, company_name, company_domain,
+               lead_score, lead_tier, company_research_id, lead_research_id]
+      filter: "campaign_id = :campaign_id AND email_status = 'valid'"
+      order_by: "lead_score DESC"
+      required: true
+
+    - id: get_company_research
+      table: company_research
+      operation: SELECT
+      fields: [id, company_name, company_description, personalization_hooks, talking_points]
+      filter: "id = ANY(:company_research_ids)"
+      required: true
+
+    - id: get_lead_research
+      table: lead_research
+      operation: SELECT
+      fields: [lead_id, personalization_hooks, opening_line_suggestions]
+      filter: "lead_id = ANY(:lead_ids)"
+      required: false
+
+  writes:
+    - id: save_generated_email
+      table: generated_emails
+      operation: INSERT
+      timing: per_lead
+      fields:
+        id: { source: generated, type: uuid }
+        lead_id: { source: email, field: lead_id }
+        campaign_id: { source: inputs, field: campaign_id }
+
+        # Email content
+        subject_line: { source: email, field: subject_line }
+        opening_line: { source: email, field: opening_line }
+        body: { source: email, field: body }
+        cta: { source: email, field: cta }
+        full_email: { source: email, field: full_text }
+
+        # Metadata
+        framework_used: { source: email, field: framework }
+        personalization_level: { source: email, field: personalization_level }
+        quality_score: { source: email, field: quality_score, type: integer }
+        score_breakdown: { source: email, field: score_breakdown, type: jsonb }
+
+        # Generation info
+        generation_prompt: { source: email, field: prompt }
+        generation_model: { value: "claude-sonnet-4-20250514" }
+        generated_at: { source: now }
+
+      returning: [id]
+
+    - id: update_lead_email_status
+      table: leads
+      operation: UPDATE
+      timing: per_lead
+      filter: "id = :lead_id"
+      fields:
+        generated_email_id: { source: email, field: id }
+        email_generation_status: { value: "generated" }
+        updated_at: { source: now }
+
+# ==============================================================================
+# GENERATION PROMPT
+# ==============================================================================
+
+generation_prompt: |
+  You are an expert cold email copywriter. Generate a personalized cold email.
+
+  ## Lead Information
+  - Name: {{ first_name }} {{ last_name }}
+  - Title: {{ job_title }}
+  - Company: {{ company_name }}
+  - Tier: {{ lead_tier }}
+
+  ## Personalization Data
+  {% if lead_research %}
+  - Opening Line Options: {{ lead_research.opening_line_suggestions }}
+  - Lead Hooks: {{ lead_research.personalization_hooks }}
+  {% endif %}
+
+  {% if company_research %}
+  - Company Context: {{ company_research.company_description }}
+  - Company Hooks: {{ company_research.personalization_hooks }}
+  {% endif %}
+
+  ## Persona Context
+  - Pain Points: {{ persona.pain_points }}
+  - Language Patterns: {{ persona.language_patterns }}
+  - Messaging Angle: {{ persona.messaging_angles.primary }}
+
+  ## Requirements
+  - Use {{ framework }} framework
+  - Personalization level: {{ personalization_level }}
+  - Max {{ max_words }} words
+  - Tone: {{ messaging_tone }}
+  - CTA: Soft, low-friction question
+
+  ## Output Format
+  Return JSON:
+  {
+    "subject_line": "...",
+    "opening_line": "...",
+    "body": "...",
+    "cta": "...",
+    "full_email": "..."
+  }
+
+# ==============================================================================
+# AGENT STEPS
+# ==============================================================================
+
+steps:
+  - id: load_context
+    name: "Load Generation Context"
+    description: "Load niche, personas, and research data"
+    output: { total_leads: integer }
+
+  - id: generate_tier_a
+    name: "Generate Tier A Emails"
+    depends_on: [load_context]
+    parallel_execution: { enabled: true, max_concurrent: 20 }
+    template: tier_a
+    quality_threshold: 70
+    regenerate_if_below: true
+    output: { generated: integer, avg_quality: number }
+
+  - id: generate_tier_b
+    name: "Generate Tier B Emails"
+    depends_on: [load_context]
+    parallel_execution: { enabled: true, max_concurrent: 30 }
+    template: tier_b
+    quality_threshold: 60
+    output: { generated: integer, avg_quality: number }
+
+  - id: generate_tier_c
+    name: "Generate Tier C Emails"
+    depends_on: [load_context]
+    parallel_execution: { enabled: true, max_concurrent: 50 }
+    template: tier_c
+    quality_threshold: 50
+    output: { generated: integer }
+
+  - id: quality_review
+    name: "Quality Review"
+    depends_on: [generate_tier_a, generate_tier_b, generate_tier_c]
+    actions:
+      - score_all_emails
+      - flag_low_quality
+      - calculate_stats
+    output:
+      total_generated: integer
+      avg_quality_score: number
+      quality_distribution: object
+
+# ==============================================================================
+# SYSTEM PROMPT
+# ==============================================================================
+
+system_prompt: |
+  You are an expert cold email copywriter specializing in B2B outreach.
+
+  Writing Principles:
+  - Sound human, not like AI
+  - Be specific, not generic
+  - Focus on THEIR problems, not your features
+  - Short sentences, easy to read
+  - One clear CTA (soft ask)
+
+  Personalization Guidelines:
+  - Tier A: Reference specific content they created
+  - Tier B: Reference company context
+  - Tier C: Reference role-based challenges
+
+  Avoid:
+  - "I hope this email finds you well"
+  - "I'd love to pick your brain"
+  - "As a [title], you probably..."
+  - Starting with "My name is..."
+  - Excessive flattery
+  - Long paragraphs
+
+# ==============================================================================
+# OUTPUT SCHEMA & SUCCESS CRITERIA
+# ==============================================================================
+
+outputs:
+  schema:
+    type: object
+    required: [total_generated, avg_quality_score]
+    properties:
+      total_generated: { type: integer }
+      avg_quality_score: { type: number }
+      tier_a_generated: { type: integer }
+      tier_b_generated: { type: integer }
+      tier_c_generated: { type: integer }
+      quality_distribution: { type: object }
+
+success_criteria:
+  hard:
+    - id: minimum_generated
+      condition: "total_generated >= inputs.leads_researched * 0.95"
+    - id: quality_threshold
+      condition: "avg_quality_score >= 60"
+  soft:
+    - id: high_quality
+      condition: "avg_quality_score >= 75"
+
+handoff:
+  to_agent: personalization_finalizer_agent
+  data:
+    - field: campaign_id
+      source: inputs.campaign_id
+      required: true
+    - field: total_generated
+      source: outputs.total_generated
+      required: true
+  conditions:
+    - "total_generated >= 100"

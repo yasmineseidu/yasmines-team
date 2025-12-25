@@ -1,0 +1,425 @@
+# ==============================================================================
+# AGENT 3.2: WATERFALL ENRICHMENT AGENT
+# ==============================================================================
+# Phase: 3 - Email Verification & Enrichment
+# Purpose: Enrich leads with additional company and contact data
+# Execution: Parallel batch processing with multiple enrichment providers
+# Depends On: Email Verification Agent (3.1)
+# ==============================================================================
+
+agent:
+  id: waterfall_enrichment_agent
+  name: "Waterfall Enrichment Agent"
+  version: "2.0.0"
+  phase: 3
+  phase_name: "Email Verification & Enrichment"
+
+  description: |
+    Enriches leads with additional data including company information,
+    social profiles, tech stack, and intent signals. Uses waterfall
+    approach across multiple data providers.
+
+# ==============================================================================
+# TOOL CONFIGURATION - ENRICHMENT PROVIDERS
+# ==============================================================================
+
+tool_configuration:
+  discovery:
+    enabled: true
+    check_on_startup: true
+
+  priority_tiers:
+    tier_1_free:
+      - name: claude_web_search
+        type: builtin
+        cost_per_call: 0.0
+        use_for: [company_news, recent_funding, job_postings]
+        parallel_limit: 10
+
+      - name: claude_web_fetch
+        type: builtin
+        cost_per_call: 0.0
+        use_for: [company_website_scraping, about_page]
+        parallel_limit: 5
+
+    tier_2_cheap:
+      - name: clearbit_api
+        type: api
+        cost_per_lookup: 0.05
+        use_for: [company_data, tech_stack]
+        daily_limit: 1000
+
+      - name: apollo_enrichment
+        type: api
+        cost_per_lookup: 0.02
+        use_for: [company_data, contact_data]
+        daily_limit: 2000
+
+    tier_3_moderate:
+      - name: zoominfo_api
+        type: api
+        cost_per_lookup: 0.15
+        use_for: [intent_data, org_chart]
+        daily_limit: 500
+
+      - name: builtwith_api
+        type: api
+        cost_per_lookup: 0.10
+        use_for: [tech_stack]
+        daily_limit: 500
+
+  enrichment_strategy:
+    mode: selective_by_tier
+    enrich_tier_a: full
+    enrich_tier_b: standard
+    enrich_tier_c: basic
+
+# ==============================================================================
+# PARALLEL EXECUTION
+# ==============================================================================
+
+parallel_execution:
+  enabled: true
+
+  batch_processing:
+    batch_size: 200
+    max_parallel_batches: 5
+
+  per_lead_parallelism:
+    web_searches: parallel
+    api_calls: sequential_waterfall
+
+# ==============================================================================
+# EXECUTION CONFIGURATION
+# ==============================================================================
+
+execution:
+  mode: parallel_batch
+  timeout_seconds: 7200  # 2 hours
+
+  idempotency:
+    enabled: true
+    key_template: "waterfall_enrichment:{campaign_id}:{lead_id}"
+    ttl_hours: 168
+
+  checkpoint:
+    enabled: true
+    interval_leads: 200
+    storage: postgresql
+    table: workflow_checkpoints
+
+# ==============================================================================
+# RETRY CONFIGURATION
+# ==============================================================================
+
+retry:
+  default:
+    max_attempts: 3
+    strategy: exponential_jitter
+    base_delay_seconds: 5
+    max_delay_seconds: 60
+    retry_on: [ConnectionError, TimeoutError, RateLimitError]
+
+# ==============================================================================
+# COST CONTROLS
+# ==============================================================================
+
+cost_controls:
+  enabled: true
+  budget:
+    max_per_campaign: 150.00
+    max_per_lead: 0.50
+    alert_at_percent: 80
+
+  tier_budgets:
+    tier_a: 0.50  # Full enrichment
+    tier_b: 0.20  # Standard enrichment
+    tier_c: 0.05  # Basic enrichment
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+
+inputs:
+  required:
+    - name: campaign_id
+      type: string
+      format: uuid
+      source: handoff.email_verification_agent.campaign_id
+    - name: leads_with_email
+      type: integer
+      source: handoff.email_verification_agent.leads_with_email
+
+# ==============================================================================
+# DATABASE OPERATIONS
+# ==============================================================================
+
+database:
+  reads:
+    - id: get_leads_for_enrichment
+      table: leads
+      operation: SELECT
+      fields: [id, first_name, last_name, email, job_title, company_name,
+               company_domain, company_linkedin_url, linkedin_url,
+               lead_score, lead_tier]
+      filter: |
+        campaign_id = :campaign_id
+        AND email_status = 'valid'
+        AND enrichment_status IS NULL
+      order_by: "lead_score DESC"
+      pagination:
+        enabled: true
+        batch_size: 200
+      required: true
+
+  writes:
+    - id: update_lead_enrichment
+      table: leads
+      operation: UPDATE
+      timing: per_lead
+      filter: "id = :lead_id"
+      fields:
+        # Company data
+        company_description: { source: enrichment, field: company_description }
+        company_industry: { source: enrichment, field: industry }
+        company_employee_count: { source: enrichment, field: employee_count }
+        company_revenue_range: { source: enrichment, field: revenue_range }
+        company_founded_year: { source: enrichment, field: founded_year }
+        company_tech_stack: { source: enrichment, field: tech_stack, type: jsonb }
+        company_keywords: { source: enrichment, field: keywords, type: jsonb }
+
+        # Enrichment metadata
+        enrichment_data: { source: enrichment, field: full_data, type: jsonb }
+        enrichment_status: { value: "enriched" }
+        enrichment_cost: { source: enrichment, field: cost }
+        enrichment_completed_at: { source: now }
+        updated_at: { source: now }
+
+    - id: update_campaign_enrichment
+      table: campaigns
+      operation: UPDATE
+      timing: on_complete
+      filter: "id = :campaign_id"
+      fields:
+        leads_enriched: { source: agent_output, field: total_enriched }
+        enrichment_cost: { source: agent_output, field: total_cost }
+        enrichment_completed_at: { source: now }
+        status: { value: "enriched" }
+        updated_at: { source: now }
+
+# ==============================================================================
+# ENRICHMENT PROFILES
+# ==============================================================================
+
+enrichment_profiles:
+  # Full enrichment for Tier A leads
+  full:
+    steps:
+      - web_search_company_news
+      - web_search_recent_funding
+      - web_search_job_postings
+      - fetch_company_website
+      - clearbit_company_lookup
+      - apollo_contact_lookup
+      - builtwith_tech_stack
+    max_cost: 0.50
+
+  # Standard enrichment for Tier B leads
+  standard:
+    steps:
+      - web_search_company_news
+      - fetch_company_website
+      - clearbit_company_lookup
+    max_cost: 0.20
+
+  # Basic enrichment for Tier C leads
+  basic:
+    steps:
+      - web_search_company_news
+      - fetch_company_website
+    max_cost: 0.05
+
+# ==============================================================================
+# ENRICHMENT STEPS
+# ==============================================================================
+
+enrichment_steps:
+  web_search_company_news:
+    tool: claude_web_search
+    query: "{{ company_name }} news {{ current_year }}"
+    extract:
+      - recent_news
+      - press_releases
+      - funding_announcements
+    cost: 0.0
+
+  web_search_recent_funding:
+    tool: claude_web_search
+    query: "{{ company_name }} funding raised investment"
+    extract:
+      - funding_amount
+      - funding_date
+      - investors
+    cost: 0.0
+
+  web_search_job_postings:
+    tool: claude_web_search
+    query: "{{ company_name }} careers jobs hiring"
+    extract:
+      - open_positions
+      - growth_signals
+    cost: 0.0
+
+  fetch_company_website:
+    tool: claude_web_fetch
+    url: "https://{{ company_domain }}"
+    fallback_url: "https://www.{{ company_domain }}"
+    extract:
+      - company_description
+      - value_proposition
+      - key_products
+    cost: 0.0
+
+  clearbit_company_lookup:
+    tool: clearbit_api
+    input:
+      domain: "{{ company_domain }}"
+    extract:
+      - industry
+      - employee_count
+      - revenue_range
+      - tech_stack
+      - social_profiles
+    cost: 0.05
+
+  apollo_contact_lookup:
+    tool: apollo_enrichment
+    input:
+      email: "{{ email }}"
+      linkedin_url: "{{ linkedin_url }}"
+    extract:
+      - phone_numbers
+      - social_profiles
+      - education
+      - past_positions
+    cost: 0.02
+
+  builtwith_tech_stack:
+    tool: builtwith_api
+    input:
+      domain: "{{ company_domain }}"
+    extract:
+      - technologies
+      - analytics_tools
+      - marketing_tools
+      - crm_tools
+    cost: 0.10
+
+# ==============================================================================
+# AGENT STEPS
+# ==============================================================================
+
+steps:
+  - id: load_leads
+    name: "Load Leads for Enrichment"
+    output:
+      total_leads: integer
+      by_tier: object
+
+  - id: enrich_tier_a
+    name: "Enrich Tier A Leads (Full)"
+    depends_on: [load_leads]
+    profile: full
+    parallel_execution:
+      enabled: true
+      max_concurrent: 5
+    output:
+      enriched: integer
+      cost: number
+
+  - id: enrich_tier_b
+    name: "Enrich Tier B Leads (Standard)"
+    depends_on: [load_leads]
+    profile: standard
+    parallel_execution:
+      enabled: true
+      max_concurrent: 10
+    output:
+      enriched: integer
+      cost: number
+
+  - id: enrich_tier_c
+    name: "Enrich Tier C Leads (Basic)"
+    depends_on: [load_leads]
+    profile: basic
+    parallel_execution:
+      enabled: true
+      max_concurrent: 20
+    output:
+      enriched: integer
+      cost: number
+
+  - id: finalize
+    name: "Finalize Enrichment"
+    depends_on: [enrich_tier_a, enrich_tier_b, enrich_tier_c]
+    output:
+      total_enriched: integer
+      total_cost: number
+
+# ==============================================================================
+# SYSTEM PROMPT
+# ==============================================================================
+
+system_prompt: |
+  You are a data enrichment specialist gathering additional lead intelligence.
+
+  Enrichment Strategy by Tier:
+  - Tier A (full): All available sources, max $0.50/lead
+  - Tier B (standard): Essential sources, max $0.20/lead
+  - Tier C (basic): Free sources only, max $0.05/lead
+
+  Data to Gather:
+  - Company: Description, size, revenue, industry, tech stack
+  - Contact: Social profiles, phone, education
+  - Signals: Recent news, funding, hiring
+
+  Always use free sources (web search, web fetch) first before paid APIs.
+
+# ==============================================================================
+# OUTPUT SCHEMA
+# ==============================================================================
+
+outputs:
+  schema:
+    type: object
+    required: [total_enriched, total_cost]
+    properties:
+      total_enriched: { type: integer }
+      tier_a_enriched: { type: integer }
+      tier_b_enriched: { type: integer }
+      tier_c_enriched: { type: integer }
+      total_cost: { type: number }
+      avg_cost_per_lead: { type: number }
+
+# ==============================================================================
+# SUCCESS CRITERIA & HANDOFF
+# ==============================================================================
+
+success_criteria:
+  hard:
+    - id: enrichment_complete
+      condition: "total_enriched >= inputs.leads_with_email * 0.9"
+    - id: within_budget
+      condition: "total_cost <= 150.00"
+
+handoff:
+  to_agent: verification_finalizer_agent
+  data:
+    - field: campaign_id
+      source: inputs.campaign_id
+      required: true
+    - field: total_enriched
+      source: outputs.total_enriched
+      required: true
+  conditions:
+    - "total_enriched >= 1000"

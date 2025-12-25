@@ -1,0 +1,700 @@
+# ==============================================================================
+# AGENT 2.1: LEAD LIST BUILDER AGENT
+# ==============================================================================
+# Phase: 2 - Lead Acquisition
+# Purpose: Scrape and import 50K+ leads using Apify LinkedIn Sales Navigator
+# Execution: Parallel Apify actor runs with streaming imports
+# Depends On: Human Gate Approval from Phase 1
+# ==============================================================================
+
+agent:
+  id: lead_list_builder_agent
+  name: "Lead List Builder Agent"
+  version: "2.0.0"
+  phase: 2
+  phase_name: "Lead Acquisition"
+
+  description: |
+    Orchestrates lead scraping using Apify Leads Finder actor (Apollo alternative).
+    Runs multiple parallel scraping jobs with async polling to collect leads,
+    streams results into database in batches, and tracks costs and progress.
+    Fully flexible - works with any number of leads (1 to 100K+).
+
+# ==============================================================================
+# TOOL CONFIGURATION
+# ==============================================================================
+
+tool_configuration:
+  discovery:
+    enabled: true
+    check_on_startup: true
+
+  priority_tiers:
+    tier_1_free:
+      - name: claude_web_search
+        type: builtin
+        description: "For company verification if needed"
+        parallel_limit: 5
+        cost_per_call: 0.0
+
+    tier_2_paid:
+      - name: apify_leads_finder
+        type: apify_actor
+        actor_id: "IoSHqwTR9YGhzccez"
+        description: "Leads Finder - $1.5/1k leads with Emails [Apollo Alternative]"
+        required: true
+        url: "https://console.apify.com/actors/IoSHqwTR9YGhzccez/input"
+
+        config:
+          max_concurrent_runs: 10
+          cost_per_lead: 0.0015  # $1.50 per 1,000 leads
+          max_daily_budget: 500.00
+          max_leads_per_run: 10000  # Can handle larger runs
+          min_leads_per_run: 1000
+
+        # Async polling - results not instant, need to check every 5-10 minutes
+        polling:
+          enabled: true
+          interval_seconds: 300  # Check every 5 minutes
+          max_wait_seconds: 7200  # Max 2 hours
+          partial_results_at: 1000
+          status_check_interval: 60  # Check run status every minute
+
+        # Large result fetching with rate limiting
+        result_fetching:
+          enabled: true
+          max_retries: 5
+          retry_backoff_seconds: 60
+          chunk_size: 1000  # Fetch results in chunks of 1000
+          rate_limit_pause_ms: 500  # Pause between chunks
+          on_timeout: continue_with_partial
+
+      - name: apollo_api
+        type: api
+        description: "Apollo.io for backup lead sourcing"
+        required: false
+        use_for: backup_scraping
+
+# ==============================================================================
+# PARALLEL EXECUTION CONFIGURATION
+# ==============================================================================
+
+parallel_execution:
+  enabled: true
+
+  apify_parallelization:
+    max_concurrent_actors: 10
+    strategy: split_by_search_criteria
+
+    split_criteria:
+      geographic_splits: ["US-West", "US-East", "US-Central", "Canada", "UK"]
+      company_size_splits: ["51-200", "201-500", "501-1000"]
+      seniority_splits: ["C-Suite", "VP", "Director", "Manager"]
+
+    result_handling:
+      stream_results: true
+      batch_size: 500
+      dedupe_as_we_go: true
+      dedupe_key: linkedin_url
+
+  database_insertion:
+    parallel_batches: 5
+    batch_size: 500
+    use_bulk_insert: true
+
+# ==============================================================================
+# EXECUTION CONFIGURATION
+# ==============================================================================
+
+execution:
+  mode: parallel_streaming
+  timeout_seconds: 21600  # 6 hours
+
+  idempotency:
+    enabled: true
+    key_template: "lead_list_builder:{campaign_id}:{date}"
+    ttl_hours: 48
+
+  checkpoint:
+    enabled: true
+    interval_seconds: 60
+    interval_leads: 1000
+    save_apify_run_ids: true
+    storage: postgresql
+    table: workflow_checkpoints
+
+  resume:
+    enabled: true
+    from_checkpoint: true
+    skip_completed_runs: true
+
+# ==============================================================================
+# RETRY CONFIGURATION
+# ==============================================================================
+
+retry:
+  default:
+    max_attempts: 5
+    strategy: exponential_jitter
+    base_delay_seconds: 30
+    max_delay_seconds: 300
+    jitter: true
+
+    retry_on:
+      - ConnectionError
+      - TimeoutError
+      - ApifyActorFailedError
+      - PartialResultsError
+
+    dont_retry_on:
+      - AuthenticationError
+      - InsufficientCreditsError
+      - InvalidSearchCriteriaError
+
+  tool_overrides:
+    apify_leads_finder:
+      max_attempts: 3
+      base_delay_seconds: 60
+      max_delay_seconds: 600
+      retry_granularity: per_actor
+      on_failure:
+        reduce_leads_per_run: 0.5
+        max_reductions: 2
+
+# ==============================================================================
+# RATE LIMITING & COST CONTROLS
+# ==============================================================================
+
+rate_limits:
+  agent:
+    max_leads_per_hour: 10000
+    max_leads_per_day: 100000
+
+  tools:
+    apify_leads_finder:
+      concurrent_actors: 10
+      leads_per_actor: 10000
+      daily_budget: 500.00
+      cost_per_lead: 0.0015  # $1.50 per 1,000 leads
+
+cost_controls:
+  enabled: true
+  budget:
+    max_per_campaign: 500.00
+    max_per_day: 200.00
+    alert_at_percent: 80
+
+  on_budget_exceeded:
+    action: stop_scraping
+    use_partial_results: true
+    alert: true
+
+# ==============================================================================
+# CIRCUIT BREAKER
+# ==============================================================================
+
+circuit_breaker:
+  enabled: true
+
+  per_tool:
+    apify_leads_finder:
+      failure_threshold: 3
+      failure_rate_threshold: 0.5
+      minimum_runs: 5
+      recovery_timeout_seconds: 600
+
+      on_open:
+        action: pause_and_alert
+        alert_channel: "#ops-alerts"
+
+# ==============================================================================
+# INPUTS
+# ==============================================================================
+
+inputs:
+  required:
+    - name: niche_id
+      type: string
+      format: uuid
+      description: "Approved niche ID"
+
+    - name: campaign_name
+      type: string
+      description: "Name for this campaign"
+
+  optional:
+    - name: target_leads
+      type: integer
+      default: null
+      description: "Target number of leads to fetch (no limit - fetch as many as available/needed)"
+
+    - name: geographic_focus
+      type: array
+      items: string
+      default: ["United States"]
+      description: "Locations to include in search"
+
+    - name: locations_exclude
+      type: array
+      items: string
+      default: []
+      description: "Locations to exclude from search"
+
+    - name: email_status_filter
+      type: string
+      default: ""
+      enum: ["", "verified", "unverified"]
+      description: "Filter by email verification status (empty = all)"
+
+    - name: company_website_filter
+      type: string
+      default: ""
+      description: "Filter by company website or exclude competitors"
+
+    - name: keywords_filter
+      type: string
+      default: ""
+      description: "Additional keywords to search for"
+
+    - name: revenue_filter
+      type: string
+      default: ""
+      description: "Company revenue filter (e.g., '$1M-$10M')"
+
+    - name: funding_filter
+      type: string
+      default: ""
+      description: "Company funding filter (e.g., 'Series A')"
+
+    - name: max_budget
+      type: number
+      default: 250.00
+      description: "Maximum budget for this scraping run"
+
+# ==============================================================================
+# DATABASE OPERATIONS
+# ==============================================================================
+
+database:
+  reads:
+    - id: get_niche
+      table: niches
+      operation: SELECT
+      fields: [id, name, slug, industry, job_titles, company_size, location]
+      filter: "id = :niche_id AND status = 'approved'"
+      parameters:
+        niche_id: "{{ inputs.niche_id }}"
+      required: true
+      on_not_found: fail
+
+    - id: get_personas
+      table: personas
+      operation: SELECT
+      fields: [id, job_titles, seniority_level]
+      filter: "niche_id = :niche_id"
+      parameters:
+        niche_id: "{{ inputs.niche_id }}"
+      required: true
+
+    - id: get_niche_research_data
+      description: "Load scraping feasibility indicators from Niche Research"
+      table: niche_research_data
+      operation: SELECT
+      fields:
+        - linkedin_presence
+        - data_availability
+        - email_findability
+        - public_presence_level
+        - company_count_estimate
+        - persona_count_estimate
+      filter: "niche_id = :niche_id"
+      parameters:
+        niche_id: "{{ inputs.niche_id }}"
+      required: false
+      on_not_found: warn
+      warn_message: "No niche research data available - proceeding with default scraping assumptions"
+
+  writes:
+    - id: create_campaign
+      table: campaigns
+      operation: INSERT
+      timing: on_start
+
+      fields:
+        id: { source: generated, type: uuid }
+        niche_id: { source: inputs, field: niche_id }
+        name: { source: inputs, field: campaign_name }
+        status: { value: "building" }
+        target_leads: { source: inputs, field: target_leads }
+        created_at: { source: now }
+        updated_at: { source: now }
+
+      on_conflict:
+        columns: [niche_id, name]
+        action: DO_NOTHING
+        return_existing: true
+
+      returning: [id]
+      output_as: campaign_id
+
+    - id: bulk_insert_leads
+      table: leads
+      operation: BULK_INSERT
+      timing: streaming
+      batch_size: 500
+      parallel_batches: 5
+
+      fields:
+        id: { source: generated, type: uuid }
+        campaign_id: { source: write_output, write_id: create_campaign, field: campaign_id }
+        linkedin_url: { source: iteration, field: linkedinUrl }
+        linkedin_id: { source: iteration, field: linkedinId }
+        first_name: { source: iteration, field: firstName }
+        last_name: { source: iteration, field: lastName }
+        full_name: { source: iteration, field: fullName }
+        headline: { source: iteration, field: headline }
+        job_title: { source: iteration, field: title }
+        seniority: { source: iteration, field: seniority }
+        department: { source: iteration, field: department }
+        company_name: { source: iteration, field: companyName }
+        company_linkedin_url: { source: iteration, field: companyLinkedinUrl }
+        company_domain: { source: iteration, field: companyDomain }
+        company_size: { source: iteration, field: companySize }
+        company_industry: { source: iteration, field: companyIndustry }
+        location: { source: iteration, field: location }
+        city: { source: iteration, field: city }
+        state: { source: iteration, field: state }
+        country: { source: iteration, field: country }
+        email: { source: iteration, field: email, default: null }
+        source: { value: "apify_leads_finder" }
+        source_url: { source: iteration, field: linkedinUrl }
+        status: { value: "new" }
+        created_at: { source: now }
+
+      on_conflict:
+        columns: [campaign_id, linkedin_url]
+        action: DO_NOTHING
+
+    - id: finalize_campaign
+      table: campaigns
+      operation: UPDATE
+      timing: on_complete
+      filter: "id = :campaign_id"
+      parameters:
+        campaign_id: "{{ writes.create_campaign.campaign_id }}"
+      fields:
+        total_leads_scraped: { source: agent_output, field: total_scraped }
+        scraping_cost: { source: agent_output, field: total_cost }
+        status: { value: "leads_scraped" }
+        updated_at: { source: now }
+
+# ==============================================================================
+# AGENT STEPS
+# ==============================================================================
+
+steps:
+  - id: build_search_criteria
+    name: "Build Search Criteria"
+    description: "Construct Apify Leads Finder search criteria from niche and personas"
+
+  - id: approve_search_criteria
+    name: "Approve Search Criteria"
+    description: "Human reviews and approves filters before scraping starts"
+    depends_on: [build_search_criteria]
+
+    human_gate:
+      id: approve_scraping_filters
+      name: "Review Scraping Filters"
+      description: "Review and approve search criteria before spending on Apify"
+      required: true
+
+      display:
+        title: "Scraping Filters for {{ inputs.campaign_name }}"
+        sections:
+          - name: "Target Personas"
+            fields:
+              - job_titles: "{{ db_reads.get_niche.job_titles | join(', ') }}"
+              - industries: "{{ db_reads.get_niche.industry | join(', ') }}"
+          - name: "Company Filters"
+            fields:
+              - company_size: "{{ db_reads.get_niche.company_size | join(', ') }}"
+              - revenue: "{{ inputs.revenue_filter or 'Any' }}"
+              - funding: "{{ inputs.funding_filter or 'Any' }}"
+          - name: "Location"
+            fields:
+              - include: "{{ inputs.geographic_focus | join(', ') }}"
+              - exclude: "{{ inputs.locations_exclude | join(', ') or 'None' }}"
+          - name: "Other Filters"
+            fields:
+              - keywords: "{{ inputs.keywords_filter or 'None' }}"
+              - email_status: "{{ inputs.email_status_filter or 'All' }}"
+          - name: "Budget"
+            fields:
+              - target_leads: "{{ inputs.target_leads or 'No limit' }}"
+              - max_budget: "${{ inputs.max_budget }}"
+              - estimated_cost: "${{ (inputs.target_leads or 10000) * 0.0015 }}"
+
+      editable_fields:
+        - field: job_titles
+          type: text_array
+          description: "Job titles to target"
+        - field: geographic_focus
+          type: text_array
+          description: "Locations to include"
+        - field: locations_exclude
+          type: text_array
+          description: "Locations to exclude"
+        - field: company_size
+          type: select_multiple
+          options: ["1-10", "11-50", "51-200", "201-500", "501-1000", "1001-5000", "5001-10000", "10000+"]
+        - field: keywords_filter
+          type: text
+          description: "Keywords to narrow search"
+        - field: revenue_filter
+          type: text
+          description: "Revenue range (e.g., '$1M-$10M')"
+        - field: email_status_filter
+          type: select
+          options: ["", "verified", "unverified"]
+          description: "Email verification status"
+        - field: target_leads
+          type: number
+          description: "Target number of leads"
+        - field: max_budget
+          type: number
+          description: "Maximum budget ($)"
+
+      actions:
+        - id: approve
+          label: "Start Scraping"
+          style: primary
+          next_step: launch_apify_runs
+        - id: modify
+          label: "Save Changes & Start"
+          saves_edits: true
+          next_step: launch_apify_runs
+        - id: cancel
+          label: "Cancel"
+          next_step: null
+
+    output:
+      approved_criteria: object
+      approved_by: string
+      approved_at: timestamp
+      search_criteria_list: array
+      estimated_total_leads: integer
+      planned_runs: integer
+
+    # Map niche/persona data to Apify input fields
+    apify_input_schema:
+      # Basic fields (from Apify console)
+      numberOfLeads: "{{ inputs.target_leads }}"
+      fileName: "{{ db_reads.get_niche.slug }}-{{ current_date }}"
+      supportEmail: "codecrafter70@gmail.com"  # Default from actor
+
+      # Lead filters - mapped from niche
+      jobTitles: "{{ db_reads.get_niche.job_titles | join(', ') }}"
+      industry: "{{ db_reads.get_niche.industry | join(', ') }}"
+
+      # Location filters - mapped from inputs
+      locationInclude: "{{ inputs.geographic_focus | join(', ') }}"
+      locationExclude: "{{ inputs.locations_exclude | join(', ') }}"
+
+      # Company filters - mapped from niche
+      size: "{{ db_reads.get_niche.company_size | join(', ') }}"
+      companyWebsite: "{{ inputs.company_website_filter }}"
+
+      # Advanced filters - from inputs
+      keywords: "{{ inputs.keywords_filter }}"
+      revenue: "{{ inputs.revenue_filter }}"
+      funding: "{{ inputs.funding_filter }}"
+      emailStatus: "{{ inputs.email_status_filter }}"  # "verified", "unverified", or "" (all)
+
+      # Run options (from Apify console)
+      maxItems: "{{ inputs.target_leads }}"
+      timeout: "300000"  # 5 minutes in ms (300000ms = 300s default)
+      memory: "4096"  # 4GB for large runs
+
+    # Split into multiple runs for parallel execution
+    split_strategy:
+      by_location: true
+      by_company_size: true
+      by_job_title_level: true
+      max_runs: 10
+      min_leads_per_run: 1000
+
+  - id: validate_scraping_feasibility
+    name: "Validate Scraping Feasibility"
+    description: "Check if niche is suitable for LinkedIn scraping based on research data"
+    depends_on: [build_search_criteria]
+    inputs:
+      - db_reads.get_niche_research_data
+
+    validation_rules:
+      linkedin_presence:
+        low:
+          threshold: "low"
+          action: warn
+          message: "LinkedIn presence is low - expect limited results. Consider reducing target_leads."
+          adjust_target: 0.5  # Reduce target by 50%
+        medium:
+          threshold: "medium"
+          action: proceed
+          message: "LinkedIn presence is medium - normal scraping expected."
+        high:
+          threshold: "high"
+          action: proceed
+          message: "LinkedIn presence is high - good scraping expected."
+
+      data_availability:
+        poor:
+          threshold: "poor"
+          action: warn
+          message: "Contact data availability is poor - expect high email enrichment costs."
+          adjust_budget_multiplier: 1.5  # Budget for more enrichment
+        moderate:
+          threshold: "moderate"
+          action: proceed
+        good:
+          threshold: "good"
+          action: proceed
+          message: "Contact data availability is good - lower enrichment costs expected."
+
+      email_findability:
+        difficult:
+          threshold: "difficult"
+          action: warn
+          message: "Email findability is difficult - Phase 3 validation will be critical."
+        moderate:
+          threshold: "moderate"
+          action: proceed
+        easy:
+          threshold: "easy"
+          action: proceed
+          message: "Email findability is easy - faster workflow expected."
+
+      adjust_target_leads:
+        use_estimate_if_available: true
+        estimate_field: persona_count_estimate
+        max_multiplier: 1.5  # Don't exceed estimate by more than 50%
+        fallback_to_input: true
+
+    output:
+      feasibility_validated: boolean
+      adjusted_target_leads: integer
+      warnings: array
+      should_proceed: boolean
+
+  - id: launch_apify_runs
+    name: "Launch Apify Scraping"
+    description: "Start parallel Apify actor runs"
+    depends_on: [approve_search_criteria]
+    condition: "steps.approve_search_criteria.approved = true"
+    parallel_execution:
+      enabled: true
+      max_concurrent: 10
+    for_each: search_criteria_list
+    tool: apify_linkedin_sales_nav
+
+  - id: stream_results
+    name: "Stream Results to Database"
+    depends_on: [launch_apify_runs]
+    streaming:
+      enabled: true
+      batch_size: 500
+      parallel_batches: 5
+
+  - id: finalize_import
+    name: "Finalize Lead Import"
+    depends_on: [stream_results]
+    output:
+      total_scraped: integer
+      total_inserted: integer
+      total_cost: number
+
+# ==============================================================================
+# SYSTEM PROMPT
+# ==============================================================================
+
+system_prompt: |
+  You are a lead acquisition specialist orchestrating lead scraping using Apify Leads Finder.
+
+  Key responsibilities:
+  - Build optimal search criteria to maximize coverage
+  - Run up to 10 parallel Apify actors with async polling (check every 5 minutes)
+  - Fetch results in chunks with rate limiting (handle large result sets gracefully)
+  - Stream results efficiently to database
+  - Stay within budget and track costs
+  - Handle failures gracefully with checkpoints and retries
+
+  **IMPORTANT: Async Polling Behavior**
+  - Results are NOT instant - scraping takes time
+  - Poll run status every 1 minute
+  - Fetch results every 5 minutes once partial results are available
+  - Max wait time: 2 hours per run
+  - If results are large, fetch in chunks of 1000 with 500ms pauses
+
+  Quality targets:
+  - Meet target_leads (configurable, 1K to 100K+)
+  - < 10% duplicate rate
+  - < 5% error rate
+  - < $0.002 cost per lead ($1.50 per 1,000)
+
+# ==============================================================================
+# OUTPUT SCHEMA
+# ==============================================================================
+
+outputs:
+  schema:
+    type: object
+    required: [campaign_id, total_scraped, total_cost]
+    properties:
+      campaign_id: { type: string, format: uuid }
+      total_scraped: { type: integer }
+      total_inserted: { type: integer }
+      total_duplicates: { type: integer }
+      total_cost: { type: number }
+      cost_per_lead: { type: number }
+      apify_run_ids: { type: array }
+
+# ==============================================================================
+# SUCCESS CRITERIA & ERROR HANDLING
+# ==============================================================================
+
+success_criteria:
+  hard:
+    - id: leads_scraped
+      condition: "total_inserted >= 1"
+      description: "At least one lead was successfully scraped"
+    - id: within_budget
+      condition: "total_cost <= inputs.max_budget"
+  soft:
+    - id: target_met
+      condition: "inputs.target_leads IS NULL OR total_inserted >= inputs.target_leads * 0.8"
+      description: "Met target if one was set"
+
+error_handling:
+  scenarios:
+    - error: apify_insufficient_credits
+      action: fail_with_alert
+    - error: apify_actor_failed
+      action: retry_with_smaller_batch
+    - error: budget_exceeded
+      action: stop_gracefully
+      use_partial_results: true
+
+# ==============================================================================
+# HANDOFF
+# ==============================================================================
+
+handoff:
+  to_agent: data_validation_agent
+  data:
+    - field: campaign_id
+      source: outputs.campaign_id
+      required: true
+    - field: total_leads
+      source: outputs.total_inserted
+      required: true
+  conditions:
+    - "total_inserted >= 1"  # Proceed with whatever leads we have
