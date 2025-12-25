@@ -38,8 +38,19 @@ import time
 from datetime import datetime
 from typing import Any
 
-from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, create_sdk_mcp_server
-from claude_agent_sdk.types import AssistantMessage, TextBlock
+from claude_agent_sdk import (
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    HookContext,
+    HookMatcher,
+    create_sdk_mcp_server,
+)
+from claude_agent_sdk.types import (
+    AssistantMessage,
+    PostToolUseHookInput,
+    PreToolUseHookInput,
+    TextBlock,
+)
 
 from src.agents.data_validation.normalizers import normalize_lead
 from src.agents.data_validation.schemas import (
@@ -52,6 +63,133 @@ from src.agents.data_validation.tools import DATA_VALIDATION_TOOLS
 from src.agents.data_validation.validators import validate_lead
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Security Hooks
+# =============================================================================
+
+
+async def validate_tool_inputs(
+    input_data: PreToolUseHookInput,
+    tool_use_id: str | None,
+    context: HookContext,
+) -> dict[str, Any]:
+    """
+    PreToolUse hook to validate tool inputs before execution.
+
+    This hook ensures that only allowed tools are executed and validates
+    that inputs are well-formed. Required when using bypassPermissions mode.
+
+    Args:
+        input_data: Tool input data including tool_name and tool_input.
+        tool_use_id: Unique identifier for this tool use.
+        context: Hook context with session info.
+
+    Returns:
+        Empty dict to allow, or permission denial dict to block.
+    """
+    tool_name = input_data.get("tool_name", "")
+    tool_input = input_data.get("tool_input", {})
+
+    # Only allow our registered validation tools
+    allowed_tools = {
+        "mcp__validation__validate_lead_batch",
+        "mcp__validation__aggregate_validation_results",
+        "mcp__validation__validate_single_lead",
+    }
+
+    if tool_name not in allowed_tools:
+        logger.warning(f"[data_validation] Blocked unauthorized tool: {tool_name}")
+        return {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": f"Tool {tool_name} not allowed for data validation",
+            }
+        }
+
+    # Validate batch validation inputs
+    if tool_name == "mcp__validation__validate_lead_batch":
+        leads = tool_input.get("leads", [])
+        batch_number = tool_input.get("batch_number")
+
+        if not isinstance(leads, list):
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": "leads must be a list",
+                }
+            }
+
+        if batch_number is not None and not isinstance(batch_number, int):
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": "batch_number must be an integer",
+                }
+            }
+
+        # Limit batch size to prevent resource exhaustion
+        max_batch_size = 10000
+        if len(leads) > max_batch_size:
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": f"Batch size {len(leads)} exceeds max {max_batch_size}",
+                }
+            }
+
+    # Validate aggregation inputs
+    if tool_name == "mcp__validation__aggregate_validation_results":
+        batch_results = tool_input.get("batch_results", [])
+        if not isinstance(batch_results, list):
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": "batch_results must be a list",
+                }
+            }
+
+    # Validate single lead inputs
+    if tool_name == "mcp__validation__validate_single_lead":
+        lead = tool_input.get("lead", {})
+        if not isinstance(lead, dict):
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": "lead must be a dictionary",
+                }
+            }
+
+    logger.debug(f"[data_validation] Allowed tool: {tool_name}")
+    return {}
+
+
+async def log_tool_execution(
+    input_data: PostToolUseHookInput,
+    tool_use_id: str | None,
+    context: HookContext,
+) -> dict[str, Any]:
+    """
+    PostToolUse hook to log tool execution for auditing.
+
+    Args:
+        input_data: Tool execution data including results.
+        tool_use_id: Unique identifier for this tool use.
+        context: Hook context with session info.
+
+    Returns:
+        Empty dict (logging only, no modifications).
+    """
+    tool_name = input_data.get("tool_name", "unknown")
+    logger.info(f"[data_validation] Tool executed: {tool_name} (id={tool_use_id})")
+    return {}
 
 
 # =============================================================================
@@ -415,6 +553,7 @@ Use the validate_lead_batch tool to process leads and aggregate_validation_resul
         os.environ.pop("ANTHROPIC_API_KEY", None)
 
         # Query Claude using ClaudeSDKClient
+        # Security: bypassPermissions requires hooks for input validation (per SDK_PATTERNS.md)
         options = ClaudeAgentOptions(
             model=self.model,
             mcp_servers={"validation": mcp_server},  # dict, not list
@@ -425,6 +564,23 @@ Use the validate_lead_batch tool to process leads and aggregate_validation_resul
                 "mcp__validation__aggregate_validation_results",
                 "mcp__validation__validate_single_lead",
             ],
+            # Security hooks to validate inputs before execution
+            hooks={
+                "PreToolUse": [
+                    HookMatcher(
+                        hooks=[validate_tool_inputs],
+                        timeout=30,  # 30 second timeout for validation
+                    )
+                ],
+                "PostToolUse": [
+                    HookMatcher(
+                        hooks=[log_tool_execution],
+                        timeout=10,  # 10 second timeout for logging
+                    )
+                ],
+            },
+            # Load project settings including CLAUDE.md
+            setting_sources=["project"],
         )
 
         async with ClaudeSDKClient(options=options) as client:

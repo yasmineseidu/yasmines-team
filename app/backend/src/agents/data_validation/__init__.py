@@ -26,7 +26,9 @@ from src.agents.data_validation.agent import (
     DataValidationAgent,
     DataValidationAgentError,
     ValidationBatchError,
+    log_tool_execution,
     validate_leads,
+    validate_tool_inputs,
 )
 from src.agents.data_validation.normalizers import (
     derive_full_name,
@@ -66,6 +68,9 @@ __all__ = [
     "DataValidationAgentError",
     "ValidationBatchError",
     "validate_leads",
+    # Security Hooks
+    "validate_tool_inputs",
+    "log_tool_execution",
     # Schemas
     "DataValidationResult",
     "BatchValidationResult",
