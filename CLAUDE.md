@@ -163,6 +163,11 @@ Add errors to the appropriate category table with these columns:
 | LEARN-004 | Mixed type attributes | Use `getattr(obj, 'attr', default)` |
 | LEARN-005 | WebSearch ignores site: | Use natural language, not `site:` operator |
 | LEARN-006 | Google Drive quota exceeded | Set `GOOGLE_DELEGATED_USER` env var, use domain-wide delegation |
+| LEARN-017 | @tool decorator untyped | Add `# type: ignore[misc]` to @tool decorators (SDK lacks stubs) |
+| LEARN-021 | scalar_one_or_none returns Any | Add `# type: ignore[return-value]` to repository methods |
+| LEARN-022 | RetryError exception() returns BaseException | Check `isinstance(exc, Exception)` before passing to record_failure |
+| LEARN-023 | datetime.now() is timezone-naive | Use `datetime.now(UTC)` from `datetime` module |
+| LEARN-024 | Repository API drift | Read repository source before calling; verify method signatures |
 
 Full details with code examples in `.claude/context/SELF-HEALING.md`
 

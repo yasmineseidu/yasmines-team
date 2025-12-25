@@ -679,6 +679,9 @@ If invalid, request corrected email before proceeding.
 | LEARN-002 | Tenacity tuple syntax | High | `incompatible type "type[A] \| type[B]"` | `retry_if_exception_type` expects tuple, not union | `retry_if_exception_type(RateLimitError \| APIError)` | `retry_if_exception_type((RateLimitError, APIError))` | All tenacity retry decorators |
 | LEARN-004 | Mixed type attributes | Med | `AttributeError: 'X' has no attribute 'y'` | Data from APIs/SDK can be dict or object with varying attr names | `subscriber_count = sub.subscribers` | `subscriber_count = getattr(sub, 'subscribers', None) or getattr(sub, 'subscriber_count', 0)` | All agents processing external API/SDK data |
 | LEARN-017 | @tool decorator untyped | Med | `Untyped decorator makes function untyped [misc]` | pre-commit mypy v1.14.1 lacks SDK type stubs; local v1.19.1 differs | `@tool(name="x", ...)` | `@tool(  # type: ignore[misc]` | All @tool decorated functions |
+| LEARN-021 | scalar_one_or_none returns Any | Low | MyPy `Returning Any from function` | SQLAlchemy `scalar_one_or_none()` return type not narrowed | `return result.scalar_one_or_none()` | `return result.scalar_one_or_none()  # type: ignore[return-value]` | All repository methods returning single model |
+| LEARN-022 | RetryError.last_attempt.exception() | Med | `record_failure expects Exception, got BaseException \| None` | tenacity's `last_attempt.exception()` can return `BaseException` | `circuit_breaker.record_failure(e.last_attempt.exception())` | `exc = e.last_attempt.exception(); circuit_breaker.record_failure(exc if isinstance(exc, Exception) else None)` | All retry utilities with circuit breakers |
+| LEARN-023 | datetime.now() naive timezone | Med | Inconsistent timestamps, comparison failures | `datetime.now()` is timezone-naive; UTC required for consistency | `datetime.now()` | `from datetime import UTC; datetime.now(UTC)` | All timestamp fields in orchestrators |
 
 ### Google API Errors
 
@@ -767,6 +770,7 @@ Always use domain-wide delegation for service accounts that need to create Googl
 | LEARN-008 | Missing SQLAlchemy models | High | `AttributeError` when trying to query tables | Tables exist in Supabase but no ORM models in codebase | Querying tables that don't have models | Create SQLAlchemy models matching Supabase schema exactly | All agents needing DB access |
 | LEARN-009 | Alembic vs Supabase drift | Med | Alembic shows 1 migration but DB has 100+ tables | Tables created via Supabase dashboard, not Alembic | Assuming Alembic is source of truth | Check `DATABASE_TABLES.txt` export for actual schema | New developers, schema changes |
 | LEARN-010 | Missing FK columns | High | Agent expects `personas.niche_id` but column missing | YAML spec defined relationship but schema didn't have FK | `persona.niche_id = niche_id` (fails) | Add FK column: `ALTER TABLE personas ADD COLUMN niche_id UUID REFERENCES niches(id)` | All agents with cross-table relationships |
+| LEARN-024 | Repository API drift | High | `TypeError` or `AttributeError` at runtime | Orchestrator calls repository method with wrong params/name | `lead_repo.update_lead(id, data)` | Verify method signature before calling; use IDE autocomplete or read repository source | All orchestrators calling repositories |
 
 **LEARN-007 Details:**
 
@@ -949,6 +953,52 @@ async def test_my_tool():
     result = await _my_tool({"arg": "value"})
     assert result["content"][0]["text"] == "expected"
 ```
+
+---
+
+**LEARN-024 Details:**
+
+**Problem:**
+Orchestrators (Phase1, Phase2, Phase3, Master) call repository methods, but the method signatures and names drift during development. Common mismatches:
+
+1. **Method name changes**: `mark_as_cross_campaign_duplicate` → `mark_cross_campaign_duplicate`
+2. **Parameter name changes**: `score_breakdown` → `breakdown`
+3. **Attribute name changes**: `linkedin_leads` → `primary_actor_leads`
+4. **Extra parameters**: Passing parameters repository doesn't accept
+5. **Missing methods**: Calling methods that don't exist
+
+**Examples Fixed:**
+```python
+# WRONG - extra parameters
+await lead_repo.update_lead_validation(
+    lead_id=id, is_valid=True, validation_errors=[],
+    validation_status="valid",  # DOESN'T EXIST
+    normalized_data={}          # DOESN'T EXIST
+)
+
+# CORRECT - only accepted params
+await lead_repo.update_lead_validation(
+    lead_id=id, is_valid=True, validation_errors=[]
+)
+
+# WRONG - old method name
+await lead_repo.mark_as_cross_campaign_duplicate(...)
+
+# CORRECT - actual method name
+await lead_repo.mark_cross_campaign_duplicate(...)
+
+# WRONG - old attribute name
+result.linkedin_leads
+
+# CORRECT - actual attribute name
+result.primary_actor_leads
+```
+
+**Prevention:**
+1. Read repository source before calling methods
+2. Use IDE autocomplete for method signatures
+3. Run type checker after connecting orchestrator to repository
+4. Add integration tests that exercise full orchestrator → repository flow
 
 ---
 
