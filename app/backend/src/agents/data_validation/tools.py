@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
-@tool(  # type: ignore[misc]
+@tool(
     name="validate_lead_batch",
     description=(
         "Validate and normalize a batch of leads. "
@@ -178,7 +178,7 @@ def _extract_error_type(error_message: str) -> str:
 # =============================================================================
 
 
-@tool(  # type: ignore[misc]
+@tool(
     name="aggregate_validation_results",
     description=(
         "Aggregate validation results from all batches. "
@@ -282,7 +282,7 @@ async def aggregate_validation_results_tool(args: dict[str, Any]) -> dict[str, A
 # =============================================================================
 
 
-@tool(  # type: ignore[misc]
+@tool(
     name="validate_single_lead",
     description=(
         "Validate and normalize a single lead. "
