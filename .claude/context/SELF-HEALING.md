@@ -949,3 +949,37 @@ async def test_my_tool():
     result = await _my_tool({"arg": "value"})
     assert result["content"][0]["text"] == "expected"
 ```
+
+---
+
+**LEARN-018 Details:**
+
+| ID | Error | Sev | Symptom | Root Cause | Wrong Code | Correct Code | Affects |
+|----|-------|-----|---------|------------|------------|--------------|---------|
+| LEARN-018 | YAML duplicate keys | Med | `found duplicate key "X" with value` | Same key appears twice under same parent | Two `output:` blocks in one step | Merge duplicates or rename | All YAML agent specs |
+| LEARN-019 | YAML block collection | Med | `did not find expected '-' indicator` | Sibling key at wrong indent after list | `conditions:\n  - "x"\n  description:` | `conditions:\n  - "x"  # comment` | YAML specs with conditions |
+| LEARN-020 | YAML flow mapping brackets | Low | `did not find expected ',' or '}'` | Special chars like `[]` in inline dict | `type: text[]` | `type: "text[]"` | YAML with PostgreSQL array types |
+
+**Problem:**
+YAML specs can fail pre-commit checks due to subtle syntax issues. Common problems:
+1. **Duplicate keys** - Two keys with same name at same level (e.g., two `output:` blocks)
+2. **Block collection misalignment** - A key after a list item at wrong indentation
+3. **Unquoted special characters** - PostgreSQL types like `text[]` need quoting
+
+**Fix Examples:**
+```yaml
+# WRONG - description is sibling to list item
+conditions:
+  - "total >= 1"
+  description: "Some text"
+
+# CORRECT - use comment instead
+conditions:
+  - "total >= 1"  # Some text
+
+# WRONG - special chars unquoted
+persona_tags: { type: text[] }
+
+# CORRECT - quote special chars
+persona_tags: { type: "text[]" }
+```
