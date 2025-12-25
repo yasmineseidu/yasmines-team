@@ -28,10 +28,10 @@ tool_configuration:
     enabled: true
     check_on_startup: true
 
-  # Email finder waterfall - cheapest to most expensive
+  # Email finder waterfall - ordered by user preference
   email_finder_waterfall:
-    # Tier 1: Free/Cheapest
-    tier_1_cheap:
+    # Priority order: Tomba → Muraena → Voila Norbert → Nimbler → Icypeas → Anymailfinder → Findymail
+    tier_1_primary:
       - name: tomba_io
         type: api
         cost_per_lookup: 0.002
@@ -39,66 +39,66 @@ tool_configuration:
         daily_limit: 5000
         priority: 1
 
-      - name: hunter_io
+      - name: muraena
         type: api
-        cost_per_lookup: 0.003
-        accuracy: 0.88
-        daily_limit: 3000
+        cost_per_lookup: 0.012
+        accuracy: 0.87
+        daily_limit: 1500
         priority: 2
 
-    # Tier 2: Moderate
-    tier_2_moderate:
-      - name: findymail
+      - name: voila_norbert
         type: api
-        cost_per_lookup: 0.008
-        accuracy: 0.90
-        daily_limit: 2000
+        cost_per_lookup: 0.015
+        accuracy: 0.92
+        daily_limit: 1000
         priority: 3
+
+    tier_2_secondary:
+      - name: nimbler
+        type: api
+        cost_per_lookup: 0.010
+        accuracy: 0.86
+        daily_limit: 2000
+        priority: 4
 
       - name: icypeas
         type: api
         cost_per_lookup: 0.010
         accuracy: 0.88
         daily_limit: 2000
-        priority: 4
-
-      - name: muraena
-        type: api
-        cost_per_lookup: 0.012
-        accuracy: 0.87
-        daily_limit: 1500
         priority: 5
 
-    # Tier 3: Premium
-    tier_3_premium:
-      - name: voila_norbert
+      - name: anymailfinder
         type: api
-        cost_per_lookup: 0.015
-        accuracy: 0.92
-        daily_limit: 1000
+        cost_per_lookup: 0.012
+        accuracy: 0.85
+        daily_limit: 1500
         priority: 6
 
-      - name: apollo_enrichment
+    tier_3_fallback:
+      - name: findymail
         type: api
-        cost_per_lookup: 0.020
+        cost_per_lookup: 0.008
         accuracy: 0.90
-        daily_limit: 1000
+        daily_limit: 2000
         priority: 7
 
-  # Email verification
+  # Email verification - Reoon first, MailVerify for catchall
   email_verification:
     - name: reoon_verifier
       type: api
       cost_per_verify: 0.003
       accuracy: 0.98
       required: true
+      primary: true
 
-    - name: neverbounce
+    - name: mailverify
       type: api
-      cost_per_verify: 0.008
-      accuracy: 0.99
+      cost_per_verify: 0.005
+      accuracy: 0.97
       required: false
-      use_for: high_value_leads
+      use_for: [catchall_verification, secondary_verification]
+      catchall_handler: true  # Specifically handles catchall emails
 
   waterfall_strategy:
     mode: stop_on_success
@@ -189,14 +189,17 @@ rate_limits:
     lookups_per_hour: 5000
 
   providers:
+    # Email finders (order: Tomba → Muraena → Voila Norbert → Nimbler → Icypeas → Anymailfinder → Findymail)
     tomba_io: { rpm: 60, daily: 5000 }
-    hunter_io: { rpm: 50, daily: 3000 }
-    findymail: { rpm: 40, daily: 2000 }
-    icypeas: { rpm: 40, daily: 2000 }
     muraena: { rpm: 30, daily: 1500 }
     voila_norbert: { rpm: 30, daily: 1000 }
-    apollo_enrichment: { rpm: 30, daily: 1000 }
+    nimbler: { rpm: 40, daily: 2000 }
+    icypeas: { rpm: 40, daily: 2000 }
+    anymailfinder: { rpm: 30, daily: 1500 }
+    findymail: { rpm: 40, daily: 2000 }
+    # Verification (Reoon primary, MailVerify for catchall)
     reoon_verifier: { rpm: 100, daily: 10000 }
+    mailverify: { rpm: 80, daily: 8000 }
 
 cost_controls:
   enabled: true
@@ -364,7 +367,8 @@ waterfall_logic:
 
   # Step 4: Verify found email
   verification:
-    provider: reoon_verifier
+    primary_provider: reoon_verifier
+    catchall_provider: mailverify  # Use MailVerify specifically for catchall
 
     valid_statuses:
       - valid
@@ -374,7 +378,11 @@ waterfall_logic:
       - invalid
       - disposable
       - role_based
-      - catch_all  # Flag but may accept
+
+    catchall_handling:
+      on_catchall_from_reoon: verify_with_mailverify
+      mailverify_valid_statuses: [valid, deliverable]
+      mailverify_invalid_statuses: [invalid, undeliverable]
 
 # ==============================================================================
 # AGENT STEPS
@@ -412,7 +420,7 @@ steps:
 
   - id: verify_emails
     name: "Verify Found Emails"
-    description: "Verify all found and existing emails"
+    description: "Verify all found and existing emails with Reoon, catchall with MailVerify"
     depends_on: [enrich_emails]
 
     parallel_execution:
@@ -420,14 +428,18 @@ steps:
       max_concurrent: 50
 
     verification:
-      provider: reoon_verifier
+      primary_provider: reoon_verifier
+      catchall_provider: mailverify
       batch_size: 100
+      catchall_recheck: true  # Re-verify catchall emails with MailVerify
 
     output:
       emails_verified: integer
       emails_valid: integer
       emails_invalid: integer
       emails_risky: integer
+      emails_catchall: integer
+      catchall_verified_valid: integer
 
   - id: finalize
     name: "Finalize Enrichment"
@@ -449,18 +461,26 @@ system_prompt: |
   Waterfall Strategy:
   1. Check if email already exists
   2. Try pattern-based guess (free)
-  3. Use cheapest provider first (Tomba, Hunter)
-  4. Escalate to premium providers only if needed
-  5. Always verify found emails
+  3. Use waterfall providers in priority order
+  4. Always verify found emails with Reoon
+  5. Use MailVerify specifically for catchall emails
 
-  Provider Priority (cheapest first):
-  1. Tomba.io ($0.002/lookup)
-  2. Hunter.io ($0.003/lookup)
-  3. Findymail ($0.008/lookup)
-  4. Icypeas ($0.010/lookup)
-  5. Muraena ($0.012/lookup)
-  6. Voila Norbert ($0.015/lookup)
-  7. Apollo ($0.020/lookup)
+  Email Finder Priority Order:
+  1. Tomba.io ($0.002/lookup) - Primary, cheapest
+  2. Muraena ($0.012/lookup) - High accuracy
+  3. Voila Norbert ($0.015/lookup) - Premium accuracy
+  4. Nimbler ($0.010/lookup) - Good coverage
+  5. Icypeas ($0.010/lookup) - Backup
+  6. Anymailfinder ($0.012/lookup) - Wide net
+  7. Findymail ($0.008/lookup) - Last resort
+
+  Verification Order:
+  1. Reoon ($0.003/verify) - Primary verifier for all emails
+  2. MailVerify ($0.005/verify) - Secondary + catchall handler
+
+  Catchall Handling:
+  - If Reoon returns "catchall", send to MailVerify for confirmation
+  - MailVerify has better catchall detection accuracy
 
   Quality Goals:
   - Find rate: 70%+ of leads
