@@ -568,13 +568,13 @@ Use the validate_lead_batch tool to process leads and aggregate_validation_resul
             hooks={
                 "PreToolUse": [
                     HookMatcher(
-                        hooks=[validate_tool_inputs],  # type: ignore[list-item]
+                        hooks=[validate_tool_inputs],
                         timeout=30,  # 30 second timeout for validation
                     )
                 ],
                 "PostToolUse": [
                     HookMatcher(
-                        hooks=[log_tool_execution],  # type: ignore[list-item]
+                        hooks=[log_tool_execution],
                         timeout=10,  # 10 second timeout for logging
                     )
                 ],
