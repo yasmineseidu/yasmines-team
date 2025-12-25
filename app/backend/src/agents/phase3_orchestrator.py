@@ -157,6 +157,9 @@ class EmailVerificationResult:
     emails_verified: int = 0
     emails_invalid: int = 0
     emails_not_found: int = 0
+    emails_risky: int = 0  # Accepted but flagged
+    emails_catchall: int = 0  # Detected as catchall by Reoon
+    catchall_verified_valid: int = 0  # Catchall emails verified valid by MailVerify
     total_cost_usd: float = 0.0
     provider_breakdown: dict[str, dict[str, Any]] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
@@ -710,9 +713,9 @@ class Phase3Orchestrator:
         Run Email Verification Agent (3.1) and persist results.
 
         Uses waterfall pattern to find emails:
-        Tomba → Hunter → Findymail → Icypeas → Muraena → Norbert → Apollo
+        Tomba → Muraena → Voila Norbert → Nimbler → Icypeas → Anymailfinder → Findymail
 
-        Then verifies emails with Reoon.
+        Then verifies emails with Reoon (primary), MailVerify for catchall.
 
         Returns:
             EmailVerificationResult with found/verified counts and costs
