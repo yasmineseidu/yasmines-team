@@ -67,6 +67,17 @@ from src.integrations.anymailfinder import (
     EmailStatus,
     VerificationResult,
 )
+from src.integrations.apify import (
+    ApifyActorId,
+    ApifyAuthenticationError,
+    ApifyError,
+    ApifyLead,
+    ApifyLeadScraperClient,
+    ApifyRateLimitError,
+    ApifyRunStatus,
+    ApifyScrapeResult,
+    ApifyTimeoutError,
+)
 from src.integrations.autobound import (
     AutoboundClient,
     AutoboundContent,
@@ -512,4 +523,14 @@ __all__ = [
     "MessageEntityType",
     "InlineKeyboardButton",
     "InlineKeyboardMarkup",
+    # Apify (Lead Scraping via Actors)
+    "ApifyLeadScraperClient",
+    "ApifyError",
+    "ApifyAuthenticationError",
+    "ApifyRateLimitError",
+    "ApifyTimeoutError",
+    "ApifyActorId",
+    "ApifyRunStatus",
+    "ApifyLead",
+    "ApifyScrapeResult",
 ]
