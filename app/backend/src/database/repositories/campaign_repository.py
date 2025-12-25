@@ -350,6 +350,121 @@ class CampaignRepository:
         )
 
     # =========================================================================
+    # Phase 3 Agent Updates
+    # =========================================================================
+
+    async def update_email_verification_results(
+        self,
+        campaign_id: str | UUID,
+        emails_found: int,
+        emails_verified: int,
+        verification_cost: float,
+    ) -> CampaignModel | None:
+        """
+        Update campaign after Phase 3 Email Verification (Agent 3.1).
+
+        Args:
+            campaign_id: Campaign UUID
+            emails_found: Number of emails found via waterfall
+            emails_verified: Number of emails verified
+            verification_cost: Total cost of verification
+
+        Returns:
+            Updated campaign
+        """
+        # Note: CampaignModel needs email verification fields added
+        # For now, store in import_summary as extension
+        campaign = await self.get_campaign(campaign_id)
+        if not campaign:
+            return None
+
+        import_summary = campaign.import_summary or {}
+        import_summary["phase3_email_verification"] = {
+            "emails_found": emails_found,
+            "emails_verified": emails_verified,
+            "verification_cost": verification_cost,
+        }
+
+        return await self.update_campaign(
+            campaign_id,
+            import_summary=import_summary,
+        )
+
+    async def update_enrichment_results(
+        self,
+        campaign_id: str | UUID,
+        total_enriched: int,
+        enrichment_cost: float,
+    ) -> CampaignModel | None:
+        """
+        Update campaign after Phase 3 Waterfall Enrichment (Agent 3.2).
+
+        Args:
+            campaign_id: Campaign UUID
+            total_enriched: Number of leads enriched
+            enrichment_cost: Total cost of enrichment
+
+        Returns:
+            Updated campaign
+        """
+        campaign = await self.get_campaign(campaign_id)
+        if not campaign:
+            return None
+
+        import_summary = campaign.import_summary or {}
+        import_summary["phase3_enrichment"] = {
+            "total_enriched": total_enriched,
+            "enrichment_cost": enrichment_cost,
+        }
+
+        return await self.update_campaign(
+            campaign_id,
+            import_summary=import_summary,
+        )
+
+    async def update_verification_results(
+        self,
+        campaign_id: str | UUID,
+        tier_a_ready: int,
+        tier_b_ready: int,
+        tier_c_ready: int,
+        total_ready: int,
+        quality_report: dict[str, Any] | None = None,
+    ) -> CampaignModel | None:
+        """
+        Update campaign after Phase 3 Verification Finalizer (Agent 3.3).
+
+        Args:
+            campaign_id: Campaign UUID
+            tier_a_ready: Tier A leads ready
+            tier_b_ready: Tier B leads ready
+            tier_c_ready: Tier C leads ready
+            total_ready: Total leads ready for Phase 4
+            quality_report: Optional quality report summary
+
+        Returns:
+            Updated campaign
+        """
+        campaign = await self.get_campaign(campaign_id)
+        if not campaign:
+            return None
+
+        import_summary = campaign.import_summary or {}
+        import_summary["phase3_verification"] = {
+            "tier_a_ready": tier_a_ready,
+            "tier_b_ready": tier_b_ready,
+            "tier_c_ready": tier_c_ready,
+            "total_ready": total_ready,
+            "quality_report": quality_report or {},
+        }
+
+        return await self.update_campaign(
+            campaign_id,
+            import_summary=import_summary,
+            status="verified" if total_ready > 0 else campaign.status,
+        )
+
+    # =========================================================================
     # Dedup Logs
     # =========================================================================
 

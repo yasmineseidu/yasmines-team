@@ -155,6 +155,10 @@ class LeadRepository:
         campaign_id: str | UUID,
         status: str | list[str] | None = None,
         exclude_status: str | list[str] | None = None,
+        needs_email: bool | None = None,
+        has_verified_email: bool | None = None,
+        tier: str | None = None,
+        is_enriched: bool | None = None,
         limit: int | None = None,
         offset: int = 0,
     ) -> list[LeadModel]:
@@ -165,6 +169,10 @@ class LeadRepository:
             campaign_id: Campaign UUID
             status: Filter by status(es)
             exclude_status: Exclude leads with these status(es)
+            needs_email: If True, only leads with linkedin_url but no email
+            has_verified_email: If True, only leads with verified emails
+            tier: Filter by lead tier (A, B, C)
+            is_enriched: If True, only enriched leads; if False, only non-enriched
             limit: Max results to return
             offset: Offset for pagination
 
@@ -187,6 +195,46 @@ class LeadRepository:
                 query = query.where(LeadModel.status != exclude_status)
             else:
                 query = query.where(~LeadModel.status.in_(exclude_status))
+
+        # Phase 3 filters
+        if needs_email is True:
+            # Leads with LinkedIn URL but no email
+            query = query.where(
+                and_(
+                    LeadModel.linkedin_url.isnot(None),
+                    LeadModel.linkedin_url != "",
+                    or_(LeadModel.email.is_(None), LeadModel.email == ""),
+                )
+            )
+
+        if has_verified_email is True:
+            # Leads with verified emails
+            query = query.where(
+                and_(
+                    LeadModel.email.isnot(None),
+                    LeadModel.email != "",
+                    LeadModel.email_status == "verified",
+                )
+            )
+        elif has_verified_email is False:
+            # Leads without verified emails
+            query = query.where(
+                or_(
+                    LeadModel.email.is_(None),
+                    LeadModel.email == "",
+                    LeadModel.email_status != "verified",
+                )
+            )
+
+        if tier:
+            query = query.where(LeadModel.lead_tier == tier)
+
+        if is_enriched is True:
+            # Leads that have been enriched (have score_breakdown data)
+            query = query.where(LeadModel.status == "enriched")
+        elif is_enriched is False:
+            # Leads not yet enriched
+            query = query.where(LeadModel.status != "enriched")
 
         query = query.offset(offset)
         if limit:

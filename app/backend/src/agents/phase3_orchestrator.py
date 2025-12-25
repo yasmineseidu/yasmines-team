@@ -208,8 +208,10 @@ class Phase3Result:
     total_ready: int = 0
     tier_a_ready: int = 0
     tier_b_ready: int = 0
+    tier_c_ready: int = 0
     verified_sheet_url: str | None = None
     quality_report_url: str | None = None
+    quality_report: dict[str, Any] = field(default_factory=dict)
 
     # Costs
     total_cost_usd: float = 0.0
@@ -590,8 +592,11 @@ class Phase3Orchestrator:
             # Persist to campaign
             await self.campaign_repo.update_verification_results(
                 campaign_id=campaign_id,
+                tier_a_ready=result.tier_a_ready,
+                tier_b_ready=result.tier_b_ready,
+                tier_c_ready=result.tier_c_ready,
                 total_ready=result.total_ready,
-                verified_sheet_url=result.verified_sheet_url or "",
+                quality_report=result.quality_report,
             )
             await self.campaign_repo.log_action(
                 campaign_id=campaign_id,
