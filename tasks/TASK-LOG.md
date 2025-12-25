@@ -4,6 +4,7 @@ Chronological record of completed tasks.
 
 | Date | Domain | Task | Status | Feature |
 |------|--------|------|--------|---------|
+| 2025-12-25 | backend | 008-agent-2-4-cross-campaign-dedup | COMPLETED | Cross-Campaign Dedup Agent (Phase 2, Agent 2.4) |
 | 2025-12-25 | backend | 006-agent-2-2-data-validation | COMPLETED | Data Validation Agent (Phase 2, Agent 2.2) |
 | 2025-12-24 | backend | 002-persona-research-agent | COMPLETED | Persona Research Agent (Phase 1, Agent 1.2) |
 | 2025-12-24 | backend | phase1-ecosystem-validation | COMPLETED | Phase 1 Agent Ecosystem Validation (6 issues, 6 tasks generated) |
@@ -23,6 +24,36 @@ Chronological record of completed tasks.
 ---
 
 ## 2025-12-25
+
+### Completed: 008-agent-2-4-cross-campaign-dedup
+- **Implemented:** Cross-Campaign Dedup Agent (Phase 2, Agent 2.4)
+- **Purpose:** Identifies and excludes leads that exist across campaigns based on historical matching and exclusion rules
+- **Files created:**
+  - `app/backend/src/agents/cross_campaign_dedup/agent.py` - Main CrossCampaignDedupAgent class
+  - `app/backend/src/agents/cross_campaign_dedup/__init__.py` - Module exports
+  - `app/backend/__tests__/unit/agents/cross_campaign_dedup/test_agent.py` - 43 unit tests
+- **Features:**
+  - Multi-layer deduplication:
+    - Suppression list matching (case-insensitive)
+    - LinkedIn URL history matching (with trailing slash normalization)
+    - Email history matching with status checks (bounced, unsubscribed, complained)
+    - Fuzzy name+company matching using difflib.SequenceMatcher
+  - SDK MCP tools for AI-orchestrated workflows
+  - Configurable lookback period (default: 90 days)
+  - Configurable fuzzy threshold (default: 0.85)
+  - Priority-based exclusion (suppression > LinkedIn > email > fuzzy)
+  - Detailed exclusion reporting with match confidence scores
+- **SDK Patterns Applied:**
+  - Pure agent pattern (no database side effects, orchestrator handles persistence)
+  - Direct processing in run() method for efficiency
+  - SDK MCP tools with @tool decorator for AI orchestration
+- **Quality:**
+  - 43 unit tests (all passing)
+  - All quality checks pass (ruff, mypy)
+  - Added mypy overrides for @tool decorator in pyproject.toml
+- **Commit:** `fee281f`
+
+---
 
 ### Completed: 006-agent-2-2-data-validation
 - **Implemented:** Data Validation Agent (Phase 2, Agent 2.2)
