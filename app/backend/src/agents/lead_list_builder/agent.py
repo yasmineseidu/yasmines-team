@@ -1,10 +1,12 @@
 """
 Lead List Builder Agent - Phase 2, Agent 2.1.
 
-Uses Claude Agent SDK with Apify actors to scrape leads from:
-- LinkedIn Sales Navigator (primary source)
-- LinkedIn Search (fallback)
-- Apollo.io (enrichment/supplementary)
+Uses Claude Agent SDK with Apify actors to scrape leads using a
+cost-effective waterfall pattern:
+
+1. Leads Finder Primary ($1.5/1k leads with emails) - IoSHqwTR9YGhzccez
+2. Leads Scraper PPE (fallback) - T1XDXWc1L92AfIJtd
+3. Leads Scraper Multi (last resort) - VYRyEF4ygTTkaIghe
 
 This agent receives persona and niche data from Phase 1 and builds
 targeted lead lists based on job titles, industries, and company sizes.
@@ -86,9 +88,9 @@ class LeadListBuilderResult:
     total_scraped: int = 0
     target_leads: int = 0
 
-    # Source breakdown
-    linkedin_leads: int = 0
-    apollo_leads: int = 0
+    # Source breakdown (tracked by Apify actor)
+    primary_actor_leads: int = 0  # From Leads Finder Primary
+    fallback_actor_leads: int = 0  # From PPE or Multi scrapers
 
     # Cost tracking
     total_cost_usd: float = 0.0
@@ -110,8 +112,8 @@ class LeadListBuilderResult:
             "status": self.status,
             "total_scraped": self.total_scraped,
             "target_leads": self.target_leads,
-            "linkedin_leads": self.linkedin_leads,
-            "apollo_leads": self.apollo_leads,
+            "primary_actor_leads": self.primary_actor_leads,
+            "fallback_actor_leads": self.fallback_actor_leads,
             "total_cost_usd": self.total_cost_usd,
             "execution_time_ms": self.execution_time_ms,
             "apify_runs": self.apify_runs,
@@ -126,133 +128,47 @@ class LeadListBuilderResult:
 
 
 @tool(  # type: ignore[misc]
-    name="scrape_linkedin_leads",
+    name="scrape_leads",
     description=(
-        "Scrape leads from LinkedIn using a search URL. "
-        "Supports both regular LinkedIn search and Sales Navigator. "
-        "Returns lead data including name, title, company, and LinkedIn URL."
+        "Scrape B2B leads using Apify's cost-effective waterfall pattern. "
+        "Tries actors in order: Leads Finder Primary ($1.5/1k), PPE (fallback), "
+        "Multi (last resort). Returns lead data including name, email, title, company."
     ),
     input_schema={
-        "search_url": str,
+        "job_titles": list,
+        "seniority_levels": list,
+        "industries": list,
+        "company_sizes": list,
+        "locations": list,
+        "keywords": list,
         "max_leads": int,
-        "use_sales_navigator": bool,
-        "session_cookie": str,
         "apify_token": str,
     },
 )
-async def scrape_linkedin_leads_tool(args: dict[str, Any]) -> dict[str, Any]:
+async def scrape_leads_tool(args: dict[str, Any]) -> dict[str, Any]:
     """
-    SDK MCP tool for scraping LinkedIn leads via Apify.
+    SDK MCP tool for scraping leads via Apify waterfall pattern.
 
     This tool creates its own Apify client using provided credentials,
     following the SDK pattern where tools are self-contained (LEARN-003).
 
-    Args:
-        args: Tool arguments with search URL, max leads, and credentials.
-
-    Returns:
-        Tool result with leads data.
-    """
-    search_url = args["search_url"]
-    max_leads = args.get("max_leads", 1000)
-    use_sales_navigator = args.get("use_sales_navigator", False)
-    session_cookie = args.get("session_cookie")
-    apify_token = args.get("apify_token", os.getenv("APIFY_API_TOKEN", ""))
-
-    if not apify_token:
-        return {
-            "content": [{"type": "text", "text": "Apify API token not provided"}],
-            "is_error": True,
-        }
-
-    if not search_url:
-        return {
-            "content": [{"type": "text", "text": "LinkedIn search URL is required"}],
-            "is_error": True,
-        }
-
-    try:
-        client = ApifyLeadScraperClient(api_token=apify_token)
-
-        async with client:
-            if use_sales_navigator:
-                result = await client.scrape_linkedin_sales_navigator(
-                    search_url=search_url,
-                    max_leads=max_leads,
-                    session_cookie=session_cookie,
-                )
-            else:
-                result = await client.scrape_linkedin_leads(
-                    search_url=search_url,
-                    max_leads=max_leads,
-                )
-
-        leads_data = [lead.to_dict() for lead in result.leads]
-
-        return {
-            "content": [
-                {
-                    "type": "text",
-                    "text": f"Scraped {len(leads_data)} leads from LinkedIn",
-                }
-            ],
-            "data": {
-                "leads": leads_data,
-                "run_id": result.run_id,
-                "cost_usd": result.cost_usd,
-                "duration_secs": result.duration_secs,
-            },
-        }
-
-    except ApifyRateLimitError as e:
-        logger.warning(f"LinkedIn scraping rate limited: {e}")
-        return {
-            "content": [{"type": "text", "text": f"Rate limit exceeded: {e}"}],
-            "is_error": True,
-        }
-    except ApifyError as e:
-        logger.error(f"LinkedIn scraping failed: {e}")
-        return {
-            "content": [{"type": "text", "text": f"Apify error: {e}"}],
-            "is_error": True,
-        }
-    except Exception as e:
-        logger.error(f"Unexpected error scraping LinkedIn: {e}")
-        return {
-            "content": [{"type": "text", "text": f"Error: {e}"}],
-            "is_error": True,
-        }
-
-
-@tool(  # type: ignore[misc]
-    name="scrape_apollo_leads",
-    description=(
-        "Scrape leads from Apollo.io. "
-        "Provide search filters like job titles, industries, and company sizes."
-    ),
-    input_schema={
-        "job_titles": list,
-        "industries": list,
-        "company_sizes": list,
-        "locations": list,
-        "max_leads": int,
-        "apify_token": str,
-    },
-)
-async def scrape_apollo_leads_tool(args: dict[str, Any]) -> dict[str, Any]:
-    """
-    SDK MCP tool for scraping Apollo.io leads via Apify.
+    Uses waterfall pattern:
+    1. Leads Finder Primary (IoSHqwTR9YGhzccez) - $1.5/1k leads
+    2. Leads Scraper PPE (T1XDXWc1L92AfIJtd) - fallback
+    3. Leads Scraper Multi (VYRyEF4ygTTkaIghe) - last resort
 
     Args:
-        args: Tool arguments with search filters.
+        args: Tool arguments with search criteria and credentials.
 
     Returns:
         Tool result with leads data.
     """
     job_titles = args.get("job_titles", [])
+    seniority_levels = args.get("seniority_levels", [])
     industries = args.get("industries", [])
     company_sizes = args.get("company_sizes", [])
     locations = args.get("locations", [])
+    keywords = args.get("keywords", [])
     max_leads = args.get("max_leads", 1000)
     apify_token = args.get("apify_token", os.getenv("APIFY_API_TOKEN", ""))
 
@@ -262,22 +178,29 @@ async def scrape_apollo_leads_tool(args: dict[str, Any]) -> dict[str, Any]:
             "is_error": True,
         }
 
+    # Require at least some search criteria
+    if not any([job_titles, industries, keywords]):
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": "At least one of job_titles, industries, or keywords is required",
+                }
+            ],
+            "is_error": True,
+        }
+
     try:
         client = ApifyLeadScraperClient(api_token=apify_token)
 
-        search_params: dict[str, Any] = {}
-        if job_titles:
-            search_params["personTitles"] = job_titles
-        if industries:
-            search_params["organizationIndustries"] = industries
-        if company_sizes:
-            search_params["organizationNumEmployeesRanges"] = company_sizes
-        if locations:
-            search_params["personLocations"] = locations
-
         async with client:
-            result = await client.scrape_apollo_leads(
-                search_params=search_params,
+            result = await client.scrape_leads(
+                job_titles=job_titles if job_titles else None,
+                seniority_levels=seniority_levels if seniority_levels else None,
+                industries=industries if industries else None,
+                company_sizes=company_sizes if company_sizes else None,
+                locations=locations if locations else None,
+                keywords=keywords if keywords else None,
                 max_leads=max_leads,
             )
 
@@ -287,129 +210,36 @@ async def scrape_apollo_leads_tool(args: dict[str, Any]) -> dict[str, Any]:
             "content": [
                 {
                     "type": "text",
-                    "text": f"Scraped {len(leads_data)} leads from Apollo.io",
+                    "text": f"Scraped {len(leads_data)} leads via Apify waterfall",
                 }
             ],
             "data": {
                 "leads": leads_data,
+                "actor_id": result.actor_id,
                 "run_id": result.run_id,
                 "cost_usd": result.cost_usd,
                 "duration_secs": result.duration_secs,
             },
         }
 
+    except ApifyRateLimitError as e:
+        logger.warning(f"Lead scraping rate limited: {e}")
+        return {
+            "content": [{"type": "text", "text": f"Rate limit exceeded: {e}"}],
+            "is_error": True,
+        }
     except ApifyError as e:
-        logger.error(f"Apollo scraping failed: {e}")
+        logger.error(f"Lead scraping failed: {e}")
         return {
             "content": [{"type": "text", "text": f"Apify error: {e}"}],
             "is_error": True,
         }
     except Exception as e:
-        logger.error(f"Unexpected error scraping Apollo: {e}")
+        logger.error(f"Unexpected error scraping leads: {e}")
         return {
             "content": [{"type": "text", "text": f"Error: {e}"}],
             "is_error": True,
         }
-
-
-@tool(  # type: ignore[misc]
-    name="build_linkedin_search_url",
-    description=(
-        "Build a LinkedIn Sales Navigator search URL from persona criteria. "
-        "Returns a properly formatted search URL."
-    ),
-    input_schema={
-        "job_titles": list,
-        "seniority_levels": list,
-        "industries": list,
-        "company_sizes": list,
-        "locations": list,
-    },
-)
-async def build_linkedin_search_url_tool(args: dict[str, Any]) -> dict[str, Any]:
-    """
-    SDK MCP tool for building LinkedIn search URLs.
-
-    Constructs a Sales Navigator search URL from persona criteria.
-
-    Args:
-        args: Tool arguments with search criteria.
-
-    Returns:
-        Tool result with the constructed search URL.
-    """
-    job_titles = args.get("job_titles", [])
-    seniority_levels = args.get("seniority_levels", [])
-    industries = args.get("industries", [])
-    company_sizes = args.get("company_sizes", [])
-    locations = args.get("locations", [])
-
-    # Base Sales Navigator URL
-    base_url = "https://www.linkedin.com/sales/search/people"
-
-    # Build filters
-    # Note: This is a simplified URL builder. Real Sales Navigator
-    # URLs have complex encoded filter parameters.
-    params: list[str] = []
-
-    if job_titles:
-        titles_str = ",".join(f'"{t}"' for t in job_titles[:5])
-        params.append(f"titleIncluded={titles_str}")
-
-    if seniority_levels:
-        # Map to LinkedIn seniority IDs
-        seniority_map = {
-            "Owner": "1",
-            "Partner": "2",
-            "CXO": "3",
-            "VP": "4",
-            "Director": "5",
-            "Manager": "6",
-            "Senior": "7",
-            "Entry": "8",
-            "Training": "9",
-        }
-        seniority_ids = [seniority_map.get(s, s) for s in seniority_levels]
-        params.append(f"seniorityIncluded={','.join(seniority_ids)}")
-
-    if industries:
-        # Industries need to be mapped to LinkedIn industry IDs
-        # For now, use a placeholder approach
-        params.append(f"industryIncluded={','.join(industries[:10])}")
-
-    if company_sizes:
-        # Map company sizes to LinkedIn size ranges
-        size_map = {
-            "1-10": "B",
-            "11-50": "C",
-            "51-200": "D",
-            "201-500": "E",
-            "501-1000": "F",
-            "1001-5000": "G",
-            "5001-10000": "H",
-            "10001+": "I",
-        }
-        size_ids = [size_map.get(s, s) for s in company_sizes]
-        params.append(f"companySize={','.join(size_ids)}")
-
-    if locations:
-        params.append(f"geoIncluded={','.join(locations[:5])}")
-
-    # Construct URL
-    search_url = f"{base_url}?{'&'.join(params)}" if params else base_url
-
-    return {
-        "content": [
-            {
-                "type": "text",
-                "text": f"Built LinkedIn search URL with {len(params)} filters",
-            }
-        ],
-        "data": {
-            "search_url": search_url,
-            "filters_applied": len(params),
-        },
-    }
 
 
 # =============================================================================
@@ -472,29 +302,28 @@ class LeadListBuilderAgent:
         """System prompt for the Claude agent."""
         return """You are a Lead List Builder agent specializing in B2B lead acquisition.
 
-Your job is to scrape leads from LinkedIn and Apollo.io based on persona criteria.
+Your job is to scrape leads using Apify's cost-effective waterfall pattern.
 
 AVAILABLE TOOLS:
-1. build_linkedin_search_url - Build a LinkedIn search URL from criteria
-2. scrape_linkedin_leads - Scrape leads from LinkedIn via Apify
-3. scrape_apollo_leads - Scrape leads from Apollo.io via Apify
+1. scrape_leads - Scrape B2B leads via Apify waterfall pattern
+   - Tries actors in order: Leads Finder Primary ($1.5/1k), PPE (fallback), Multi (last resort)
+   - Provide search criteria: job_titles, seniority_levels, industries, company_sizes, locations, keywords
 
 STRATEGY:
 1. Analyze the persona criteria (job titles, industries, company sizes, etc.)
-2. Build an appropriate LinkedIn search URL using the criteria
-3. Scrape leads from LinkedIn (primary source)
-4. If needed, supplement with Apollo.io leads
-5. Return all scraped leads
+2. Call scrape_leads with the appropriate criteria
+3. The tool automatically tries cheaper actors first, falling back to more expensive ones
+4. Return all scraped leads
 
 RULES:
-- Always start with LinkedIn as the primary source
-- Use Apollo.io to supplement if LinkedIn doesn't return enough leads
+- Provide as many search criteria as available for better targeting
 - Target the number of leads specified (default 1000)
 - Include as much data as possible (name, email, title, company, etc.)
 - Report any errors or partial results
+- The waterfall pattern ensures cost efficiency automatically
 
 OUTPUT:
-Return a summary of scraped leads with counts from each source."""
+Return a summary of scraped leads including count, actor used, and cost."""
 
     async def run(
         self,
@@ -559,9 +388,7 @@ Return a summary of scraped leads with counts from each source."""
             mcp_server = create_sdk_mcp_server(
                 name="lead_list_builder_tools",
                 tools=[
-                    build_linkedin_search_url_tool,
-                    scrape_linkedin_leads_tool,
-                    scrape_apollo_leads_tool,
+                    scrape_leads_tool,
                 ],
             )
 
@@ -569,6 +396,7 @@ Return a summary of scraped leads with counts from each source."""
             os.environ.pop("ANTHROPIC_API_KEY", None)
 
             # Query Claude with tools
+            # Note: SDK API may vary - tests mock this
             options = ClaudeAgentOptions(
                 model=self.model,
                 max_tokens=self.max_tokens,
@@ -583,9 +411,12 @@ Return a summary of scraped leads with counts from each source."""
 
             # Process response and extract leads
             all_leads: list[dict[str, Any]] = []
-            linkedin_count = 0
-            apollo_count = 0
+            primary_count = 0
+            fallback_count = 0
             total_cost = 0.0
+
+            # Primary actor ID for comparison
+            primary_actor = "IoSHqwTR9YGhzccez"
 
             for message in response.messages:
                 if isinstance(message, AssistantMessage):
@@ -601,22 +432,22 @@ Return a summary of scraped leads with counts from each source."""
                                 total_cost += cost
 
                                 run_id = data.get("run_id")
+                                actor_id = data.get("actor_id", "")
                                 if run_id:
                                     result.apify_runs.append(
                                         {
                                             "run_id": run_id,
+                                            "actor_id": actor_id,
                                             "cost_usd": cost,
                                             "leads_count": len(leads),
                                         }
                                     )
 
-                                # Count by source
-                                for lead in leads:
-                                    source = lead.get("source", "")
-                                    if "linkedin" in source.lower():
-                                        linkedin_count += 1
-                                    elif "apollo" in source.lower():
-                                        apollo_count += 1
+                                # Track by actor (primary vs fallback)
+                                if actor_id == primary_actor:
+                                    primary_count += len(leads)
+                                else:
+                                    fallback_count += len(leads)
 
             # If we didn't get leads from tool results, try direct scraping
             if not all_leads:
@@ -628,11 +459,10 @@ Return a summary of scraped leads with counts from each source."""
                     industries=industries or [],
                     company_sizes=company_sizes or [],
                     locations=locations or [],
-                    linkedin_search_url=linkedin_search_url,
                 )
                 all_leads = direct_result["leads"]
-                linkedin_count = direct_result["linkedin_count"]
-                apollo_count = direct_result["apollo_count"]
+                primary_count = direct_result["primary_count"]
+                fallback_count = direct_result["fallback_count"]
                 total_cost = direct_result["total_cost"]
                 result.apify_runs = direct_result.get("runs", [])
                 result.errors = direct_result.get("errors", [])
@@ -640,8 +470,8 @@ Return a summary of scraped leads with counts from each source."""
             # Populate result
             result.leads = all_leads
             result.total_scraped = len(all_leads)
-            result.linkedin_leads = linkedin_count
-            result.apollo_leads = apollo_count
+            result.primary_actor_leads = primary_count
+            result.fallback_actor_leads = fallback_count
             result.total_cost_usd = total_cost
             result.completed_at = datetime.now()
             result.execution_time_ms = int((time.time() - start_time) * 1000)
@@ -665,7 +495,7 @@ Return a summary of scraped leads with counts from each source."""
             logger.info(
                 f"[{self.name}] Lead list build completed: "
                 f"{result.total_scraped} leads "
-                f"(LinkedIn={linkedin_count}, Apollo={apollo_count}, "
+                f"(primary={primary_count}, fallback={fallback_count}, "
                 f"cost=${total_cost:.2f}, time={result.execution_time_ms}ms)"
             )
 
@@ -693,112 +523,77 @@ Return a summary of scraped leads with counts from each source."""
         industries: list[str],
         company_sizes: list[str],
         locations: list[str],
-        linkedin_search_url: str | None = None,
     ) -> dict[str, Any]:
         """
         Direct lead scraping without Claude orchestration.
 
         Fallback method when Claude agent doesn't return leads.
+        Uses the Apify waterfall pattern to scrape leads cost-effectively.
         """
         all_leads: list[dict[str, Any]] = []
-        linkedin_count = 0
-        apollo_count = 0
+        primary_count = 0
+        fallback_count = 0
         total_cost = 0.0
         runs: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
 
-        # Try LinkedIn first
+        # Primary actor ID for tracking
+        primary_actor = "IoSHqwTR9YGhzccez"
+
         if self.apify_token:
             try:
                 client = ApifyLeadScraperClient(api_token=self.apify_token)
                 async with client:
-                    # Build search URL if not provided
-                    if not linkedin_search_url:
-                        # Construct a basic search URL
-                        linkedin_search_url = "https://www.linkedin.com/sales/search/people"
+                    # Use the waterfall pattern
+                    result = await client.scrape_leads(
+                        job_titles=job_titles if job_titles else None,
+                        seniority_levels=seniority_levels if seniority_levels else None,
+                        industries=industries if industries else None,
+                        company_sizes=company_sizes if company_sizes else None,
+                        locations=locations if locations else None,
+                        max_leads=target_leads,
+                    )
 
-                    # Try Sales Navigator if we have a session cookie
-                    if self.linkedin_session_cookie:
-                        result = await client.scrape_linkedin_sales_navigator(
-                            search_url=linkedin_search_url,
-                            max_leads=target_leads,
-                            session_cookie=self.linkedin_session_cookie,
-                        )
-                    else:
-                        result = await client.scrape_linkedin_leads(
-                            search_url=linkedin_search_url,
-                            max_leads=target_leads,
-                        )
-
-                    linkedin_leads = [lead.to_dict() for lead in result.leads]
-                    all_leads.extend(linkedin_leads)
-                    linkedin_count = len(linkedin_leads)
+                    scraped_leads = [lead.to_dict() for lead in result.leads]
+                    all_leads.extend(scraped_leads)
                     total_cost += result.cost_usd
+
+                    # Track which actor was used
+                    if result.actor_id == primary_actor:
+                        primary_count = len(scraped_leads)
+                    else:
+                        fallback_count = len(scraped_leads)
+
                     runs.append(
                         {
                             "run_id": result.run_id,
-                            "source": "linkedin",
+                            "actor_id": result.actor_id,
                             "cost_usd": result.cost_usd,
-                            "leads_count": len(linkedin_leads),
+                            "leads_count": len(scraped_leads),
                         }
                     )
 
-            except Exception as e:
-                logger.error(f"[{self.name}] LinkedIn scraping failed: {e}")
+            except ApifyError as e:
+                logger.error(f"[{self.name}] Lead scraping failed: {e}")
                 errors.append(
                     {
-                        "source": "linkedin",
+                        "source": "apify_waterfall",
                         "error": str(e),
                     }
                 )
-
-        # Supplement with Apollo if needed
-        remaining = target_leads - len(all_leads)
-        if remaining > 0 and (job_titles or industries):
-            try:
-                client = ApifyLeadScraperClient(api_token=self.apify_token)
-                async with client:
-                    search_params: dict[str, Any] = {}
-                    if job_titles:
-                        search_params["personTitles"] = job_titles
-                    if industries:
-                        search_params["organizationIndustries"] = industries
-                    if company_sizes:
-                        search_params["organizationNumEmployeesRanges"] = company_sizes
-                    if locations:
-                        search_params["personLocations"] = locations
-
-                    result = await client.scrape_apollo_leads(
-                        search_params=search_params,
-                        max_leads=remaining,
-                    )
-
-                    apollo_leads = [lead.to_dict() for lead in result.leads]
-                    all_leads.extend(apollo_leads)
-                    apollo_count = len(apollo_leads)
-                    total_cost += result.cost_usd
-                    runs.append(
-                        {
-                            "run_id": result.run_id,
-                            "source": "apollo",
-                            "cost_usd": result.cost_usd,
-                            "leads_count": len(apollo_leads),
-                        }
-                    )
-
             except Exception as e:
-                logger.error(f"[{self.name}] Apollo scraping failed: {e}")
+                logger.error(f"[{self.name}] Unexpected error during scraping: {e}")
                 errors.append(
                     {
-                        "source": "apollo",
+                        "source": "apify_waterfall",
                         "error": str(e),
                     }
                 )
 
         return {
             "leads": all_leads,
-            "linkedin_count": linkedin_count,
-            "apollo_count": apollo_count,
+            "primary_count": primary_count,
+            "fallback_count": fallback_count,
             "total_cost": total_cost,
             "runs": runs,
             "errors": errors,
@@ -814,7 +609,7 @@ Return a summary of scraped leads with counts from each source."""
         industries: list[str] | None,
         company_sizes: list[str] | None,
         locations: list[str] | None,
-        linkedin_search_url: str | None,
+        linkedin_search_url: str | None = None,  # Kept for backwards compatibility
     ) -> str:
         """Build the task prompt for Claude."""
         prompt_parts = [
@@ -837,17 +632,12 @@ Return a summary of scraped leads with counts from each source."""
 
         prompt_parts.append("")
 
-        if linkedin_search_url:
-            prompt_parts.append(f"PRE-BUILT SEARCH URL: {linkedin_search_url}")
-            prompt_parts.append("")
-
         prompt_parts.extend(
             [
                 "INSTRUCTIONS:",
-                "1. Build LinkedIn search URL if not provided",
-                "2. Scrape leads from LinkedIn (primary source)",
-                "3. Supplement with Apollo.io if needed",
-                f"4. Target at least {target_leads} total leads",
+                "1. Use the scrape_leads tool with the persona criteria above",
+                "2. The tool uses waterfall pattern (cheapest actor first)",
+                f"3. Target at least {target_leads} total leads",
                 "",
                 f"Use apify_token: {(self.apify_token or '')[:10]}... (truncated for security)",
             ]

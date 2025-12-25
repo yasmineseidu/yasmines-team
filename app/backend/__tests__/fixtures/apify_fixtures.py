@@ -2,23 +2,57 @@
 Test fixtures for Apify integration client.
 
 Provides mock data for unit and integration tests.
+
+Waterfall Actors (in priority order):
+1. Leads Finder Primary (IoSHqwTR9YGhzccez) - $1.5/1k leads
+2. Leads Scraper PPE (T1XDXWc1L92AfIJtd) - Fallback
+3. Leads Scraper Multi (VYRyEF4ygTTkaIghe) - Last resort
 """
 
-# Sample LinkedIn scraper response
-LINKEDIN_ACTOR_RUN_RESPONSE = {
+# Sample primary lead scraper response (Leads Finder Primary)
+PRIMARY_ACTOR_RUN_RESPONSE = {
     "id": "run_abc123",
-    "actId": "curious_coder~linkedin-search-export",
+    "actId": "IoSHqwTR9YGhzccez",
     "status": "SUCCEEDED",
     "defaultDatasetId": "dataset_xyz789",
     "startedAt": "2025-01-15T10:00:00.000Z",
     "finishedAt": "2025-01-15T10:05:30.000Z",
     "usage": {
         "COMPUTE_UNITS": 0.5,
-        "TOTAL_USD": 2.50,
+        "TOTAL_USD": 1.50,  # $1.5/1k leads
     },
 }
 
-LINKEDIN_DATASET_ITEMS = [
+# Fallback actor response (Leads Scraper PPE)
+FALLBACK_ACTOR_RUN_RESPONSE = {
+    "id": "run_fallback123",
+    "actId": "T1XDXWc1L92AfIJtd",
+    "status": "SUCCEEDED",
+    "defaultDatasetId": "dataset_fallback789",
+    "startedAt": "2025-01-15T10:00:00.000Z",
+    "finishedAt": "2025-01-15T10:06:00.000Z",
+    "usage": {
+        "COMPUTE_UNITS": 0.6,
+        "TOTAL_USD": 2.00,
+    },
+}
+
+# Last resort actor response (Leads Scraper Multi)
+LAST_RESORT_ACTOR_RUN_RESPONSE = {
+    "id": "run_lastresort123",
+    "actId": "VYRyEF4ygTTkaIghe",
+    "status": "SUCCEEDED",
+    "defaultDatasetId": "dataset_lastresort789",
+    "startedAt": "2025-01-15T10:00:00.000Z",
+    "finishedAt": "2025-01-15T10:08:00.000Z",
+    "usage": {
+        "COMPUTE_UNITS": 0.8,
+        "TOTAL_USD": 3.00,
+    },
+}
+
+# Dataset items from lead scrapers (various field name formats)
+LEAD_DATASET_ITEMS = [
     {
         "firstName": "John",
         "lastName": "Smith",
@@ -126,10 +160,10 @@ APOLLO_DATASET_ITEMS = [
     },
 ]
 
-# Failed run response
+# Failed run response (primary actor)
 FAILED_ACTOR_RUN_RESPONSE = {
     "id": "run_failed123",
-    "actId": "curious_coder~linkedin-search-export",
+    "actId": "IoSHqwTR9YGhzccez",  # Primary actor
     "status": "FAILED",
     "defaultDatasetId": None,
     "startedAt": "2025-01-15T10:00:00.000Z",
@@ -140,10 +174,10 @@ FAILED_ACTOR_RUN_RESPONSE = {
     },
 }
 
-# Timed out run response
+# Timed out run response (primary actor)
 TIMED_OUT_ACTOR_RUN_RESPONSE = {
     "id": "run_timeout123",
-    "actId": "curious_coder~linkedin-search-export",
+    "actId": "IoSHqwTR9YGhzccez",  # Primary actor
     "status": "TIMED-OUT",
     "defaultDatasetId": None,
     "startedAt": "2025-01-15T10:00:00.000Z",
@@ -165,8 +199,8 @@ USER_INFO_RESPONSE = {
     },
 }
 
-# Expected parsed leads from LinkedIn items
-EXPECTED_LINKEDIN_LEADS = [
+# Expected parsed leads from lead scraper items (using unified parser)
+EXPECTED_PARSED_LEADS = [
     {
         "first_name": "John",
         "last_name": "Smith",
@@ -187,7 +221,7 @@ EXPECTED_LINKEDIN_LEADS = [
         "city": "San Francisco",
         "state": "California",
         "country": "United States",
-        "source": "linkedin",
+        "source": "apify",
         "source_url": "https://linkedin.com/in/johnsmith",
     },
     {
@@ -210,7 +244,7 @@ EXPECTED_LINKEDIN_LEADS = [
         "city": "New York",
         "state": "New York",
         "country": "United States",
-        "source": "linkedin",
+        "source": "apify",
         "source_url": "https://linkedin.com/in/janedoe",
     },
     {
@@ -233,13 +267,13 @@ EXPECTED_LINKEDIN_LEADS = [
         "city": "Austin",
         "state": "Texas",
         "country": "United States",
-        "source": "linkedin",
+        "source": "apify",
         "source_url": "https://linkedin.com/in/bobjohnson",
     },
 ]
 
-# Expected parsed leads from Apollo items
-EXPECTED_APOLLO_LEADS = [
+# Expected parsed leads from snake_case format items (alternative actor output)
+EXPECTED_SNAKE_CASE_LEADS = [
     {
         "first_name": "Alice",
         "last_name": "Williams",
@@ -260,7 +294,7 @@ EXPECTED_APOLLO_LEADS = [
         "city": "Chicago",
         "state": "Illinois",
         "country": "United States",
-        "source": "apollo",
+        "source": "apify",
         "source_url": None,
     },
     {
@@ -283,7 +317,13 @@ EXPECTED_APOLLO_LEADS = [
         "city": "Boston",
         "state": "Massachusetts",
         "country": "United States",
-        "source": "apollo",
+        "source": "apify",
         "source_url": None,
     },
 ]
+
+# Backwards compatibility aliases
+LINKEDIN_ACTOR_RUN_RESPONSE = PRIMARY_ACTOR_RUN_RESPONSE
+LINKEDIN_DATASET_ITEMS = LEAD_DATASET_ITEMS
+EXPECTED_LINKEDIN_LEADS = EXPECTED_PARSED_LEADS
+EXPECTED_APOLLO_LEADS = EXPECTED_SNAKE_CASE_LEADS

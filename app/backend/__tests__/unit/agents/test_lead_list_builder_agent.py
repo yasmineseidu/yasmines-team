@@ -3,7 +3,7 @@ Unit tests for Lead List Builder Agent.
 
 Tests cover:
 - Agent initialization
-- Lead scraping workflow
+- Lead scraping workflow with waterfall pattern
 - Direct scraping fallback
 - Error handling
 - Result formatting
@@ -17,7 +17,7 @@ from src.agents.lead_list_builder import (
     LeadListBuilderAgent,
     LeadListBuilderResult,
 )
-from src.integrations.apify import ApifyError, ApifyLead, ApifyScrapeResult
+from src.integrations.apify import ApifyActorError, ApifyLead, ApifyScrapeResult
 
 # =============================================================================
 # Fixtures
@@ -32,7 +32,7 @@ def agent() -> LeadListBuilderAgent:
 
 @pytest.fixture
 def mock_apify_result() -> ApifyScrapeResult:
-    """Create mock Apify scrape result."""
+    """Create mock Apify scrape result from primary actor."""
     leads = [
         ApifyLead(
             first_name="John",
@@ -41,7 +41,7 @@ def mock_apify_result() -> ApifyScrapeResult:
             linkedin_url="https://linkedin.com/in/john",
             title="VP Engineering",
             company_name="TechCorp",
-            source="linkedin",
+            source="apify",
         ),
         ApifyLead(
             first_name="Jane",
@@ -50,19 +50,45 @@ def mock_apify_result() -> ApifyScrapeResult:
             linkedin_url="https://linkedin.com/in/jane",
             title="CTO",
             company_name="Startup.io",
-            source="linkedin",
+            source="apify",
         ),
     ]
 
     return ApifyScrapeResult(
         run_id="run_123",
-        actor_id="linkedin-scraper",
+        actor_id="IoSHqwTR9YGhzccez",  # Primary actor
         status="SUCCEEDED",
         dataset_id="dataset_456",
         leads=leads,
         total_items=2,
         cost_usd=2.50,
         duration_secs=120,
+    )
+
+
+@pytest.fixture
+def mock_fallback_result() -> ApifyScrapeResult:
+    """Create mock Apify scrape result from fallback actor."""
+    leads = [
+        ApifyLead(
+            first_name="Bob",
+            last_name="Wilson",
+            email="bob@example.com",
+            title="Director",
+            company_name="ExampleCo",
+            source="apify",
+        ),
+    ]
+
+    return ApifyScrapeResult(
+        run_id="run_456",
+        actor_id="T1XDXWc1L92AfIJtd",  # Fallback actor (PPE)
+        status="SUCCEEDED",
+        dataset_id="dataset_789",
+        leads=leads,
+        total_items=1,
+        cost_usd=1.50,
+        duration_secs=60,
     )
 
 
@@ -125,17 +151,17 @@ class TestLeadListBuilderAgentInitialization:
 class TestSystemPrompt:
     """Tests for system prompt."""
 
-    def test_system_prompt_contains_tools(self, agent: LeadListBuilderAgent) -> None:
-        """Test system prompt mentions available tools."""
+    def test_system_prompt_contains_waterfall_tool(self, agent: LeadListBuilderAgent) -> None:
+        """Test system prompt mentions waterfall scraping tool."""
         prompt = agent.system_prompt
-        assert "scrape_linkedin_leads" in prompt or "LinkedIn" in prompt
-        assert "scrape_apollo_leads" in prompt or "Apollo" in prompt
+        assert "scrape_leads" in prompt
+        assert "waterfall" in prompt.lower()
 
-    def test_system_prompt_contains_strategy(self, agent: LeadListBuilderAgent) -> None:
-        """Test system prompt contains strategy."""
+    def test_system_prompt_contains_actors(self, agent: LeadListBuilderAgent) -> None:
+        """Test system prompt mentions actor priority."""
         prompt = agent.system_prompt
-        assert "LinkedIn" in prompt  # Primary source
-        assert "Apollo" in prompt  # Supplement
+        assert "Leads Finder Primary" in prompt
+        assert "fallback" in prompt.lower()
 
 
 # =============================================================================
@@ -157,8 +183,8 @@ class TestAgentRun:
         with patch.object(agent, "_direct_scrape") as mock_scrape:
             mock_scrape.return_value = {
                 "leads": [{"first_name": "John"}],
-                "linkedin_count": 1,
-                "apollo_count": 0,
+                "primary_count": 1,
+                "fallback_count": 0,
                 "total_cost": 1.0,
                 "runs": [],
                 "errors": [],
@@ -188,8 +214,8 @@ class TestAgentRun:
         with patch.object(agent, "_direct_scrape") as mock_scrape:
             mock_scrape.return_value = {
                 "leads": [{"first_name": "John", "title": "VP"}],
-                "linkedin_count": 1,
-                "apollo_count": 0,
+                "primary_count": 1,
+                "fallback_count": 0,
                 "total_cost": 2.0,
                 "runs": [],
                 "errors": [],
@@ -244,8 +270,8 @@ class TestAgentRun:
         with patch.object(agent, "_direct_scrape") as mock_scrape:
             mock_scrape.return_value = {
                 "leads": [],
-                "linkedin_count": 0,
-                "apollo_count": 0,
+                "primary_count": 0,
+                "fallback_count": 0,
                 "total_cost": 0,
                 "runs": [],
                 "errors": [],
@@ -271,17 +297,17 @@ class TestAgentRun:
 
 
 class TestDirectScrape:
-    """Tests for direct scraping fallback."""
+    """Tests for direct scraping with waterfall pattern."""
 
     @pytest.mark.asyncio
-    async def test_direct_scrape_linkedin_success(
+    async def test_direct_scrape_success_with_primary_actor(
         self,
         agent: LeadListBuilderAgent,
         mock_apify_result: ApifyScrapeResult,
     ) -> None:
-        """Test direct LinkedIn scraping."""
+        """Test direct scraping uses primary actor successfully."""
         mock_client = MagicMock()
-        mock_client.scrape_linkedin_leads = AsyncMock(return_value=mock_apify_result)
+        mock_client.scrape_leads = AsyncMock(return_value=mock_apify_result)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
@@ -296,25 +322,22 @@ class TestDirectScrape:
                 industries=["Technology"],
                 company_sizes=["51-200"],
                 locations=["San Francisco"],
-                linkedin_search_url="https://linkedin.com/search",
             )
 
-        assert result["linkedin_count"] == 2
+        mock_client.scrape_leads.assert_called_once()
+        assert result["primary_count"] == 2  # Primary actor used
+        assert result["fallback_count"] == 0
         assert len(result["leads"]) == 2
 
     @pytest.mark.asyncio
-    async def test_direct_scrape_sales_navigator(
+    async def test_direct_scrape_tracks_fallback_actor(
         self,
-        mock_apify_result: ApifyScrapeResult,
+        agent: LeadListBuilderAgent,
+        mock_fallback_result: ApifyScrapeResult,
     ) -> None:
-        """Test Sales Navigator scraping with session cookie."""
-        agent = LeadListBuilderAgent(
-            apify_token="test_token",
-            linkedin_session_cookie="li_at_cookie",
-        )
-
+        """Test direct scraping tracks fallback actor usage."""
         mock_client = MagicMock()
-        mock_client.scrape_linkedin_sales_navigator = AsyncMock(return_value=mock_apify_result)
+        mock_client.scrape_leads = AsyncMock(return_value=mock_fallback_result)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
 
@@ -326,70 +349,27 @@ class TestDirectScrape:
                 target_leads=100,
                 job_titles=["VP"],
                 seniority_levels=[],
-                industries=[],
+                industries=["Technology"],
                 company_sizes=[],
                 locations=[],
             )
 
-        mock_client.scrape_linkedin_sales_navigator.assert_called_once()
-        assert result["linkedin_count"] == 2
+        assert result["primary_count"] == 0
+        assert result["fallback_count"] == 1  # Fallback actor used
+        assert len(result["leads"]) == 1
 
     @pytest.mark.asyncio
-    async def test_direct_scrape_supplements_with_apollo(
+    async def test_direct_scrape_handles_error(
         self,
         agent: LeadListBuilderAgent,
     ) -> None:
-        """Test Apollo supplementation when LinkedIn doesn't return enough."""
-        linkedin_result = ApifyScrapeResult(
-            run_id="run_li",
-            actor_id="linkedin",
-            status="SUCCEEDED",
-            leads=[ApifyLead(first_name="John", source="linkedin")],
-            total_items=1,
-            cost_usd=1.0,
-        )
-
-        apollo_result = ApifyScrapeResult(
-            run_id="run_ap",
-            actor_id="apollo",
-            status="SUCCEEDED",
-            leads=[ApifyLead(first_name="Jane", source="apollo")],
-            total_items=1,
-            cost_usd=0.5,
-        )
-
+        """Test handling scraping error."""
         mock_client = MagicMock()
-        mock_client.scrape_linkedin_leads = AsyncMock(return_value=linkedin_result)
-        mock_client.scrape_apollo_leads = AsyncMock(return_value=apollo_result)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-
-        with patch(
-            "src.agents.lead_list_builder.agent.ApifyLeadScraperClient",
-            return_value=mock_client,
-        ):
-            result = await agent._direct_scrape(
-                target_leads=100,  # Need more than 1
-                job_titles=["VP"],
-                seniority_levels=[],
-                industries=["Tech"],
-                company_sizes=[],
-                locations=[],
+        mock_client.scrape_leads = AsyncMock(
+            side_effect=ApifyActorError(
+                actor_id="waterfall",
+                message="All scrapers failed",
             )
-
-        assert result["linkedin_count"] == 1
-        assert result["apollo_count"] == 1
-        assert len(result["leads"]) == 2
-
-    @pytest.mark.asyncio
-    async def test_direct_scrape_handles_linkedin_error(
-        self,
-        agent: LeadListBuilderAgent,
-    ) -> None:
-        """Test handling LinkedIn scraping error."""
-        mock_client = MagicMock()
-        mock_client.scrape_linkedin_leads = AsyncMock(
-            side_effect=ApifyError("LinkedIn scraping failed")
         )
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
@@ -408,7 +388,71 @@ class TestDirectScrape:
             )
 
         assert len(result["errors"]) > 0
-        assert result["errors"][0]["source"] == "linkedin"
+        assert result["errors"][0]["source"] == "apify_waterfall"
+
+    @pytest.mark.asyncio
+    async def test_direct_scrape_passes_all_criteria(
+        self,
+        agent: LeadListBuilderAgent,
+        mock_apify_result: ApifyScrapeResult,
+    ) -> None:
+        """Test all search criteria are passed to scrape_leads."""
+        mock_client = MagicMock()
+        mock_client.scrape_leads = AsyncMock(return_value=mock_apify_result)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch(
+            "src.agents.lead_list_builder.agent.ApifyLeadScraperClient",
+            return_value=mock_client,
+        ):
+            await agent._direct_scrape(
+                target_leads=500,
+                job_titles=["VP", "Director"],
+                seniority_levels=["VP", "Director"],
+                industries=["Technology", "Software"],
+                company_sizes=["51-200", "201-500"],
+                locations=["San Francisco", "New York"],
+            )
+
+        # Verify the call was made with correct parameters
+        call_kwargs = mock_client.scrape_leads.call_args.kwargs
+        assert call_kwargs["job_titles"] == ["VP", "Director"]
+        assert call_kwargs["seniority_levels"] == ["VP", "Director"]
+        assert call_kwargs["industries"] == ["Technology", "Software"]
+        assert call_kwargs["company_sizes"] == ["51-200", "201-500"]
+        assert call_kwargs["locations"] == ["San Francisco", "New York"]
+        assert call_kwargs["max_leads"] == 500
+
+    @pytest.mark.asyncio
+    async def test_direct_scrape_tracks_cost(
+        self,
+        agent: LeadListBuilderAgent,
+        mock_apify_result: ApifyScrapeResult,
+    ) -> None:
+        """Test cost tracking in direct scrape."""
+        mock_client = MagicMock()
+        mock_client.scrape_leads = AsyncMock(return_value=mock_apify_result)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch(
+            "src.agents.lead_list_builder.agent.ApifyLeadScraperClient",
+            return_value=mock_client,
+        ):
+            result = await agent._direct_scrape(
+                target_leads=100,
+                job_titles=["VP"],
+                seniority_levels=[],
+                industries=[],
+                company_sizes=[],
+                locations=[],
+            )
+
+        assert result["total_cost"] == 2.50
+        assert len(result["runs"]) == 1
+        assert result["runs"][0]["cost_usd"] == 2.50
+        assert result["runs"][0]["actor_id"] == "IoSHqwTR9YGhzccez"
 
 
 # =============================================================================
@@ -435,35 +479,33 @@ class TestBuildTaskPrompt:
             industries=["Technology", "Software"],
             company_sizes=["51-200", "201-500"],
             locations=["San Francisco", "New York"],
-            linkedin_search_url=None,
         )
 
         assert campaign_id in prompt
         assert "1000" in prompt
         assert "VP" in prompt
         assert "Technology" in prompt
+        assert "scrape_leads" in prompt  # New tool reference
 
-    def test_build_task_prompt_with_search_url(
+    def test_build_task_prompt_mentions_waterfall(
         self,
         agent: LeadListBuilderAgent,
         campaign_id: str,
         niche_id: str,
     ) -> None:
-        """Test prompt includes pre-built search URL."""
-        search_url = "https://linkedin.com/sales/search/people?filter=abc"
+        """Test prompt mentions waterfall pattern."""
         prompt = agent._build_task_prompt(
             niche_id=niche_id,
             campaign_id=campaign_id,
             target_leads=500,
-            job_titles=None,
+            job_titles=["VP"],
             seniority_levels=None,
             industries=None,
             company_sizes=None,
             locations=None,
-            linkedin_search_url=search_url,
         )
 
-        assert search_url in prompt
+        assert "waterfall" in prompt.lower()
 
 
 # =============================================================================
@@ -482,8 +524,8 @@ class TestLeadListBuilderResult:
             leads=[{"first_name": "John"}],
             total_scraped=1,
             target_leads=100,
-            linkedin_leads=1,
-            apollo_leads=0,
+            primary_actor_leads=1,
+            fallback_actor_leads=0,
             total_cost_usd=2.50,
             execution_time_ms=5000,
         )
@@ -493,6 +535,8 @@ class TestLeadListBuilderResult:
         assert data["success"] is True
         assert data["total_scraped"] == 1
         assert data["total_cost_usd"] == 2.50
+        assert data["primary_actor_leads"] == 1
+        assert data["fallback_actor_leads"] == 0
 
     def test_default_values(self) -> None:
         """Test default values."""
@@ -502,6 +546,8 @@ class TestLeadListBuilderResult:
         assert result.status == "completed"
         assert result.leads == []
         assert result.errors == []
+        assert result.primary_actor_leads == 0
+        assert result.fallback_actor_leads == 0
 
     def test_partial_status(self) -> None:
         """Test partial status when not enough leads."""
@@ -521,9 +567,31 @@ class TestLeadListBuilderResult:
             success=False,
             status="failed",
             total_scraped=0,
-            errors=[{"type": "ApifyError", "message": "Scraping failed"}],
+            errors=[{"type": "ApifyActorError", "message": "All scrapers failed"}],
         )
 
         assert result.success is False
         assert result.status == "failed"
         assert len(result.errors) > 0
+
+    def test_tracks_actor_usage(self) -> None:
+        """Test result tracks which actor was used."""
+        result = LeadListBuilderResult(
+            success=True,
+            status="completed",
+            total_scraped=100,
+            primary_actor_leads=100,
+            fallback_actor_leads=0,
+            apify_runs=[
+                {
+                    "run_id": "run_123",
+                    "actor_id": "IoSHqwTR9YGhzccez",
+                    "cost_usd": 1.50,
+                    "leads_count": 100,
+                }
+            ],
+        )
+
+        assert result.primary_actor_leads == 100
+        assert len(result.apify_runs) == 1
+        assert result.apify_runs[0]["actor_id"] == "IoSHqwTR9YGhzccez"

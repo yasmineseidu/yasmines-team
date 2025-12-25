@@ -1,11 +1,12 @@
 """
 Apify Integration Client - Lead scraping via Apify actors.
 
-Provides async client for running Apify actors to scrape leads from:
-- LinkedIn Sales Navigator
-- LinkedIn Search
-- Apollo.io
-- Other B2B lead sources
+Provides async client for running Apify actors to scrape leads using a
+cost-effective waterfall pattern:
+
+1. Leads Finder Primary ($1.5/1k leads with emails) - IoSHqwTR9YGhzccez
+2. Leads Scraper PPE (fallback) - T1XDXWc1L92AfIJtd
+3. Leads Scraper Multi (last resort) - VYRyEF4ygTTkaIghe
 
 Uses ApifyClientAsync for non-blocking operations with comprehensive
 error handling, rate limiting, and retry logic.
@@ -13,8 +14,9 @@ error handling, rate limiting, and retry logic.
 Example:
     >>> client = ApifyLeadScraperClient(api_token=os.environ["APIFY_API_TOKEN"])
     >>> async with client:
-    ...     result = await client.scrape_linkedin_leads(
-    ...         search_url="https://linkedin.com/sales/search/...",
+    ...     result = await client.scrape_leads(
+    ...         job_titles=["VP", "Director"],
+    ...         industries=["Technology"],
     ...         max_leads=1000,
     ...     )
     ...     print(f"Scraped {len(result.leads)} leads")
@@ -121,18 +123,31 @@ class ApifyTimeoutError(ApifyError):
 
 
 class ApifyActorId(str, Enum):
-    """Known Apify actor IDs for lead scraping."""
+    """Known Apify actor IDs for lead scraping.
 
-    # LinkedIn scrapers
-    LINKEDIN_SEARCH_SCRAPER = "curious_coder/linkedin-search-export"
-    LINKEDIN_SALES_NAV_SCRAPER = "curious_coder/linkedin-sales-navigator-export"
+    Lead Scraper Waterfall (in priority order):
+    1. LEADS_FINDER_PRIMARY - $1.5/1k leads, best value
+    2. LEADS_SCRAPER_PPE - Fallback option
+    3. LEADS_SCRAPER_MULTI - Last resort (Apollo/ZoomInfo/Lusha alternative)
+    """
+
+    # Primary lead scraper - Leads Finder ($1.5/1k leads with emails)
+    # https://console.apify.com/actors/IoSHqwTR9YGhzccez
+    LEADS_FINDER_PRIMARY = "IoSHqwTR9YGhzccez"
+
+    # Fallback - peakydev/leads-scraper-ppe
+    # https://console.apify.com/actors/T1XDXWc1L92AfIJtd
+    LEADS_SCRAPER_PPE = "T1XDXWc1L92AfIJtd"
+
+    # Last resort - pipelinelabs/lead-scraper-apollo-zoominfo-lusha
+    # https://console.apify.com/actors/VYRyEF4ygTTkaIghe
+    LEADS_SCRAPER_MULTI = "VYRyEF4ygTTkaIghe"
+
+    # LinkedIn profile/company scrapers (for enrichment)
     LINKEDIN_PROFILE_SCRAPER = "anchor/linkedin-profile-scraper"
     LINKEDIN_COMPANY_SCRAPER = "bebity/linkedin-company-scraper"
 
-    # Apollo.io
-    APOLLO_SCRAPER = "epctex/apollo-scraper"
-
-    # Generic lead scraping
+    # Generic scrapers
     GOOGLE_SEARCH_SCRAPER = "apify/google-search-scraper"
     WEBSITE_SCRAPER = "apify/website-content-crawler"
 
@@ -585,31 +600,144 @@ class ApifyLeadScraperClient:
         return all_items
 
     # =========================================================================
-    # Lead Scraping Methods
+    # Lead Scraping Methods - Waterfall Pattern
     # =========================================================================
 
-    async def scrape_linkedin_leads(
+    # Waterfall order for lead scraping actors
+    LEAD_SCRAPER_WATERFALL: list[ApifyActorId] = [
+        ApifyActorId.LEADS_FINDER_PRIMARY,  # $1.5/1k - best value
+        ApifyActorId.LEADS_SCRAPER_PPE,  # Fallback
+        ApifyActorId.LEADS_SCRAPER_MULTI,  # Last resort
+    ]
+
+    async def scrape_leads(
         self,
-        search_url: str,
+        job_titles: list[str] | None = None,
+        seniority_levels: list[str] | None = None,
+        industries: list[str] | None = None,
+        company_sizes: list[str] | None = None,
+        locations: list[str] | None = None,
+        keywords: list[str] | None = None,
         max_leads: int = 1000,
-        actor_id: str | ApifyActorId = ApifyActorId.LINKEDIN_SEARCH_SCRAPER,
+        actor_id: str | ApifyActorId | None = None,
     ) -> ApifyScrapeResult:
         """
-        Scrape leads from LinkedIn using a search URL.
+        Scrape leads using specified actor or waterfall pattern.
 
         Args:
-            search_url: LinkedIn search or Sales Navigator URL.
+            job_titles: Target job titles (e.g., ["VP", "Director", "CTO"]).
+            seniority_levels: Seniority levels (e.g., ["VP", "Director", "CXO"]).
+            industries: Target industries (e.g., ["Technology", "Software"]).
+            company_sizes: Company size ranges (e.g., ["51-200", "201-500"]).
+            locations: Geographic locations (e.g., ["San Francisco", "New York"]).
+            keywords: Additional search keywords.
             max_leads: Maximum number of leads to scrape.
-            actor_id: Apify actor to use for scraping.
+            actor_id: Specific actor to use (None = use waterfall).
 
         Returns:
             ApifyScrapeResult with scraped leads.
         """
-        run_input = {
-            "searchUrl": search_url,
-            "resultsLimit": max_leads,
+        # Build search input for lead scrapers
+        run_input: dict[str, Any] = {
+            "maxResults": max_leads,
+            "resultsLimit": max_leads,  # Some actors use this field
         }
 
+        # Add search criteria
+        if job_titles:
+            run_input["jobTitles"] = job_titles
+            run_input["titles"] = job_titles  # Alternative field name
+        if seniority_levels:
+            run_input["seniorityLevels"] = seniority_levels
+            run_input["seniority"] = seniority_levels
+        if industries:
+            run_input["industries"] = industries
+            run_input["industry"] = industries
+        if company_sizes:
+            run_input["companySizes"] = company_sizes
+            run_input["employeeCount"] = company_sizes
+        if locations:
+            run_input["locations"] = locations
+            run_input["location"] = locations
+        if keywords:
+            run_input["keywords"] = keywords
+            run_input["query"] = " ".join(keywords)
+
+        # Use specific actor or waterfall
+        if actor_id:
+            return await self._scrape_with_actor(actor_id, run_input)
+        else:
+            return await self.scrape_leads_waterfall(run_input)
+
+    async def scrape_leads_waterfall(
+        self,
+        run_input: dict[str, Any],
+    ) -> ApifyScrapeResult:
+        """
+        Scrape leads using waterfall pattern - try actors in order until success.
+
+        Waterfall order:
+        1. Leads Finder Primary ($1.5/1k) - IoSHqwTR9YGhzccez
+        2. Leads Scraper PPE (fallback) - T1XDXWc1L92AfIJtd
+        3. Leads Scraper Multi (last resort) - VYRyEF4ygTTkaIghe
+
+        Args:
+            run_input: Search parameters for actors.
+
+        Returns:
+            ApifyScrapeResult from first successful actor.
+
+        Raises:
+            ApifyActorError: If all actors in waterfall fail.
+        """
+        errors: list[str] = []
+
+        for actor_id in self.LEAD_SCRAPER_WATERFALL:
+            try:
+                logger.info(f"[apify] Trying lead scraper: {actor_id.value}")
+                result = await self._scrape_with_actor(actor_id, run_input)
+
+                # Check if we got any leads
+                if result.leads and len(result.leads) > 0:
+                    logger.info(
+                        f"[apify] Success with {actor_id.value}: "
+                        f"{len(result.leads)} leads scraped"
+                    )
+                    return result
+                else:
+                    logger.warning(f"[apify] {actor_id.value} returned 0 leads, trying next")
+                    errors.append(f"{actor_id.value}: 0 leads returned")
+
+            except ApifyActorError as e:
+                logger.warning(f"[apify] {actor_id.value} failed: {e}")
+                errors.append(f"{actor_id.value}: {e}")
+                continue
+            except ApifyTimeoutError as e:
+                logger.warning(f"[apify] {actor_id.value} timed out: {e}")
+                errors.append(f"{actor_id.value}: timeout")
+                continue
+
+        # All actors failed
+        raise ApifyActorError(
+            actor_id="waterfall",
+            message=f"All lead scrapers failed: {'; '.join(errors)}",
+        )
+
+    async def _scrape_with_actor(
+        self,
+        actor_id: str | ApifyActorId,
+        run_input: dict[str, Any],
+    ) -> ApifyScrapeResult:
+        """
+        Scrape leads with a specific actor.
+
+        Args:
+            actor_id: Apify actor ID.
+            run_input: Input parameters for the actor.
+
+        Returns:
+            ApifyScrapeResult with scraped leads.
+        """
         result = await self.run_actor(
             actor_id=actor_id,
             run_input=run_input,
@@ -620,80 +748,7 @@ class ApifyLeadScraperClient:
         if result.dataset_id:
             items = await self.iterate_dataset_items(result.dataset_id)
             result.total_items = len(items)
-            result.leads = [self._parse_linkedin_lead(item) for item in items]
-
-        return result  # type: ignore[no-any-return]
-
-    async def scrape_linkedin_sales_navigator(
-        self,
-        search_url: str,
-        max_leads: int = 1000,
-        session_cookie: str | None = None,
-    ) -> ApifyScrapeResult:
-        """
-        Scrape leads from LinkedIn Sales Navigator.
-
-        Args:
-            search_url: Sales Navigator search URL.
-            max_leads: Maximum number of leads to scrape.
-            session_cookie: LinkedIn session cookie (li_at).
-
-        Returns:
-            ApifyScrapeResult with scraped leads.
-        """
-        run_input: dict[str, Any] = {
-            "searchUrl": search_url,
-            "resultsLimit": max_leads,
-        }
-
-        if session_cookie:
-            run_input["sessionCookie"] = session_cookie
-
-        result = await self.run_actor(
-            actor_id=ApifyActorId.LINKEDIN_SALES_NAV_SCRAPER,
-            run_input=run_input,
-            wait_for_finish=True,
-        )
-
-        # Fetch results from dataset
-        if result.dataset_id:
-            items = await self.iterate_dataset_items(result.dataset_id)
-            result.total_items = len(items)
-            result.leads = [self._parse_linkedin_lead(item) for item in items]
-
-        return result  # type: ignore[no-any-return]
-
-    async def scrape_apollo_leads(
-        self,
-        search_params: dict[str, Any],
-        max_leads: int = 1000,
-    ) -> ApifyScrapeResult:
-        """
-        Scrape leads from Apollo.io.
-
-        Args:
-            search_params: Apollo search parameters.
-            max_leads: Maximum number of leads to scrape.
-
-        Returns:
-            ApifyScrapeResult with scraped leads.
-        """
-        run_input = {
-            **search_params,
-            "maxResults": max_leads,
-        }
-
-        result = await self.run_actor(
-            actor_id=ApifyActorId.APOLLO_SCRAPER,
-            run_input=run_input,
-            wait_for_finish=True,
-        )
-
-        # Fetch results from dataset
-        if result.dataset_id:
-            items = await self.iterate_dataset_items(result.dataset_id)
-            result.total_items = len(items)
-            result.leads = [self._parse_apollo_lead(item) for item in items]
+            result.leads = [self._parse_lead(item) for item in items]
 
         return result  # type: ignore[no-any-return]
 
@@ -802,26 +857,124 @@ class ApifyLeadScraperClient:
             raw_data=item,
         )
 
-    def _parse_apollo_lead(self, item: dict[str, Any]) -> ApifyLead:
-        """Parse Apollo.io scraper output into ApifyLead."""
+    def _parse_lead(self, item: dict[str, Any]) -> ApifyLead:
+        """
+        Unified lead parser for all Apify actor outputs.
+
+        Handles field name variations from different actors:
+        - Leads Finder Primary (IoSHqwTR9YGhzccez)
+        - Leads Scraper PPE (T1XDXWc1L92AfIJtd)
+        - Leads Scraper Multi (VYRyEF4ygTTkaIghe)
+
+        Args:
+            item: Raw item from Apify dataset.
+
+        Returns:
+            ApifyLead with normalized field names.
+        """
+        # Handle various field name variations from different actors
+        first_name = item.get("firstName") or item.get("first_name") or item.get("FirstName") or ""
+        last_name = item.get("lastName") or item.get("last_name") or item.get("LastName") or ""
+        full_name = (
+            item.get("fullName")
+            or item.get("full_name")
+            or item.get("name")
+            or item.get("Name")
+            or f"{first_name} {last_name}".strip()
+        )
+
+        # Parse name if only full_name is provided
+        if not first_name and full_name:
+            parts = full_name.split(" ", 1)
+            first_name = parts[0]
+            last_name = parts[1] if len(parts) > 1 else ""
+
+        # Handle organization/company nested structures
+        org = item.get("organization") or item.get("company") or {}
+        if isinstance(org, str):
+            org = {"name": org}
+
+        company_name = (
+            item.get("companyName")
+            or item.get("company_name")
+            or item.get("company")
+            or item.get("currentCompany")
+            or org.get("name")
+        )
+        company_domain = (
+            item.get("companyDomain")
+            or item.get("company_domain")
+            or item.get("domain")
+            or org.get("primary_domain")
+            or org.get("domain")
+        )
+        company_size = (
+            item.get("companySize")
+            or item.get("company_size")
+            or item.get("employeeCount")
+            or item.get("employees")
+            or org.get("estimated_num_employees")
+            or org.get("size")
+        )
+        company_industry = (
+            item.get("industry")
+            or item.get("companyIndustry")
+            or item.get("company_industry")
+            or org.get("industry")
+        )
+
         return ApifyLead(
-            first_name=item.get("first_name"),
-            last_name=item.get("last_name"),
-            full_name=item.get("name"),
-            email=item.get("email"),
-            linkedin_url=item.get("linkedin_url"),
-            title=item.get("title"),
-            seniority=item.get("seniority"),
-            department=item.get("department"),
-            company_name=item.get("organization", {}).get("name"),
-            company_domain=item.get("organization", {}).get("primary_domain"),
-            company_size=item.get("organization", {}).get("estimated_num_employees"),
-            company_industry=item.get("organization", {}).get("industry"),
-            location=item.get("city"),
-            city=item.get("city"),
-            state=item.get("state"),
-            country=item.get("country"),
-            source="apollo",
+            first_name=first_name or None,
+            last_name=last_name or None,
+            full_name=full_name or None,
+            email=(
+                item.get("email")
+                or item.get("workEmail")
+                or item.get("work_email")
+                or item.get("Email")
+            ),
+            linkedin_url=(
+                item.get("linkedinUrl")
+                or item.get("linkedin_url")
+                or item.get("profileUrl")
+                or item.get("url")
+                or item.get("LinkedInUrl")
+            ),
+            linkedin_id=(
+                item.get("linkedinId") or item.get("linkedin_id") or item.get("profileId")
+            ),
+            headline=(item.get("headline") or item.get("Headline") or item.get("title")),
+            title=(
+                item.get("jobTitle")
+                or item.get("job_title")
+                or item.get("title")
+                or item.get("Title")
+                or item.get("currentPosition")
+            ),
+            seniority=(
+                item.get("seniority") or item.get("seniorityLevel") or item.get("Seniority")
+            ),
+            department=(item.get("department") or item.get("Department")),
+            company_name=company_name if isinstance(company_name, str) else None,
+            company_linkedin_url=(
+                item.get("companyLinkedinUrl")
+                or item.get("company_linkedin_url")
+                or item.get("companyUrl")
+            ),
+            company_domain=company_domain if isinstance(company_domain, str) else None,
+            company_size=str(company_size) if company_size else None,
+            company_industry=company_industry if isinstance(company_industry, str) else None,
+            location=(
+                item.get("location")
+                or item.get("geoLocation")
+                or item.get("Location")
+                or item.get("city")
+            ),
+            city=(item.get("city") or item.get("City")),
+            state=(item.get("state") or item.get("region") or item.get("State")),
+            country=(item.get("country") or item.get("countryCode") or item.get("Country")),
+            source="apify",
+            source_url=(item.get("url") or item.get("profileUrl") or item.get("linkedinUrl")),
             raw_data=item,
         )
 
