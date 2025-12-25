@@ -34,8 +34,12 @@ def set_leads_data(leads: list[dict[str, Any]]) -> None:
     name="load_scoring_context",
     description="Load scoring context including niche, personas, and industry fit scores",
     input_schema={
-        "campaign_id": str,
-        "niche_id": str,
+        "type": "object",
+        "properties": {
+            "campaign_id": {"type": "string", "description": "Campaign UUID"},
+            "niche_id": {"type": "string", "description": "Niche UUID"},
+        },
+        "required": ["campaign_id", "niche_id"],
     },
 )
 async def load_scoring_context_tool(args: dict[str, Any]) -> dict[str, Any]:
@@ -115,8 +119,21 @@ async def load_scoring_context_tool(args: dict[str, Any]) -> dict[str, Any]:
     name="score_leads_batch",
     description="Score a batch of leads using the weighted scoring model",
     input_schema={
-        "batch_index": int,
-        "batch_size": int,
+        "type": "object",
+        "properties": {
+            "batch_index": {
+                "type": "integer",
+                "description": "Index of batch to score (0-based)",
+                "minimum": 0,
+            },
+            "batch_size": {
+                "type": "integer",
+                "description": "Number of leads per batch",
+                "default": 2000,
+                "minimum": 1,
+            },
+        },
+        "required": ["batch_index"],
     },
 )
 async def score_leads_batch_tool(args: dict[str, Any]) -> dict[str, Any]:
@@ -220,7 +237,15 @@ async def score_leads_batch_tool(args: dict[str, Any]) -> dict[str, Any]:
     name="aggregate_scoring_results",
     description="Aggregate scoring results and calculate final statistics",
     input_schema={
-        "batch_results": list,
+        "type": "object",
+        "properties": {
+            "batch_results": {
+                "type": "array",
+                "description": "List of batch scoring results to aggregate",
+                "items": {"type": "object"},
+            },
+        },
+        "required": ["batch_results"],
     },
 )
 async def aggregate_scoring_results_tool(args: dict[str, Any]) -> dict[str, Any]:
@@ -308,12 +333,39 @@ async def aggregate_scoring_results_tool(args: dict[str, Any]) -> dict[str, Any]
     name="get_scoring_summary",
     description="Generate a human-readable scoring summary report",
     input_schema={
-        "total_scored": int,
-        "avg_score": float,
-        "tier_a_count": int,
-        "tier_b_count": int,
-        "tier_c_count": int,
-        "tier_d_count": int,
+        "type": "object",
+        "properties": {
+            "total_scored": {"type": "integer", "description": "Total leads scored", "minimum": 0},
+            "avg_score": {"type": "number", "description": "Average score (0-100)"},
+            "tier_a_count": {
+                "type": "integer",
+                "description": "Count of Tier A leads (80+)",
+                "minimum": 0,
+            },
+            "tier_b_count": {
+                "type": "integer",
+                "description": "Count of Tier B leads (60-79)",
+                "minimum": 0,
+            },
+            "tier_c_count": {
+                "type": "integer",
+                "description": "Count of Tier C leads (40-59)",
+                "minimum": 0,
+            },
+            "tier_d_count": {
+                "type": "integer",
+                "description": "Count of Tier D leads (<40)",
+                "minimum": 0,
+            },
+        },
+        "required": [
+            "total_scored",
+            "avg_score",
+            "tier_a_count",
+            "tier_b_count",
+            "tier_c_count",
+            "tier_d_count",
+        ],
     },
 )
 async def get_scoring_summary_tool(args: dict[str, Any]) -> dict[str, Any]:

@@ -665,6 +665,12 @@ If invalid, request corrected email before proceeding.
 | LEARN-001 | ANTHROPIC_API_KEY conflicts | Critical | `Command failed with exit code 1` | SDK uses `claude` CLI with own auth; env var conflicts | Having `ANTHROPIC_API_KEY` set in environment | `os.environ.pop("ANTHROPIC_API_KEY", None)` before SDK calls | All Claude SDK agents using `query()` |
 | LEARN-003 | SDK tools reject dependencies | High | `Tool signature mismatch` | SDK @tool functions must be self-contained, no DI | `@tool async def fn(query: str, client: Client)` | `@tool async def fn(query: str):` then create client inside function body | All @tool decorated functions |
 | LEARN-005 | WebSearch ignores site: | Low | Search returns generic results | WebSearch is not Google; operators ignored | `prompt = "site:reddit.com AI tools"` | `prompt = "Reddit discussions about AI tools"` | All WebSearch/WebFetch prompts |
+| LEARN-011 | mcp_servers must be dict | Critical | Tools not available to agent | SDK expects `{"name": server}` not `[server]` | `mcp_servers=[mcp_server]` | `mcp_servers={"lead_tools": mcp_server}` | All ClaudeAgentOptions with MCP |
+| LEARN-012 | query() is async iterator | Critical | `TypeError: 'async_generator' object is not awaitable` | `query()` yields messages, doesn't return response object | `response = await query(...); for msg in response.messages:` | `async for message in query(...):` | All agents using SDK query() |
+| LEARN-013 | allowed_tools required | High | Agent can't use any tools | SDK requires explicit tool allowlist | `ClaudeAgentOptions(mcp_servers={...})` (no allowed_tools) | `ClaudeAgentOptions(mcp_servers={...}, allowed_tools=["mcp__name__tool"])` | All ClaudeAgentOptions with tools |
+| LEARN-014 | system_prompt in options | Med | System prompt ignored | `query()` has no `system` param; goes in options | `query(prompt=..., system=self.system_prompt)` | `ClaudeAgentOptions(system_prompt=self.system_prompt)` | All SDK agent configurations |
+| LEARN-015 | Use JSON Schema for tools | Med | MyPy errors, weak validation | Python types (list, int) lack validation constraints | `input_schema={"max_leads": int}` | `input_schema={"type": "object", "properties": {"max_leads": {"type": "integer", "minimum": 1}}}` | All @tool input_schema |
+| LEARN-016 | json.loads returns Any | Low | MyPy `no-any-return` error | Must validate type before returning from typed function | `return json.loads(content)` | `parsed = json.loads(content); if isinstance(parsed, dict): return parsed` | All JSON parsing in typed functions |
 
 ### Python/Library Errors
 
@@ -672,6 +678,7 @@ If invalid, request corrected email before proceeding.
 |----|-------|-----|---------|------------|------------|--------------|---------|
 | LEARN-002 | Tenacity tuple syntax | High | `incompatible type "type[A] \| type[B]"` | `retry_if_exception_type` expects tuple, not union | `retry_if_exception_type(RateLimitError \| APIError)` | `retry_if_exception_type((RateLimitError, APIError))` | All tenacity retry decorators |
 | LEARN-004 | Mixed type attributes | Med | `AttributeError: 'X' has no attribute 'y'` | Data from APIs/SDK can be dict or object with varying attr names | `subscriber_count = sub.subscribers` | `subscriber_count = getattr(sub, 'subscribers', None) or getattr(sub, 'subscriber_count', 0)` | All agents processing external API/SDK data |
+| LEARN-017 | @tool decorator untyped | Med | `Untyped decorator makes function untyped [misc]` | pre-commit mypy v1.14.1 lacks SDK type stubs; local v1.19.1 differs | `@tool(name="x", ...)` | `@tool(  # type: ignore[misc]` | All @tool decorated functions |
 
 ### Google API Errors
 
@@ -751,3 +758,194 @@ Service accounts don't have their own Google Drive storage. When creating files 
 
 **Prevention:**
 Always use domain-wide delegation for service accounts that need to create Google Workspace assets (Drive files, Docs, Sheets, etc.). Service accounts can only own temporary/system files in their own storage space (~16GB limit), not user-facing documents.
+
+### Multi-Agent Ecosystem Errors
+
+| ID | Error | Sev | Symptom | Root Cause | Wrong Code | Correct Code | Affects |
+|----|-------|-----|---------|------------|------------|--------------|---------|
+| LEARN-007 | Agents not persisting data | Critical | Agents return results but DB stays empty | Agents designed to be pure (no side effects); no layer handling persistence | `result = await agent.run(); return result` | Create orchestrator that calls agent THEN persists via repository | All multi-agent pipelines |
+| LEARN-008 | Missing SQLAlchemy models | High | `AttributeError` when trying to query tables | Tables exist in Supabase but no ORM models in codebase | Querying tables that don't have models | Create SQLAlchemy models matching Supabase schema exactly | All agents needing DB access |
+| LEARN-009 | Alembic vs Supabase drift | Med | Alembic shows 1 migration but DB has 100+ tables | Tables created via Supabase dashboard, not Alembic | Assuming Alembic is source of truth | Check `DATABASE_TABLES.txt` export for actual schema | New developers, schema changes |
+| LEARN-010 | Missing FK columns | High | Agent expects `personas.niche_id` but column missing | YAML spec defined relationship but schema didn't have FK | `persona.niche_id = niche_id` (fails) | Add FK column: `ALTER TABLE personas ADD COLUMN niche_id UUID REFERENCES niches(id)` | All agents with cross-table relationships |
+
+**LEARN-007 Details:**
+
+**Problem:**
+Claude Agent SDK agents are designed to be **pure functions** - they take inputs, do research, return results. They don't handle database persistence. This is good design (testable, composable), but means you need an **orchestrator layer** to:
+1. Call the agent
+2. Take the result
+3. Persist to database via repository
+4. Pass handoff data to next agent
+
+**Wrong Pattern:**
+```python
+# Agent handles everything (breaks single responsibility)
+class NicheResearchAgent:
+    async def run(self, niche_name: str, session: AsyncSession):
+        result = await self._research(niche_name)
+        await session.execute(insert(niches).values(...))  # BAD: agent shouldn't know about DB
+        return result
+```
+
+**Correct Pattern:**
+```python
+# Agent is pure
+class NicheResearchAgent:
+    async def run(self, niche_name: str) -> NicheResearchResult:
+        return await self._research(niche_name)  # Just returns result
+
+# Orchestrator handles persistence
+class Phase1Orchestrator:
+    async def run(self, niche_name: str):
+        result = await self.niche_agent.run(niche_name)
+        await self.niche_repo.create_niche(result)  # Orchestrator persists
+        await self.niche_repo.create_niche_scores(result)
+        return result
+```
+
+**LEARN-008 Details:**
+
+**Problem:**
+Tables exist in Supabase (created via dashboard) but the Python codebase has no SQLAlchemy models. This means:
+- Can't use ORM queries
+- Can't use relationships
+- No type safety for DB operations
+
+**Solution:**
+1. Export schema: `DATABASE_TABLES_WITH_FIELDS.txt`
+2. Create SQLAlchemy models matching exact column names/types
+3. Use `ARRAY(Text)` for Postgres arrays
+4. Use `JSONB` for JSON columns
+5. Add `to_dict()` method for agent compatibility
+
+```python
+class NicheModel(Base):
+    __tablename__ = "niches"
+    id = Column(UUID(as_uuid=True), primary_key=True)
+    name = Column(String(255), nullable=False)
+    industry = Column(ARRAY(Text), nullable=True)  # Match exact Supabase type
+    # ... etc
+```
+
+**LEARN-010 Details:**
+
+**Problem:**
+YAML spec defines agent handoffs with fields like `niche_id`, but the actual database table is missing the foreign key column.
+
+**Detection:**
+```bash
+# Check if column exists
+grep "niche_id" DATABASE_TABLES_WITH_FIELDS.txt | grep personas
+# If no output, column is missing
+```
+
+**Fix:**
+```sql
+-- Add missing FK
+ALTER TABLE personas ADD COLUMN niche_id UUID REFERENCES niches(id);
+CREATE INDEX ix_personas_niche_id ON personas(niche_id);
+```
+
+**Prevention:**
+Before building multi-agent systems:
+1. Validate all YAML specs against actual database schema
+2. Create migration for any missing columns
+3. Update SQLAlchemy models to match
+
+**LEARN-011 Details:**
+
+| ID | Error | Sev | Symptom | Root Cause | Wrong Code | Correct Code | Affects |
+|----|-------|-----|---------|------------|------------|--------------|---------|
+| LEARN-011 | ClaudeAgentOptions missing allowed_tools | Critical | Claude cannot invoke any MCP tools | SDK defaults to no tools when `allowed_tools` not specified | `ClaudeAgentOptions(mcp_servers={...})` | `ClaudeAgentOptions(mcp_servers={...}, allowed_tools=["mcp__server__tool"])` | All SDK agents using MCP tools |
+
+**Problem:**
+When creating `ClaudeAgentOptions` with MCP servers but without `allowed_tools`, Claude cannot invoke ANY tools. The SDK requires explicit tool permissions.
+
+**Fix:**
+```python
+# Tool names follow pattern: mcp__{server_name}__{tool_name}
+tool_names = [
+    "mcp__my_server__my_tool",
+    "mcp__my_server__other_tool",
+]
+
+options = ClaudeAgentOptions(
+    model=self.model,
+    system_prompt=self.system_prompt,
+    mcp_servers={"my_server": mcp_server},
+    allowed_tools=tool_names,  # REQUIRED for tool access
+)
+```
+
+**LEARN-012 Details:**
+
+| ID | Error | Sev | Symptom | Root Cause | Wrong Code | Correct Code | Affects |
+|----|-------|-----|---------|------------|------------|--------------|---------|
+| LEARN-012 | Missing setting_sources | High | CLAUDE.md instructions not loaded | SDK doesn't load project settings by default | `ClaudeAgentOptions(...)` | `ClaudeAgentOptions(..., setting_sources=["project"])` | All SDK agents needing project context |
+
+**Problem:**
+Without `setting_sources=["project"]`, the SDK does not read CLAUDE.md instructions. Agents miss critical project-specific guidance.
+
+**Fix:**
+```python
+options = ClaudeAgentOptions(
+    model=self.model,
+    system_prompt=self.system_prompt,
+    setting_sources=["project"],  # Loads CLAUDE.md
+    mcp_servers={...},
+    allowed_tools=[...],
+)
+```
+
+**LEARN-013 Details:**
+
+| ID | Error | Sev | Symptom | Root Cause | Wrong Code | Correct Code | Affects |
+|----|-------|-----|---------|------------|------------|--------------|---------|
+| LEARN-013 | @tool decorator mypy handling | Low | `Untyped decorator` OR `Unused "type: ignore"` | SDK @tool decorator lacks type stubs; behavior varies by mypy config | See below | See below | All @tool decorated functions |
+
+**Problem:**
+The `@tool` decorator from `claude_agent_sdk` doesn't have type stubs. Mypy behavior depends on configuration:
+- With `--ignore-missing-imports`: No error, `# type: ignore[misc]` causes "unused" warning
+- Without that flag: "Untyped decorator" error requires the ignore comment
+
+**Fix:**
+```python
+# When running mypy WITH --ignore-missing-imports (recommended):
+@tool(
+    name="my_tool",
+    description="...",
+    input_schema={...},  # Use JSON Schema format per LEARN-015
+)
+async def my_tool(args: dict[str, Any]) -> dict[str, Any]:
+    ...
+
+# When running mypy WITHOUT --ignore-missing-imports:
+@tool(  # type: ignore[misc]
+    name="my_tool",
+    ...
+)
+```
+
+**Recommendation:** Use `--ignore-missing-imports` in pyproject.toml and omit the type: ignore comment.
+
+**LEARN-014 Details:**
+
+| ID | Error | Sev | Symptom | Root Cause | Wrong Code | Correct Code | Affects |
+|----|-------|-----|---------|------------|------------|--------------|---------|
+| LEARN-014 | Testing SDK tools directly | Med | `TypeError: 'SdkMcpTool' object is not callable` | @tool returns SdkMcpTool wrapper, not function | `await my_tool({...})` | `await my_tool.handler({...})` | All unit tests for SDK MCP tools |
+
+**Problem:**
+The `@tool` decorator wraps the async function in an `SdkMcpTool` object. To test the tool directly, access `.handler`.
+
+**Fix:**
+```python
+from my_module import my_tool
+
+# Access the underlying handler for testing
+_my_tool = my_tool.handler
+
+@pytest.mark.asyncio
+async def test_my_tool():
+    result = await _my_tool({"arg": "value"})
+    assert result["content"][0]["text"] == "expected"
+```
