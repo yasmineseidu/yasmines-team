@@ -359,8 +359,7 @@ class CompanyResearchAgent:
                 "max_results": 5,
             }
 
-            # Note: SdkMcpTool objects are callable but mypy doesn't recognize this
-            # The @tool decorator is untyped, so we use Any for results
+            # Run all search tools in parallel
             raw_results: tuple[Any, ...] = await asyncio.gather(
                 search_company_news_tool(search_args),
                 search_company_funding_tool(search_args),
