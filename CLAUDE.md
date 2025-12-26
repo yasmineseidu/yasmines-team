@@ -168,6 +168,8 @@ Add errors to the appropriate category table with these columns:
 | LEARN-022 | RetryError exception() returns BaseException | Check `isinstance(exc, Exception)` before passing to record_failure |
 | LEARN-023 | datetime.now() is timezone-naive | Use `datetime.now(UTC)` from `datetime` module |
 | LEARN-024 | Repository API drift | Read repository source before calling; verify method signatures |
+| LEARN-033 | Optional dep type ignores flip-flop | Accept warning OR `SKIP=mypy` when security passes |
+| LEARN-034 | isinstance union syntax | Use `isinstance(x, A \| B)` not `isinstance(x, (A, B))` |
 
 Full details with code examples in `.claude/context/SELF-HEALING.md`
 
