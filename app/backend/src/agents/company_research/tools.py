@@ -10,18 +10,88 @@ Provides Claude Agent SDK @tool decorated functions for:
 - aggregate_research_results: Aggregate results across companies
 
 Per LEARN-003: Tools must be self-contained - no dependency injection.
-All dependencies (clients, rate limiters) are created inside functions.
+However, rate limiters and circuit breakers are module-level singletons
+to maintain state across calls (otherwise they're useless).
+
+Note on return format: Tools return {"content": [...], "data": {...}}.
+The "data" key is an internal extension for direct-call mode, containing
+structured data for the agent. When used via Claude SDK MCP, only "content"
+is processed by Claude.
 """
 
 import logging
 import os
 import time
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from claude_agent_sdk import tool
 
+if TYPE_CHECKING:
+    from src.integrations.serper import SerperClient
+    from src.utils.rate_limiter import CircuitBreaker, TokenBucketRateLimiter
+
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Module-Level Singletons for Resilience Patterns
+# =============================================================================
+# These MUST be module-level to maintain state across tool calls.
+# Creating new instances per call defeats their purpose entirely.
+
+_serper_rate_limiter: "TokenBucketRateLimiter | None" = None
+_serper_circuit_breaker: "CircuitBreaker | None" = None
+_serper_client: "SerperClient | None" = None
+
+
+def _get_serper_rate_limiter() -> "TokenBucketRateLimiter":
+    """Get or create the shared Serper rate limiter."""
+    global _serper_rate_limiter
+    if _serper_rate_limiter is None:
+        from src.utils.rate_limiter import TokenBucketRateLimiter
+
+        _serper_rate_limiter = TokenBucketRateLimiter(
+            rate_limit=100,  # Serper standard tier: 100 QPS
+            rate_window=60,
+            service_name="serper",
+        )
+    return _serper_rate_limiter
+
+
+def _get_serper_circuit_breaker() -> "CircuitBreaker":
+    """Get or create the shared Serper circuit breaker."""
+    global _serper_circuit_breaker
+    if _serper_circuit_breaker is None:
+        from src.utils.rate_limiter import CircuitBreaker
+
+        _serper_circuit_breaker = CircuitBreaker(
+            failure_threshold=3,
+            recovery_timeout=60.0,
+            service_name="serper",
+        )
+    return _serper_circuit_breaker
+
+
+def _get_serper_client() -> "SerperClient | None":
+    """Get or create the shared Serper client (if API key available)."""
+    global _serper_client
+    serper_api_key = os.environ.get("SERPER_API_KEY", "")
+    if not serper_api_key:
+        return None
+    if _serper_client is None:
+        from src.integrations.serper import SerperClient
+
+        _serper_client = SerperClient(api_key=serper_api_key)
+    return _serper_client
+
+
+def reset_resilience_state() -> None:
+    """Reset all module-level singletons. Useful for testing."""
+    global _serper_rate_limiter, _serper_circuit_breaker, _serper_client
+    _serper_rate_limiter = None
+    _serper_circuit_breaker = None
+    _serper_client = None
 
 
 # =============================================================================
@@ -85,12 +155,12 @@ def _get_current_year() -> int:
 # =============================================================================
 
 
-@tool(  # type: ignore[misc]
+@tool(  # type: ignore[misc]  # SDK @tool decorator lacks type stubs (LEARN-017)
     name="search_company_news",
     description=(
         "Search for recent news about a company. "
         "Finds press releases, media coverage, and announcements from the last 6 months. "
-        "Uses tiered tool strategy: FREE (web_search) -> CHEAP (serper/tavily) -> MODERATE (perplexity). "
+        "Uses Serper API for Google News search with circuit breaker protection. "
         "Returns structured search results with headlines, dates, and URLs."
     ),
     input_schema={
@@ -101,7 +171,9 @@ def _get_current_year() -> int:
 )
 async def search_company_news_tool(args: dict[str, Any]) -> dict[str, Any]:
     """
-    Search for recent company news using tiered tool strategy.
+    Search for recent company news using Serper API.
+
+    Uses shared rate limiter and circuit breaker for resilience.
 
     Args:
         args: Tool arguments with company_name, company_domain, max_results.
@@ -122,10 +194,6 @@ async def search_company_news_tool(args: dict[str, Any]) -> dict[str, Any]:
         }
 
     try:
-        # Import inside function per LEARN-003
-        from src.integrations.serper import SerperClient
-        from src.utils.rate_limiter import CircuitBreaker, TokenBucketRateLimiter
-
         # Build search query
         year = _get_current_year()
         query = f"{company_name} news {year}"
@@ -134,24 +202,15 @@ async def search_company_news_tool(args: dict[str, Any]) -> dict[str, Any]:
         tool_used = "serper_search"
         cost = 0.0
 
-        # Try Serper first (tier 2 cheap)
-        serper_api_key = os.environ.get("SERPER_API_KEY", "")
-        if serper_api_key:
-            rate_limiter = TokenBucketRateLimiter(
-                rate_limit=100,
-                rate_window=60,
-                service_name="serper",
-            )
-            circuit_breaker = CircuitBreaker(
-                failure_threshold=3,
-                recovery_timeout=60.0,
-                service_name="serper",
-            )
+        # Use shared client and resilience patterns
+        client = _get_serper_client()
+        if client is not None:
+            circuit_breaker = _get_serper_circuit_breaker()
+            rate_limiter = _get_serper_rate_limiter()
 
             if circuit_breaker.can_proceed():
                 try:
                     await rate_limiter.acquire()
-                    client = SerperClient(api_key=serper_api_key)
                     search_result = await client.search_news(
                         query=query,
                         num=max_results,
@@ -173,8 +232,12 @@ async def search_company_news_tool(args: dict[str, Any]) -> dict[str, Any]:
                     cost = TOOL_COSTS["serper_search"]
 
                 except Exception as e:
-                    logger.warning(f"Serper search failed: {e}")
+                    logger.warning(f"Serper news search failed: {e}")
                     circuit_breaker.record_failure()
+            else:
+                logger.warning("Serper circuit breaker is open, skipping search")
+        else:
+            logger.debug("SERPER_API_KEY not set, returning empty results")
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
@@ -210,7 +273,7 @@ async def search_company_news_tool(args: dict[str, Any]) -> dict[str, Any]:
         }
 
 
-@tool(  # type: ignore[misc]
+@tool(  # type: ignore[misc]  # SDK @tool decorator lacks type stubs (LEARN-017)
     name="search_company_funding",
     description=(
         "Search for company funding and investment information. "
@@ -225,7 +288,9 @@ async def search_company_news_tool(args: dict[str, Any]) -> dict[str, Any]:
 )
 async def search_company_funding_tool(args: dict[str, Any]) -> dict[str, Any]:
     """
-    Search for company funding/investment information.
+    Search for company funding/investment information using Serper API.
+
+    Uses shared rate limiter and circuit breaker for resilience.
 
     Args:
         args: Tool arguments with company_name, company_domain, max_results.
@@ -246,10 +311,6 @@ async def search_company_funding_tool(args: dict[str, Any]) -> dict[str, Any]:
         }
 
     try:
-        # Import inside function per LEARN-003
-        from src.integrations.serper import SerperClient
-        from src.utils.rate_limiter import CircuitBreaker, TokenBucketRateLimiter
-
         # Build search query
         query = f"{company_name} funding investment growth"
 
@@ -257,24 +318,15 @@ async def search_company_funding_tool(args: dict[str, Any]) -> dict[str, Any]:
         tool_used = "serper_search"
         cost = 0.0
 
-        # Try Serper
-        serper_api_key = os.environ.get("SERPER_API_KEY", "")
-        if serper_api_key:
-            rate_limiter = TokenBucketRateLimiter(
-                rate_limit=100,
-                rate_window=60,
-                service_name="serper",
-            )
-            circuit_breaker = CircuitBreaker(
-                failure_threshold=3,
-                recovery_timeout=60.0,
-                service_name="serper",
-            )
+        # Use shared client and resilience patterns
+        client = _get_serper_client()
+        if client is not None:
+            circuit_breaker = _get_serper_circuit_breaker()
+            rate_limiter = _get_serper_rate_limiter()
 
             if circuit_breaker.can_proceed():
                 try:
                     await rate_limiter.acquire()
-                    client = SerperClient(api_key=serper_api_key)
                     search_result = await client.search(
                         query=query,
                         num=max_results,
@@ -295,8 +347,12 @@ async def search_company_funding_tool(args: dict[str, Any]) -> dict[str, Any]:
                     cost = TOOL_COSTS["serper_search"]
 
                 except Exception as e:
-                    logger.warning(f"Serper search failed: {e}")
+                    logger.warning(f"Serper funding search failed: {e}")
                     circuit_breaker.record_failure()
+            else:
+                logger.warning("Serper circuit breaker is open, skipping search")
+        else:
+            logger.debug("SERPER_API_KEY not set, returning empty results")
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
@@ -332,7 +388,7 @@ async def search_company_funding_tool(args: dict[str, Any]) -> dict[str, Any]:
         }
 
 
-@tool(  # type: ignore[misc]
+@tool(  # type: ignore[misc]  # SDK @tool decorator lacks type stubs (LEARN-017)
     name="search_company_hiring",
     description=(
         "Search for company hiring signals and job postings. "
@@ -347,7 +403,9 @@ async def search_company_funding_tool(args: dict[str, Any]) -> dict[str, Any]:
 )
 async def search_company_hiring_tool(args: dict[str, Any]) -> dict[str, Any]:
     """
-    Search for company hiring/jobs information.
+    Search for company hiring/jobs information using Serper API.
+
+    Uses shared rate limiter and circuit breaker for resilience.
 
     Args:
         args: Tool arguments with company_name, company_domain, max_results.
@@ -368,10 +426,6 @@ async def search_company_hiring_tool(args: dict[str, Any]) -> dict[str, Any]:
         }
 
     try:
-        # Import inside function per LEARN-003
-        from src.integrations.serper import SerperClient
-        from src.utils.rate_limiter import CircuitBreaker, TokenBucketRateLimiter
-
         # Build search query
         query = f"{company_name} hiring careers jobs"
 
@@ -379,24 +433,15 @@ async def search_company_hiring_tool(args: dict[str, Any]) -> dict[str, Any]:
         tool_used = "serper_search"
         cost = 0.0
 
-        # Try Serper
-        serper_api_key = os.environ.get("SERPER_API_KEY", "")
-        if serper_api_key:
-            rate_limiter = TokenBucketRateLimiter(
-                rate_limit=100,
-                rate_window=60,
-                service_name="serper",
-            )
-            circuit_breaker = CircuitBreaker(
-                failure_threshold=3,
-                recovery_timeout=60.0,
-                service_name="serper",
-            )
+        # Use shared client and resilience patterns
+        client = _get_serper_client()
+        if client is not None:
+            circuit_breaker = _get_serper_circuit_breaker()
+            rate_limiter = _get_serper_rate_limiter()
 
             if circuit_breaker.can_proceed():
                 try:
                     await rate_limiter.acquire()
-                    client = SerperClient(api_key=serper_api_key)
                     search_result = await client.search(
                         query=query,
                         num=max_results,
@@ -417,8 +462,12 @@ async def search_company_hiring_tool(args: dict[str, Any]) -> dict[str, Any]:
                     cost = TOOL_COSTS["serper_search"]
 
                 except Exception as e:
-                    logger.warning(f"Serper search failed: {e}")
+                    logger.warning(f"Serper hiring search failed: {e}")
                     circuit_breaker.record_failure()
+            else:
+                logger.warning("Serper circuit breaker is open, skipping search")
+        else:
+            logger.debug("SERPER_API_KEY not set, returning empty results")
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
@@ -454,7 +503,7 @@ async def search_company_hiring_tool(args: dict[str, Any]) -> dict[str, Any]:
         }
 
 
-@tool(  # type: ignore[misc]
+@tool(  # type: ignore[misc]  # SDK @tool decorator lacks type stubs (LEARN-017)
     name="search_company_tech",
     description=(
         "Search for company product launches and technology initiatives. "
@@ -469,7 +518,9 @@ async def search_company_hiring_tool(args: dict[str, Any]) -> dict[str, Any]:
 )
 async def search_company_tech_tool(args: dict[str, Any]) -> dict[str, Any]:
     """
-    Search for company product/tech information.
+    Search for company product/tech information using Serper API.
+
+    Uses shared rate limiter and circuit breaker for resilience.
 
     Args:
         args: Tool arguments with company_name, company_domain, max_results.
@@ -490,10 +541,6 @@ async def search_company_tech_tool(args: dict[str, Any]) -> dict[str, Any]:
         }
 
     try:
-        # Import inside function per LEARN-003
-        from src.integrations.serper import SerperClient
-        from src.utils.rate_limiter import CircuitBreaker, TokenBucketRateLimiter
-
         # Build search query
         query = f"{company_name} product launch technology"
 
@@ -501,24 +548,15 @@ async def search_company_tech_tool(args: dict[str, Any]) -> dict[str, Any]:
         tool_used = "serper_search"
         cost = 0.0
 
-        # Try Serper
-        serper_api_key = os.environ.get("SERPER_API_KEY", "")
-        if serper_api_key:
-            rate_limiter = TokenBucketRateLimiter(
-                rate_limit=100,
-                rate_window=60,
-                service_name="serper",
-            )
-            circuit_breaker = CircuitBreaker(
-                failure_threshold=3,
-                recovery_timeout=60.0,
-                service_name="serper",
-            )
+        # Use shared client and resilience patterns
+        client = _get_serper_client()
+        if client is not None:
+            circuit_breaker = _get_serper_circuit_breaker()
+            rate_limiter = _get_serper_rate_limiter()
 
             if circuit_breaker.can_proceed():
                 try:
                     await rate_limiter.acquire()
-                    client = SerperClient(api_key=serper_api_key)
                     search_result = await client.search(
                         query=query,
                         num=max_results,
@@ -539,8 +577,12 @@ async def search_company_tech_tool(args: dict[str, Any]) -> dict[str, Any]:
                     cost = TOOL_COSTS["serper_search"]
 
                 except Exception as e:
-                    logger.warning(f"Serper search failed: {e}")
+                    logger.warning(f"Serper tech search failed: {e}")
                     circuit_breaker.record_failure()
+            else:
+                logger.warning("Serper circuit breaker is open, skipping search")
+        else:
+            logger.debug("SERPER_API_KEY not set, returning empty results")
 
         processing_time_ms = int((time.time() - start_time) * 1000)
 
@@ -581,7 +623,7 @@ async def search_company_tech_tool(args: dict[str, Any]) -> dict[str, Any]:
 # =============================================================================
 
 
-@tool(  # type: ignore[misc]
+@tool(  # type: ignore[misc]  # SDK @tool decorator lacks type stubs (LEARN-017)
     name="extract_and_score_facts",
     description=(
         "Extract and score facts from research results. "
@@ -769,7 +811,7 @@ async def extract_and_score_facts_tool(args: dict[str, Any]) -> dict[str, Any]:
 # =============================================================================
 
 
-@tool(  # type: ignore[misc]
+@tool(  # type: ignore[misc]  # SDK @tool decorator lacks type stubs (LEARN-017)
     name="aggregate_company_research",
     description=(
         "Aggregate research results from all search types for a company. "

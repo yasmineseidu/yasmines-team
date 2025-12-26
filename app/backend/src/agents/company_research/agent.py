@@ -1,11 +1,20 @@
 """
 Company Research Agent.
 
-Phase 4 agent that conducts deep research on target companies using web search,
-news, and public data for email personalization. Uses tiered tool strategy
-(FREE -> CHEAP -> MODERATE) and parallel batch processing.
+Phase 4.1 agent that conducts deep research on target companies using web search,
+news, and public data for email personalization. Uses Serper API with circuit
+breaker protection and parallel batch processing.
 
 Follows Claude Agent SDK patterns per SDK_PATTERNS.md.
+
+Database Flow:
+- Reads from: leads table (unique companies by campaign_id where email_status='valid')
+- Writes to: company_research_data, extracted_facts tables
+- Updates: leads table with company_research_id reference
+
+Downstream Consumers:
+- Phase 4.2 Lead Research Agent: Uses company_research_data for lead personalization
+- Phase 4.3 Email Generation Agent: Uses extracted_facts for email hooks
 """
 
 import asyncio
@@ -38,38 +47,37 @@ logger = logging.getLogger(__name__)
 
 class CompanyResearchAgent:
     """
-    Company Research Agent for Phase 4.
+    Company Research Agent for Phase 4.1.
 
-    Conducts deep research on target companies using web search, news,
-    and public data. Gathers company context for email personalization.
+    Conducts deep research on target companies using Serper API web search,
+    news, and public data. Gathers company context for email personalization.
 
     Database Flow:
-    - Reads from: leads table (unique companies by campaign_id)
+    - Reads from: leads table (unique companies by campaign_id where email_status='valid')
     - Writes to: company_research_data, extracted_facts tables
     - Updates: leads table with company_research_id reference
 
+    Downstream Consumers:
+    - Phase 4.2 Lead Research Agent: Uses company_research_data for lead personalization
+    - Phase 4.3 Email Generation Agent: Uses extracted_facts for email hooks
+
     Attributes:
         name: Agent identifier
-        use_claude: Whether to use Claude for orchestration vs direct path
         max_concurrent_companies: Parallel processing limit
         session_id: Unique session identifier
     """
 
     def __init__(
         self,
-        use_claude: bool = False,
         max_concurrent_companies: int = 20,
     ) -> None:
         """
         Initialize the Company Research Agent.
 
         Args:
-            use_claude: If True, use Claude SDK for orchestration.
-                       If False, use direct execution path (more efficient).
             max_concurrent_companies: Max companies to research in parallel.
         """
         self.name = "company_research_agent"
-        self.use_claude = use_claude
         self.max_concurrent_companies = max_concurrent_companies
         self.session_id = str(uuid4())
 
@@ -79,10 +87,7 @@ class CompanyResearchAgent:
         # Circuit breaker trip count
         self.circuit_breaker_trips = 0
 
-        logger.info(
-            f"Initialized {self.name} (use_claude={use_claude}, "
-            f"max_concurrent={max_concurrent_companies})"
-        )
+        logger.info(f"Initialized {self.name} (max_concurrent={max_concurrent_companies})")
 
     async def run(
         self,
@@ -216,6 +221,7 @@ class CompanyResearchAgent:
         self,
         campaign_id: UUID,
         max_companies: int,
+        timeout_seconds: float = 30.0,
     ) -> list[CompanyToResearch]:
         """
         Get unique companies from leads table.
@@ -223,9 +229,13 @@ class CompanyResearchAgent:
         Args:
             campaign_id: Campaign UUID.
             max_companies: Maximum companies to return.
+            timeout_seconds: Query timeout in seconds (default 30s).
 
         Returns:
             List of companies to research.
+
+        Raises:
+            TimeoutError: If query exceeds timeout.
         """
         # Import inside method to avoid circular imports
         from sqlalchemy import func, select
@@ -235,53 +245,55 @@ class CompanyResearchAgent:
 
         companies: list[CompanyToResearch] = []
 
-        async with get_session() as session:
-            # Query for unique companies with valid emails
-            stmt = (
-                select(
-                    LeadModel.id,
-                    LeadModel.company_name,
-                    LeadModel.company_domain,
-                    LeadModel.company_linkedin_url,
-                    LeadModel.company_industry,
-                    LeadModel.company_size,
-                    func.count(LeadModel.id).label("lead_count"),
-                    func.max(LeadModel.lead_score).label("max_lead_score"),
-                )
-                .where(
-                    LeadModel.campaign_id == campaign_id,
-                    LeadModel.email_status == "valid",
-                    LeadModel.company_domain.isnot(None),
-                )
-                .group_by(
-                    LeadModel.id,
-                    LeadModel.company_name,
-                    LeadModel.company_domain,
-                    LeadModel.company_linkedin_url,
-                    LeadModel.company_industry,
-                    LeadModel.company_size,
-                )
-                .order_by(func.max(LeadModel.lead_score).desc())
-                .limit(max_companies)
-            )
-
-            result = await session.execute(stmt)
-            rows = result.all()
-
-            for row in rows:
-                if row.company_domain and row.company_name:
-                    companies.append(
-                        CompanyToResearch(
-                            lead_id=row.id,
-                            company_name=row.company_name,
-                            company_domain=row.company_domain,
-                            company_linkedin_url=row.company_linkedin_url,
-                            company_industry=row.company_industry,
-                            company_size=row.company_size,
-                            lead_count=row.lead_count or 1,
-                            max_lead_score=row.max_lead_score,
-                        )
+        # Add timeout protection for database query
+        async with asyncio.timeout(timeout_seconds):
+            async with get_session() as session:
+                # Query for unique companies with valid emails
+                stmt = (
+                    select(
+                        LeadModel.id,
+                        LeadModel.company_name,
+                        LeadModel.company_domain,
+                        LeadModel.company_linkedin_url,
+                        LeadModel.company_industry,
+                        LeadModel.company_size,
+                        func.count(LeadModel.id).label("lead_count"),
+                        func.max(LeadModel.lead_score).label("max_lead_score"),
                     )
+                    .where(
+                        LeadModel.campaign_id == campaign_id,
+                        LeadModel.email_status == "valid",
+                        LeadModel.company_domain.isnot(None),
+                    )
+                    .group_by(
+                        LeadModel.id,
+                        LeadModel.company_name,
+                        LeadModel.company_domain,
+                        LeadModel.company_linkedin_url,
+                        LeadModel.company_industry,
+                        LeadModel.company_size,
+                    )
+                    .order_by(func.max(LeadModel.lead_score).desc())
+                    .limit(max_companies)
+                )
+
+                result = await session.execute(stmt)
+                rows = result.all()
+
+                for row in rows:
+                    if row.company_domain and row.company_name:
+                        companies.append(
+                            CompanyToResearch(
+                                lead_id=row.id,
+                                company_name=row.company_name,
+                                company_domain=row.company_domain,
+                                company_linkedin_url=row.company_linkedin_url,
+                                company_industry=row.company_industry,
+                                company_size=row.company_size,
+                                lead_count=row.lead_count or 1,
+                                max_lead_score=row.max_lead_score,
+                            )
+                        )
 
         return companies
 
