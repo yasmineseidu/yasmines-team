@@ -26,6 +26,7 @@ API Documentation:
 """
 
 import asyncio
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -51,6 +52,7 @@ from src.integrations.nimbler import NimblerClient
 from src.integrations.reoon import ReoonClient
 from src.integrations.tomba import TombaClient
 from src.integrations.voilanorbert import VoilaNorbertClient
+from src.utils.rate_limiter import CircuitBreaker, TokenBucketRateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -249,7 +251,17 @@ class ProviderRegistry:
 
 
 class EmailVerificationAgent:
-    """Agent for finding and verifying email addresses using waterfall approach."""
+    """
+    Agent for finding and verifying email addresses using waterfall approach.
+
+    Database Flow:
+    - READS: leads table (lead_id, first_name, last_name, company_domain)
+    - WRITES: lead_emails table (email, verification_status, provider_used, cost)
+
+    Handoff:
+    - Receives: lead_id, first_name, last_name, company_domain from Lead List Builder (2.1)
+    - Sends: verified_email, verification_status to Personalization Agent (4.1)
+    """
 
     def __init__(self) -> None:
         """Initialize the email verification agent with API clients."""
@@ -266,6 +278,31 @@ class EmailVerificationAgent:
         self.findymail_client = self._init_findymail_client()
         self.reoon_client = self._init_reoon_client()
         self.mailverify_client = self._init_mailverify_client()
+
+        # Rate limiters per provider (prevent API throttling)
+        self._rate_limiters: dict[str, TokenBucketRateLimiter] = {
+            "tomba": TokenBucketRateLimiter(capacity=50, refill_rate=1.0, service_name="Tomba"),
+            "reoon": TokenBucketRateLimiter(capacity=30, refill_rate=0.5, service_name="Reoon"),
+            "mailverify": TokenBucketRateLimiter(
+                capacity=20, refill_rate=0.3, service_name="MailVerify"
+            ),
+        }
+
+        # Circuit breakers per provider (prevent cascade failures)
+        self._circuit_breakers: dict[str, CircuitBreaker] = {
+            "tomba": CircuitBreaker(
+                failure_threshold=3, recovery_timeout=60.0, service_name="Tomba"
+            ),
+            "muraena": CircuitBreaker(
+                failure_threshold=3, recovery_timeout=60.0, service_name="Muraena"
+            ),
+            "voila": CircuitBreaker(
+                failure_threshold=3, recovery_timeout=60.0, service_name="VoilaNorbert"
+            ),
+            "reoon": CircuitBreaker(
+                failure_threshold=5, recovery_timeout=30.0, service_name="Reoon"
+            ),
+        }
 
         logger.info(f"Initialized {self.name} agent with email verification clients")
 
@@ -431,11 +468,29 @@ class EmailVerificationAgent:
         providers_to_try = ProviderRegistry.get_providers_in_order()[:max_providers]
 
         for provider_config in providers_to_try:
+            provider_key = provider_config.name.value
+            circuit_breaker = self._circuit_breakers.get(provider_key)
+
+            # Check circuit breaker before attempting
+            if circuit_breaker and not circuit_breaker.can_proceed():
+                logger.warning(f"Circuit breaker open for {provider_key}, skipping")
+                continue
+
             try:
+                # Apply rate limiting if configured
+                rate_limiter = self._rate_limiters.get(provider_key)
+                if rate_limiter:
+                    await rate_limiter.acquire()
+
                 email = await self._find_email_with_provider(
                     provider_config.name, first_name, last_name, company_domain
                 )
+
                 if email:
+                    # Record success for circuit breaker
+                    if circuit_breaker:
+                        circuit_breaker.record_success()
+
                     # Email found, verify it
                     verification = await self._verify_email(email)
                     result.email = email
@@ -447,8 +502,23 @@ class EmailVerificationAgent:
                     logger.info(f"Found email {email} using {provider_config.name}")
                     return result
 
-            except Exception as e:
-                logger.warning(f"Failed to find email with {provider_config.name}: {e}")
+            except ProviderError as e:
+                # Specific provider error - record failure
+                if circuit_breaker:
+                    circuit_breaker.record_failure()
+                logger.warning(f"Provider {provider_key} failed: {e.message}")
+                continue
+
+            except EmailVerificationAgentError as e:
+                # Known agent error - log and continue
+                logger.warning(f"Agent error with {provider_key}: {e.message}")
+                continue
+
+            except TimeoutError:
+                # Timeout - record failure for circuit breaker
+                if circuit_breaker:
+                    circuit_breaker.record_failure()
+                logger.warning(f"Timeout with provider {provider_key}")
                 continue
 
         logger.warning(f"Could not find email for {first_name} {last_name} at {company_domain}")
@@ -469,13 +539,13 @@ class EmailVerificationAgent:
             result = await self.muraena_client.find_email(first_name, last_name, domain)  # type: ignore[attr-defined]
             return result.get("email") if result else None
         elif provider == EmailFinderProvider.VOILA_NORBERT and self.voila_client:
-            result = await self.voila_client.find_email(first_name, last_name, domain)  # type: ignore[attr-defined]
+            result = await self.voila_client.find_email(first_name, last_name, domain)
             return result.get("email") if result else None
         elif provider == EmailFinderProvider.NIMBLER and self.nimbler_client:
             result = await self.nimbler_client.find_email(first_name, last_name, domain)  # type: ignore[attr-defined]
             return result.get("email") if result else None
         elif provider == EmailFinderProvider.ICYPEAS and self.icypeas_client:
-            result = await self.icypeas_client.find_email(first_name, last_name, domain)  # type: ignore[attr-defined]
+            result = await self.icypeas_client.find_email(first_name, last_name, domain)
             return result.get("email") if result else None
         elif provider == EmailFinderProvider.ANYMAILFINDER and self.anymailfinder_client:
             result = await self.anymailfinder_client.find_email(first_name, last_name, domain)  # type: ignore[attr-defined]
@@ -576,25 +646,40 @@ async def find_and_verify_email_tool(args: dict[str, Any]) -> dict[str, Any]:
     """
     agent = EmailVerificationAgent()
 
-    result = await agent.find_email(
-        first_name=args.get("first_name", ""),
-        last_name=args.get("last_name", ""),
-        company_domain=args.get("company_domain", ""),
-        max_providers=args.get("max_providers", 3),
-    )
+    try:
+        result = await agent.find_email(
+            first_name=args.get("first_name", ""),
+            last_name=args.get("last_name", ""),
+            company_domain=args.get("company_domain", ""),
+            max_providers=args.get("max_providers", 3),
+        )
 
-    return {
-        "email": result.email,
-        "verification_status": (
-            result.verification_status.value if result.verification_status else None
-        ),
-        "provider_used": result.provider_used.value if result.provider_used else None,
-        "verifier_used": result.verifier_used.value if result.verifier_used else None,
-        "total_cost": result.total_cost,
-        "success": (
-            result.email is not None and result.verification_status == EmailVerificationStatus.VALID
-        ),
-    }
+        response_data = {
+            "email": result.email,
+            "verification_status": (
+                result.verification_status.value if result.verification_status else None
+            ),
+            "provider_used": result.provider_used.value if result.provider_used else None,
+            "verifier_used": result.verifier_used.value if result.verifier_used else None,
+            "total_cost": result.total_cost,
+            "success": (
+                result.email is not None
+                and result.verification_status == EmailVerificationStatus.VALID
+            ),
+        }
+
+        return {"content": [{"type": "text", "text": json.dumps(response_data)}]}
+
+    except EmailVerificationAgentError as e:
+        return {
+            "content": [{"type": "text", "text": f"Email verification failed: {e.message}"}],
+            "is_error": True,
+        }
+    except Exception as e:
+        return {
+            "content": [{"type": "text", "text": f"Unexpected error: {e!s}"}],
+            "is_error": True,
+        }
 
 
 # ============================================================================
@@ -604,16 +689,19 @@ async def find_and_verify_email_tool(args: dict[str, Any]) -> dict[str, Any]:
 
 async def main() -> None:
     """Main entry point for email verification agent."""
+    # Create SDK MCP server with tools first
+    create_sdk_mcp_server("email_verification", tools=[find_and_verify_email_tool])
+
     options = ClaudeAgentOptions(
         system_prompt=(
             "You are an email enrichment specialist finding and verifying business emails. "
             "Use the find_and_verify_email tool to find emails for leads. "
             "Always verify found emails before returning results."
         ),
+        allowed_tools=["mcp__email_verification__find_and_verify_email"],
+        setting_sources=["project"],
+        permission_mode="acceptEdits",
     )
-
-    # Create SDK MCP server with tools
-    create_sdk_mcp_server("email_verification", tools=[find_and_verify_email_tool])
 
     async for message in query(
         prompt="Process email verification for leads",
