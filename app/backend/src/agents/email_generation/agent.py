@@ -34,7 +34,15 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from claude_agent_sdk import ClaudeAgentOptions, create_sdk_mcp_server, query
+from claude_agent_sdk import (
+    ClaudeAgentOptions,
+    ClaudeSDKError,
+    CLIJSONDecodeError,
+    CLINotFoundError,
+    ProcessError,
+    create_sdk_mcp_server,
+    query,
+)
 from claude_agent_sdk.types import AssistantMessage, ResultMessage, TextBlock
 
 from src.agents.email_generation.schemas import EmailGenerationResult, TierConfig
@@ -296,6 +304,34 @@ Report progress as you work."""
                 error=last_error,
             )
 
+        except CLINotFoundError:
+            logger.error("Claude Code CLI not found. Ensure claude-agent-sdk is installed.")
+            return EmailGenerationResult(
+                success=False,
+                campaign_id=campaign_id,
+                error="Claude Code CLI not installed",
+            )
+        except ProcessError as e:
+            logger.error(f"SDK process failed (exit {e.exit_code}): {e.stderr}")
+            return EmailGenerationResult(
+                success=False,
+                campaign_id=campaign_id,
+                error=f"Process error (exit {e.exit_code}): {e.stderr[:200] if e.stderr else 'unknown'}",
+            )
+        except CLIJSONDecodeError as e:
+            logger.error(f"SDK JSON decode error on line: {e.line}")
+            return EmailGenerationResult(
+                success=False,
+                campaign_id=campaign_id,
+                error=f"JSON decode error: {e}",
+            )
+        except ClaudeSDKError as e:
+            logger.error(f"Claude SDK error: {e}")
+            return EmailGenerationResult(
+                success=False,
+                campaign_id=campaign_id,
+                error=f"SDK error: {e}",
+            )
         except Exception as e:
             logger.exception(f"Agent execution failed: {e}")
             return EmailGenerationResult(
@@ -309,7 +345,7 @@ Report progress as you work."""
         # Track quality score
         if "quality_score" in data:
             score = data["quality_score"]
-            if isinstance(score, (int, float)):
+            if isinstance(score, int | float):
                 self._stats["quality_scores"].append(score)
 
         # Track generated email

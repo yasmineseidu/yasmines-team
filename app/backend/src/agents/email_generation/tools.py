@@ -10,16 +10,27 @@ Provides tools for:
 
 All tools return SDK-compliant format: {"content": [...], "is_error": bool}
 Per LEARN-029: Tools must return this exact format.
+
+Integration Resilience:
+- Anthropic API calls use AsyncAnthropic with retry and rate limiting
+- Per LEARN-030: Module-level singleton for rate limiter
+- Per LEARN-002: Tenacity retry uses tuple syntax for exception types
 """
 
+import asyncio
 import json
 import logging
 import os
+import random
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from claude_agent_sdk import tool
+
+# Lazy import for anthropic to allow tests to run without it installed
+if TYPE_CHECKING:
+    import anthropic
 
 from src.agents.email_generation.frameworks import (
     build_generation_prompt,
@@ -34,7 +45,194 @@ from src.agents.email_generation.schemas import (
     PersonalizationLevel,
 )
 
+if TYPE_CHECKING:
+    from anthropic import AsyncAnthropic
+
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Rate Limiter (Module-level Singleton per LEARN-030)
+# =============================================================================
+
+
+class TokenBucketRateLimiter:
+    """
+    Token bucket rate limiter for Anthropic API.
+
+    Anthropic limits:
+    - Tier 1: 50 RPM (requests per minute)
+    - Tier 2: 1000 RPM
+    - Tier 3: 2000 RPM
+
+    Default configured for Tier 1 with safety margin.
+    """
+
+    def __init__(self, rate: float = 40.0, capacity: float = 50.0) -> None:
+        """
+        Initialize rate limiter.
+
+        Args:
+            rate: Tokens added per second (default: 40/60 = 0.67 per second for 40 RPM)
+            capacity: Maximum tokens in bucket
+        """
+        self._rate = rate / 60.0  # Convert to per-second
+        self._capacity = capacity
+        self._tokens = capacity
+        self._last_update = (
+            asyncio.get_event_loop().time() if asyncio.get_event_loop().is_running() else 0.0
+        )
+        self._lock = asyncio.Lock()
+
+    async def acquire(self, tokens: float = 1.0) -> None:
+        """
+        Acquire tokens, waiting if necessary.
+
+        Args:
+            tokens: Number of tokens to acquire (default: 1 for one API call)
+        """
+        async with self._lock:
+            now = asyncio.get_event_loop().time()
+
+            # Refill tokens based on time elapsed
+            elapsed = now - self._last_update
+            self._tokens = min(self._capacity, self._tokens + elapsed * self._rate)
+            self._last_update = now
+
+            # Wait if not enough tokens
+            if self._tokens < tokens:
+                wait_time = (tokens - self._tokens) / self._rate
+                # Add jitter to prevent thundering herd (per best practices)
+                wait_time += random.uniform(0.1, 0.5)
+                logger.debug(f"Rate limiter: waiting {wait_time:.2f}s for tokens")
+                await asyncio.sleep(wait_time)
+                self._tokens = tokens  # Reset after wait
+
+            self._tokens -= tokens
+
+
+# Module-level singleton (per LEARN-030)
+_anthropic_rate_limiter: TokenBucketRateLimiter | None = None
+
+
+def _get_anthropic_rate_limiter() -> TokenBucketRateLimiter:
+    """Get or create the Anthropic rate limiter singleton."""
+    global _anthropic_rate_limiter
+    if _anthropic_rate_limiter is None:
+        _anthropic_rate_limiter = TokenBucketRateLimiter(rate=40.0, capacity=50.0)
+    return _anthropic_rate_limiter
+
+
+# Module-level singleton for async client (per LEARN-030)
+_anthropic_client: "AsyncAnthropic | None" = None
+
+
+def _get_anthropic_client(api_key: str) -> "anthropic.AsyncAnthropic":
+    """
+    Get or create the AsyncAnthropic client singleton.
+
+    Args:
+        api_key: Anthropic API key
+
+    Returns:
+        AsyncAnthropic client instance
+    """
+    import anthropic as anthropic_module
+
+    global _anthropic_client
+    if _anthropic_client is None:
+        _anthropic_client = anthropic_module.AsyncAnthropic(api_key=api_key)
+    return _anthropic_client
+
+
+# =============================================================================
+# Retry-wrapped Anthropic API Call
+# =============================================================================
+
+
+def _get_anthropic_retryable_exceptions() -> tuple[type[Exception], ...]:
+    """Get retryable exception types from anthropic module."""
+    import anthropic as anthropic_module
+
+    return (
+        anthropic_module.RateLimitError,
+        anthropic_module.APIConnectionError,
+        anthropic_module.InternalServerError,
+    )
+
+
+async def _call_anthropic_with_retry(
+    client: "anthropic.AsyncAnthropic",
+    prompt: str,
+    model: str = "claude-sonnet-4-20250514",
+    max_tokens: int = 1000,
+    temperature: float = 0.7,
+    max_retries: int = 3,
+) -> str:
+    """
+    Call Anthropic API with retry and rate limiting.
+
+    Args:
+        client: AsyncAnthropic client
+        prompt: User message content
+        model: Model to use
+        max_tokens: Maximum response tokens
+        temperature: Sampling temperature
+        max_retries: Maximum retry attempts
+
+    Returns:
+        Response text from the model
+
+    Raises:
+        anthropic.APIError: If all retries fail
+    """
+    import anthropic as anthropic_module
+
+    retryable_exceptions = _get_anthropic_retryable_exceptions()
+    last_exception: Exception | None = None
+
+    for attempt in range(max_retries):
+        try:
+            # Acquire rate limit token
+            rate_limiter = _get_anthropic_rate_limiter()
+            await rate_limiter.acquire()
+
+            logger.debug(
+                f"Calling Anthropic API (attempt {attempt + 1}/{max_retries}) "
+                f"with model={model}, max_tokens={max_tokens}"
+            )
+
+            message = await client.messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            # Extract text from response
+            if message.content and len(message.content) > 0:
+                text: str = message.content[0].text
+                return text
+            return ""
+
+        except retryable_exceptions as e:
+            last_exception = e
+            if attempt < max_retries - 1:
+                # Exponential backoff with jitter
+                wait_time = (2**attempt) + random.uniform(0.1, 1.0)
+                logger.warning(
+                    f"Anthropic API error (attempt {attempt + 1}/{max_retries}): {e}. "
+                    f"Retrying in {wait_time:.2f}s"
+                )
+                await asyncio.sleep(wait_time)
+            else:
+                logger.error(f"Anthropic API failed after {max_retries} attempts: {e}")
+                raise
+
+    # Should never reach here, but for type safety
+    if last_exception:
+        raise last_exception
+    raise anthropic_module.APIError(message="Unknown error", request=None, body=None)
 
 
 # =============================================================================
@@ -42,7 +240,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
-@tool(
+@tool(  # type: ignore[misc]
     name="load_campaign_context",
     description="Load campaign context including leads, niche, and personas",
     input_schema={
@@ -186,12 +384,8 @@ async def generate_email_impl(args: dict[str, Any]) -> dict[str, Any]:
         }
 
     try:
-        import anthropic
-
-        # Remove ANTHROPIC_API_KEY from environ (per LEARN-001)
-        api_key = os.environ.pop("ANTHROPIC_API_KEY", None)
-        if not api_key:
-            api_key = os.getenv("ANTHROPIC_API_KEY_BACKUP")
+        # Get API key (prefer backup to avoid SDK conflict per LEARN-001)
+        api_key = os.environ.get("ANTHROPIC_API_KEY_BACKUP") or os.environ.get("ANTHROPIC_API_KEY")
 
         if not api_key:
             return {
@@ -257,21 +451,15 @@ async def generate_email_impl(args: dict[str, Any]) -> dict[str, Any]:
             personalization_level=personalization_level.value,
         )
 
-        # Call Claude API
-        client = anthropic.Anthropic(api_key=api_key)
-        message = client.messages.create(
+        # Call Claude API with retry and rate limiting (using AsyncAnthropic)
+        client = _get_anthropic_client(api_key)
+        response_text = await _call_anthropic_with_retry(
+            client=client,
+            prompt=prompt,
             model="claude-sonnet-4-20250514",
             max_tokens=1000,
             temperature=0.7,
-            messages=[{"role": "user", "content": prompt}],
         )
-
-        # Restore API key
-        if api_key:
-            os.environ["ANTHROPIC_API_KEY"] = api_key
-
-        # Parse response
-        response_text = message.content[0].text
 
         # Extract JSON from response (per LEARN-016: JSON parsing returns Any)
         email_data: dict[str, Any] = {}
@@ -347,17 +535,39 @@ async def generate_email_impl(args: dict[str, Any]) -> dict[str, Any]:
         }
 
     except Exception as e:
-        logger.exception(f"Error generating email: {e}")
-        # Restore API key on error
-        if "api_key" in dir() and api_key:
-            os.environ["ANTHROPIC_API_KEY"] = api_key
+        # Import anthropic for exception type checking
+        try:
+            import anthropic as anthropic_module
+
+            if isinstance(e, anthropic_module.RateLimitError):
+                logger.warning(f"Rate limit hit after retries for lead {lead_id}: {e}")
+                return {
+                    "content": [{"type": "text", "text": f"Rate limit exceeded: {e}"}],
+                    "is_error": True,
+                }
+            elif isinstance(e, anthropic_module.APIConnectionError):
+                logger.error(f"API connection error for lead {lead_id}: {e}")
+                return {
+                    "content": [{"type": "text", "text": f"API connection error: {e}"}],
+                    "is_error": True,
+                }
+            elif isinstance(e, anthropic_module.APIError):
+                logger.error(f"Anthropic API error for lead {lead_id}: {e}")
+                return {
+                    "content": [{"type": "text", "text": f"API error: {e}"}],
+                    "is_error": True,
+                }
+        except ImportError:
+            pass  # anthropic not installed, fall through to generic handler
+
+        logger.exception(f"Error generating email for lead {lead_id}: {e}")
         return {
             "content": [{"type": "text", "text": f"Error generating email: {e}"}],
             "is_error": True,
         }
 
 
-@tool(
+@tool(  # type: ignore[misc]
     name="generate_email",
     description="Generate a personalized cold email for a lead using Claude",
     input_schema={
@@ -388,7 +598,7 @@ async def generate_email(args: dict[str, Any]) -> dict[str, Any]:
 # =============================================================================
 
 
-@tool(
+@tool(  # type: ignore[misc]
     name="score_email_quality",
     description="Score an email's quality across multiple dimensions",
     input_schema={
@@ -486,7 +696,7 @@ async def score_email_quality(args: dict[str, Any]) -> dict[str, Any]:
 # =============================================================================
 
 
-@tool(
+@tool(  # type: ignore[misc]
     name="save_generated_email",
     description="Save a generated email to the database",
     input_schema={
@@ -643,7 +853,7 @@ async def save_generated_email(args: dict[str, Any]) -> dict[str, Any]:
 # =============================================================================
 
 
-@tool(
+@tool(  # type: ignore[misc]
     name="update_campaign_email_stats",
     description="Update campaign with email generation statistics",
     input_schema={
@@ -753,7 +963,7 @@ async def update_campaign_email_stats(args: dict[str, Any]) -> dict[str, Any]:
 # =============================================================================
 
 
-@tool(
+@tool(  # type: ignore[misc]
     name="save_to_personalization_library",
     description="Save a high-quality opening line to the personalization library",
     input_schema={
