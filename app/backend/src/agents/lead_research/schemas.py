@@ -100,6 +100,16 @@ COST_CONTROLS = {
 }
 
 
+# API costs per call (in USD)
+# These values should be updated if API pricing changes
+API_COSTS = {
+    "tavily_search": Decimal("0.001"),  # Tavily search API cost per call
+    "serper_search": Decimal("0.001"),  # Serper search API cost per call
+    "perplexity_search": Decimal("0.005"),  # Perplexity API cost per call
+    "headline_analysis": Decimal("0.0"),  # No API cost for local analysis
+}
+
+
 # =============================================================================
 # Input Schemas
 # =============================================================================

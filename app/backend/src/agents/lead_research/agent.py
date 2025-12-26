@@ -9,6 +9,28 @@ Research depth varies by lead tier:
 - Tier C (Basic): 1 query, max $0.01/lead, headline analysis only
 
 Uses Claude Agent SDK with SDK MCP tools for in-process execution.
+
+Database Interactions:
+======================
+
+1. INPUT:
+   - Source Agent: Company Research Agent (Phase 4.1)
+   - Source Table: leads (via lead_list_builder), company_research
+   - Required Fields: campaign_id, leads with lead_tier, company_research_id
+   - Data Format: LeadData schema with optional company_research reference
+   - Handoff Method: Database table (leads → company_research FK)
+
+2. OUTPUT:
+   - Target Agent: Email Generation Agent (Phase 4.3)
+   - Target Table: lead_research, personalization_angles
+   - Written Fields: facts, angles, research_cost, quality_score, primary_hook
+   - Data Format: ResearchResult with ExtractedFact and RankedAngle lists
+   - Handoff Method: Database table (lead_research → personalization_angles)
+
+3. HANDOFF COORDINATION:
+   - Upstream Dependencies: Company Research Agent must complete first
+   - Downstream Consumers: Email Generation Agent reads personalization_angles
+   - Failure Handling: Returns empty result on budget exceeded, fallback to company angles
 """
 
 import asyncio
@@ -435,7 +457,7 @@ If no specific hooks are found, flag for fallback to company-level personalizati
 
         return valid_results
 
-    @retry(
+    @retry(  # type: ignore[misc]
         retry=retry_if_exception_type((RateLimitExceededError,)),
         stop=stop_after_attempt(3),
         wait=wait_exponential_jitter(initial=2, max=30),
@@ -478,7 +500,7 @@ If no specific hooks are found, flag for fallback to company-level personalizati
             logger.error(f"LinkedIn posts search failed: {e}")
             return {"posts": [], "cost": 0}
 
-    @retry(
+    @retry(  # type: ignore[misc]
         retry=retry_if_exception_type((RateLimitExceededError,)),
         stop=stop_after_attempt(3),
         wait=wait_exponential_jitter(initial=2, max=30),
@@ -517,7 +539,7 @@ If no specific hooks are found, flag for fallback to company-level personalizati
             logger.error(f"Profile search failed: {e}")
             return {"profile": {}, "cost": 0}
 
-    @retry(
+    @retry(  # type: ignore[misc]
         retry=retry_if_exception_type((RateLimitExceededError,)),
         stop=stop_after_attempt(3),
         wait=wait_exponential_jitter(initial=2, max=30),
@@ -556,7 +578,7 @@ If no specific hooks are found, flag for fallback to company-level personalizati
             logger.error(f"Article search failed: {e}")
             return {"articles": [], "cost": 0}
 
-    @retry(
+    @retry(  # type: ignore[misc]
         retry=retry_if_exception_type((RateLimitExceededError,)),
         stop=stop_after_attempt(3),
         wait=wait_exponential_jitter(initial=2, max=30),

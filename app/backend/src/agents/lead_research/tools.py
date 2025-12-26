@@ -17,6 +17,8 @@ from typing import Any
 
 from claude_agent_sdk import tool
 
+from src.agents.lead_research.schemas import API_COSTS
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,7 +27,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
-@tool(
+@tool(  # type: ignore[misc]
     name="search_linkedin_posts",
     description=(
         "Search for a person's recent LinkedIn posts using natural language. "
@@ -58,9 +60,8 @@ async def search_linkedin_posts_tool(args: dict[str, Any]) -> dict[str, Any]:
     first_name = args.get("first_name", "")
     last_name = args.get("last_name", "")
     title = args.get("title", "")
-    _company_name = args.get("company_name", "")  # Reserved for future use
+    company_name = args.get("company_name", "")
     max_results = args.get("max_results", 5)
-    _ = _company_name  # Silence unused variable warning
 
     if not first_name or not last_name:
         return {
@@ -76,6 +77,8 @@ async def search_linkedin_posts_tool(args: dict[str, Any]) -> dict[str, Any]:
         query = f"{first_name} {last_name} linkedin posts recent"
         if title:
             query += f" {title}"
+        if company_name:
+            query += f" {company_name}"
 
         api_key = os.getenv("TAVILY_API_KEY", "")
         if not api_key:
@@ -120,7 +123,7 @@ async def search_linkedin_posts_tool(args: dict[str, Any]) -> dict[str, Any]:
                 "total_results": len(result.results),
                 "linkedin_results": len(posts),
                 "processing_time_ms": processing_time_ms,
-                "cost": 0.001,  # Tavily cost per call
+                "cost": float(API_COSTS["tavily_search"]),
             },
         }
 
@@ -138,7 +141,7 @@ async def search_linkedin_posts_tool(args: dict[str, Any]) -> dict[str, Any]:
         }
 
 
-@tool(
+@tool(  # type: ignore[misc]
     name="search_linkedin_profile",
     description=(
         "Search for a person's LinkedIn profile to extract headline and about section. "
@@ -205,7 +208,7 @@ async def search_linkedin_profile_tool(args: dict[str, Any]) -> dict[str, Any]:
             "url": None,
         }
 
-        for item in result.organic_results:
+        for item in result.organic:
             if "linkedin.com/in/" in item.link.lower():
                 profile_data["url"] = item.link
                 profile_data["headline"] = item.title
@@ -229,7 +232,7 @@ async def search_linkedin_profile_tool(args: dict[str, Any]) -> dict[str, Any]:
                 "profile": profile_data,
                 "query": query,
                 "processing_time_ms": processing_time_ms,
-                "cost": 0.001,
+                "cost": float(API_COSTS["serper_search"]),
             },
         }
 
@@ -304,7 +307,7 @@ async def _search_profile_with_tavily(
                 "profile": profile_data,
                 "query": query,
                 "processing_time_ms": processing_time_ms,
-                "cost": 0.001,
+                "cost": float(API_COSTS["tavily_search"]),
             },
         }
     except Exception as e:
@@ -314,7 +317,7 @@ async def _search_profile_with_tavily(
         }
 
 
-@tool(
+@tool(  # type: ignore[misc]
     name="search_articles_authored",
     description=(
         "Search for articles written or authored by a person. "
@@ -341,9 +344,8 @@ async def search_articles_authored_tool(args: dict[str, Any]) -> dict[str, Any]:
 
     first_name = args.get("first_name", "")
     last_name = args.get("last_name", "")
-    _title = args.get("title", "")  # Reserved for future use
+    title = args.get("title", "")
     max_results = args.get("max_results", 3)
-    del _title  # Silence unused variable warning
 
     if not first_name or not last_name:
         return {
@@ -354,8 +356,10 @@ async def search_articles_authored_tool(args: dict[str, Any]) -> dict[str, Any]:
     try:
         from src.integrations.tavily import TavilyClient, TavilyError
 
-        # Quote name for exact match
+        # Quote name for exact match, include title for better relevance
         query = f'"{first_name} {last_name}" article author'
+        if title:
+            query += f" {title}"
 
         api_key = os.getenv("TAVILY_API_KEY", "")
         if not api_key:
@@ -398,7 +402,7 @@ async def search_articles_authored_tool(args: dict[str, Any]) -> dict[str, Any]:
                 "articles": articles,
                 "query": query,
                 "processing_time_ms": processing_time_ms,
-                "cost": 0.001,
+                "cost": float(API_COSTS["tavily_search"]),
             },
         }
 
@@ -435,7 +439,7 @@ def _extract_publication(url: str) -> str | None:
         return None
 
 
-@tool(
+@tool(  # type: ignore[misc]
     name="search_podcast_appearances",
     description=(
         "Search for podcast appearances and interviews of a person. "
@@ -462,9 +466,8 @@ async def search_podcast_appearances_tool(args: dict[str, Any]) -> dict[str, Any
 
     first_name = args.get("first_name", "")
     last_name = args.get("last_name", "")
-    _title = args.get("title", "")  # Reserved for future use
+    title = args.get("title", "")
     max_results = args.get("max_results", 3)
-    del _title  # Silence unused variable warning
 
     if not first_name or not last_name:
         return {
@@ -475,8 +478,10 @@ async def search_podcast_appearances_tool(args: dict[str, Any]) -> dict[str, Any
     try:
         from src.integrations.tavily import TavilyClient, TavilyError
 
-        # Search for podcast appearances
+        # Search for podcast appearances, include title for better relevance
         query = f'"{first_name} {last_name}" podcast interview guest'
+        if title:
+            query += f" {title}"
 
         api_key = os.getenv("TAVILY_API_KEY", "")
         if not api_key:
@@ -527,7 +532,7 @@ async def search_podcast_appearances_tool(args: dict[str, Any]) -> dict[str, Any
                 "podcasts": podcasts,
                 "query": query,
                 "processing_time_ms": processing_time_ms,
-                "cost": 0.001,
+                "cost": float(API_COSTS["tavily_search"]),
             },
         }
 
@@ -545,7 +550,7 @@ async def search_podcast_appearances_tool(args: dict[str, Any]) -> dict[str, Any
         }
 
 
-@tool(
+@tool(  # type: ignore[misc]
     name="analyze_headline",
     description=(
         "Analyze a lead's headline and title for personalization hooks. "
@@ -634,7 +639,7 @@ async def analyze_headline_tool(args: dict[str, Any]) -> dict[str, Any]:
             "title": title,
             "headline": headline,
             "processing_time_ms": processing_time_ms,
-            "cost": 0.0,  # No API cost
+            "cost": float(API_COSTS["headline_analysis"]),
         },
     }
 
