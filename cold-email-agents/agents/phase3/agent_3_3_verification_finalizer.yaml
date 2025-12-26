@@ -4,7 +4,7 @@
 # Phase: 3 - Email Verification & Enrichment
 # Purpose: Finalize verification, export results, trigger approval gate
 # Execution: Single execution - summary and approval trigger
-# Depends On: Waterfall Enrichment Agent (3.2)
+# Depends On: Email Verification Agent (3.1)
 # Triggers: Human Gate for Phase 4 approval
 # ==============================================================================
 
@@ -64,10 +64,10 @@ inputs:
     - name: campaign_id
       type: string
       format: uuid
-      source: handoff.waterfall_enrichment_agent.campaign_id
-    - name: total_enriched
+      source: handoff.email_verification_agent.campaign_id
+    - name: emails_valid
       type: integer
-      source: handoff.waterfall_enrichment_agent.total_enriched
+      source: handoff.email_verification_agent.emails_valid
 
 # ==============================================================================
 # DATABASE OPERATIONS
