@@ -214,6 +214,57 @@ class BackgroundJob:
         return self.status.lower() in ("running", "processing", "pending")
 
 
+class AccountStatus(int, Enum):
+    """Email account status codes from Instantly API."""
+
+    ACTIVE = 1
+    PAUSED = 2
+    CONNECTION_ERROR = -1
+    SOFT_BOUNCE_ERROR = -2
+    SENDING_ERROR = -3
+
+
+class WarmupStatus(int, Enum):
+    """Warmup status codes from Instantly API."""
+
+    PAUSED = 0
+    ACTIVE = 1
+    BANNED = -1
+
+
+@dataclass
+class EmailAccount:
+    """Email account entity from Instantly API."""
+
+    email: str
+    status: AccountStatus
+    warmup_status: WarmupStatus = WarmupStatus.PAUSED
+    first_name: str | None = None
+    last_name: str | None = None
+    daily_limit: int = 50
+    warmup_limit: int = 10
+    warmup_score: int = 0
+    provider_code: int = 1
+    custom_tag_ids: list[str] = field(default_factory=list)
+    created_at: datetime | None = None
+    raw_response: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def is_active(self) -> bool:
+        """Check if account is active."""
+        return self.status == AccountStatus.ACTIVE
+
+    @property
+    def is_warming_up(self) -> bool:
+        """Check if warmup is active."""
+        return self.warmup_status == WarmupStatus.ACTIVE
+
+    @property
+    def is_healthy(self) -> bool:
+        """Check if account status is healthy (not in error state)."""
+        return self.status.value > 0
+
+
 class InstantlyError(IntegrationError):
     """Exception raised for Instantly API errors."""
 
@@ -1102,6 +1153,237 @@ class InstantlyClient(BaseIntegrationClient):
             ) from e
 
     # -------------------------------------------------------------------------
+    # Account Management
+    # -------------------------------------------------------------------------
+
+    async def list_accounts(
+        self,
+        limit: int = 100,
+        starting_after: str | None = None,
+        search: str | None = None,
+        status: AccountStatus | None = None,
+        tag_ids: list[str] | None = None,
+    ) -> list[EmailAccount]:
+        """
+        List email accounts in the workspace.
+
+        Args:
+            limit: Maximum accounts to return (1-100).
+            starting_after: Pagination cursor for next page.
+            search: Search by email domain.
+            status: Filter by account status.
+            tag_ids: Filter by custom tag IDs.
+
+        Returns:
+            List of EmailAccount objects.
+
+        Raises:
+            InstantlyError: If listing fails.
+        """
+        params: dict[str, Any] = {"limit": min(limit, 100)}
+
+        if starting_after:
+            params["starting_after"] = starting_after
+        if search:
+            params["search"] = search
+        if status is not None:
+            params["status"] = status.value
+        if tag_ids:
+            params["tag_ids"] = ",".join(tag_ids)
+
+        try:
+            response = await self.get("/accounts", params=params)
+            accounts_data = response.get("items", response.get("data", []))
+
+            return [self._parse_account(a) for a in accounts_data]
+
+        except IntegrationError as e:
+            logger.error(f"[{self.name}] list_accounts failed: {e}")
+            raise InstantlyError(
+                message=str(e),
+                status_code=e.status_code,
+                response_data=e.response_data,
+            ) from e
+
+    async def get_account(self, email: str) -> EmailAccount:
+        """
+        Get a single email account by email address.
+
+        Args:
+            email: Account email address.
+
+        Returns:
+            EmailAccount object with full details.
+
+        Raises:
+            InstantlyError: If account not found or request fails.
+        """
+        try:
+            response = await self.get(f"/accounts/{email}")
+            return self._parse_account(response)
+
+        except IntegrationError as e:
+            logger.error(
+                f"[{self.name}] get_account failed: {e}",
+                extra={"email": email},
+            )
+            raise InstantlyError(
+                message=str(e),
+                status_code=e.status_code,
+                response_data=e.response_data,
+            ) from e
+
+    async def enable_warmup_for_accounts(
+        self,
+        emails: list[str],
+    ) -> BackgroundJob:
+        """
+        Enable warmup for specified email accounts.
+
+        Initiates a background job to enable warmup for the accounts.
+        Use get_background_job() to monitor progress.
+
+        Args:
+            emails: List of email addresses to enable warmup for.
+
+        Returns:
+            BackgroundJob tracking the warmup enable operation.
+
+        Raises:
+            InstantlyError: If enabling warmup fails.
+        """
+        payload = {"emails": emails}
+
+        try:
+            response = await self.post("/accounts/warmup/enable", json=payload)
+
+            return BackgroundJob(
+                job_id=response.get("id", response.get("job_id", "")),
+                status=response.get("status", "pending"),
+                progress=response.get("progress", 0),
+                raw_response=response,
+            )
+
+        except IntegrationError as e:
+            logger.error(
+                f"[{self.name}] enable_warmup_for_accounts failed: {e}",
+                extra={"email_count": len(emails)},
+            )
+            raise InstantlyError(
+                message=str(e),
+                status_code=e.status_code,
+                response_data=e.response_data,
+            ) from e
+
+    async def disable_warmup_for_accounts(
+        self,
+        emails: list[str],
+    ) -> BackgroundJob:
+        """
+        Disable warmup for specified email accounts.
+
+        Initiates a background job to disable warmup for the accounts.
+        Use get_background_job() to monitor progress.
+
+        Args:
+            emails: List of email addresses to disable warmup for.
+
+        Returns:
+            BackgroundJob tracking the warmup disable operation.
+
+        Raises:
+            InstantlyError: If disabling warmup fails.
+        """
+        payload = {"emails": emails}
+
+        try:
+            response = await self.post("/accounts/warmup/disable", json=payload)
+
+            return BackgroundJob(
+                job_id=response.get("id", response.get("job_id", "")),
+                status=response.get("status", "pending"),
+                progress=response.get("progress", 0),
+                raw_response=response,
+            )
+
+        except IntegrationError as e:
+            logger.error(
+                f"[{self.name}] disable_warmup_for_accounts failed: {e}",
+                extra={"email_count": len(emails)},
+            )
+            raise InstantlyError(
+                message=str(e),
+                status_code=e.status_code,
+                response_data=e.response_data,
+            ) from e
+
+    async def get_warmup_analytics(
+        self,
+        emails: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Get warmup analytics for email accounts.
+
+        Args:
+            emails: Optional list of specific emails to get analytics for.
+                   If None, gets analytics for all accounts.
+
+        Returns:
+            Dictionary with warmup analytics data.
+
+        Raises:
+            InstantlyError: If analytics retrieval fails.
+        """
+        payload: dict[str, Any] = {}
+        if emails:
+            payload["emails"] = emails
+
+        try:
+            return await self.post("/accounts/warmup-analytics", json=payload)
+
+        except IntegrationError as e:
+            logger.error(f"[{self.name}] get_warmup_analytics failed: {e}")
+            raise InstantlyError(
+                message=str(e),
+                status_code=e.status_code,
+                response_data=e.response_data,
+            ) from e
+
+    async def get_background_job(self, job_id: str) -> BackgroundJob:
+        """
+        Get status of a background job.
+
+        Args:
+            job_id: Background job UUID.
+
+        Returns:
+            BackgroundJob with current status and progress.
+
+        Raises:
+            InstantlyError: If job not found or request fails.
+        """
+        try:
+            response = await self.get(f"/background-jobs/{job_id}")
+
+            return BackgroundJob(
+                job_id=response.get("id", job_id),
+                status=response.get("status", "unknown"),
+                progress=response.get("progress", 0),
+                raw_response=response,
+            )
+
+        except IntegrationError as e:
+            logger.error(
+                f"[{self.name}] get_background_job failed: {e}",
+                extra={"job_id": job_id},
+            )
+            raise InstantlyError(
+                message=str(e),
+                status_code=e.status_code,
+                response_data=e.response_data,
+            ) from e
+
+    # -------------------------------------------------------------------------
     # Health Check & Utility
     # -------------------------------------------------------------------------
 
@@ -1272,5 +1554,41 @@ class InstantlyClient(BaseIntegrationClient):
             emails_replied=data.get("emails_replied", data.get("replied", 0)),
             emails_bounced=data.get("emails_bounced", data.get("bounced", 0)),
             unsubscribed=data.get("unsubscribed", 0),
+            raw_response=data,
+        )
+
+    def _parse_account(self, data: dict[str, Any]) -> EmailAccount:
+        """Parse raw API response into EmailAccount dataclass."""
+        status_value = data.get("status", 1)
+        try:
+            status = AccountStatus(status_value)
+        except ValueError:
+            status = AccountStatus.ACTIVE
+
+        warmup_value = data.get("warmup_status", 0)
+        try:
+            warmup_status = WarmupStatus(warmup_value)
+        except ValueError:
+            warmup_status = WarmupStatus.PAUSED
+
+        created_at = None
+        if data.get("timestamp_created"):
+            with contextlib.suppress(ValueError, AttributeError):
+                created_at = datetime.fromisoformat(
+                    data["timestamp_created"].replace("Z", "+00:00")
+                )
+
+        return EmailAccount(
+            email=data.get("email", ""),
+            status=status,
+            warmup_status=warmup_status,
+            first_name=data.get("first_name"),
+            last_name=data.get("last_name"),
+            daily_limit=data.get("daily_limit", 50),
+            warmup_limit=data.get("warmup_limit", 10),
+            warmup_score=data.get("warmup_score", 0),
+            provider_code=data.get("provider_code", 1),
+            custom_tag_ids=data.get("custom_tag_ids", []),
+            created_at=created_at,
             raw_response=data,
         )
