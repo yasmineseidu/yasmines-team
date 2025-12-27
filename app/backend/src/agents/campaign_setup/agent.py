@@ -11,9 +11,9 @@ It prepares the campaign infrastructure before email sending begins.
 import json
 import logging
 import os
-import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -342,6 +342,58 @@ Return the final result as JSON."""
                 error=str(e),
             )
 
+    def _extract_json_object(self, text: str) -> dict[str, Any] | None:
+        """
+        Extract the first valid JSON object from text, handling nested braces.
+
+        Args:
+            text: Text that may contain a JSON object.
+
+        Returns:
+            Parsed JSON dict if found and valid, None otherwise.
+        """
+        # Find the first opening brace
+        start = text.find("{")
+        if start == -1:
+            return None
+
+        # Count braces to find matching closing brace
+        depth = 0
+        in_string = False
+        escape_next = False
+
+        for i, char in enumerate(text[start:], start):
+            if escape_next:
+                escape_next = False
+                continue
+
+            if char == "\\":
+                escape_next = True
+                continue
+
+            if char == '"' and not escape_next:
+                in_string = not in_string
+                continue
+
+            if in_string:
+                continue
+
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    # Found matching brace
+                    json_str = text[start : i + 1]
+                    try:
+                        result: dict[str, Any] = json.loads(json_str)
+                        return result
+                    except json.JSONDecodeError:
+                        # Try finding another JSON object after this position
+                        return self._extract_json_object(text[i + 1 :])
+
+        return None
+
     def _parse_agent_response(
         self,
         campaign_id: str,
@@ -359,11 +411,9 @@ Return the final result as JSON."""
         """
         # Try to find JSON in the response
         try:
-            # Look for JSON object in text
-            json_match = re.search(r"\{[^{}]*\}", text_content, re.DOTALL)
-            if json_match:
-                result_data = json.loads(json_match.group())
-
+            # Look for JSON object in text - handles nested braces
+            result_data = self._extract_json_object(text_content)
+            if result_data:
                 return CampaignSetupResult(
                     success=result_data.get("success", False),
                     campaign_id=campaign_id,

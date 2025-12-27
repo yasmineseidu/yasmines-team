@@ -1,55 +1,85 @@
 """
-Slack integration client stub.
+Slack integration client.
 
-Provides basic Slack messaging functionality for notifications.
-This is a minimal implementation to support Campaign Setup notifications.
+Provides Slack messaging functionality for notifications with
+exponential backoff retry logic and rate limiting support.
+
+API Documentation: https://api.slack.com/methods
+Rate Limits: https://api.slack.com/docs/rate-limits
+- Tier 1 (chat.postMessage): ~1 request per second per channel
+
+Authentication:
+- Bearer token via Bot Token from Slack App
+
+Example:
+    >>> from src.integrations.slack import SlackClient
+    >>> client = SlackClient(token="xoxb-...")
+    >>> result = await client.send_message("#campaigns", "Hello!")
+    >>> await client.close()
 """
 
 import logging
 from typing import Any
 
-import httpx
+from src.integrations.base import (
+    BaseIntegrationClient,
+    IntegrationError,
+)
 
 logger = logging.getLogger(__name__)
 
 
-class SlackError(Exception):
+class SlackError(IntegrationError):
     """Exception raised for Slack API errors."""
 
-    def __init__(self, message: str, status_code: int | None = None) -> None:
-        self.message = message
-        self.status_code = status_code
-        super().__init__(self.message)
+    pass
 
 
-class SlackClient:
-    """Async client for Slack API.
+class SlackClient(BaseIntegrationClient):
+    """
+    Async client for Slack API with retry logic.
 
-    Provides basic messaging functionality for campaign notifications.
+    Provides messaging functionality for campaign notifications with
+    exponential backoff, jitter, and rate limit handling.
 
-    Example:
-        >>> client = SlackClient(token=os.environ["SLACK_BOT_TOKEN"])
-        >>> result = await client.send_message("#campaigns", "Hello!")
-        >>> await client.close()
+    Inherits from BaseIntegrationClient for:
+    - Exponential backoff retry (base delay * 2^attempt)
+    - Jitter to prevent thundering herd
+    - Retry on 5xx, timeouts, and rate limits
+    - Connection pooling
+
+    Attributes:
+        BASE_URL: Slack API base URL.
+
+    Note:
+        - Rate limit: ~1 request per second per channel (Tier 1)
+        - Bearer token authentication via Bot Token
     """
 
-    def __init__(self, token: str, timeout: float = 30.0) -> None:
-        """Initialize Slack client.
+    BASE_URL = "https://slack.com/api"
+
+    def __init__(
+        self,
+        token: str,
+        timeout: float = 30.0,
+        max_retries: int = 3,
+    ) -> None:
+        """
+        Initialize Slack client.
 
         Args:
-            token: Slack Bot Token.
+            token: Slack Bot Token (xoxb-...).
             timeout: Request timeout in seconds.
+            max_retries: Maximum retry attempts for transient errors.
         """
-        self.token = token
-        self._http_client = httpx.AsyncClient(
-            base_url="https://slack.com/api",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-            timeout=httpx.Timeout(timeout),
+        super().__init__(
+            name="slack",
+            base_url=self.BASE_URL,
+            api_key=token,
+            timeout=timeout,
+            max_retries=max_retries,
         )
-        logger.info("Initialized SlackClient")
+        logger.info(f"Initialized {self.name} client")
 
     async def send_message(
         self,
@@ -57,18 +87,19 @@ class SlackClient:
         text: str,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """Send a message to a Slack channel.
+        """
+        Send a message to a Slack channel.
 
         Args:
             channel: Channel name or ID (e.g., "#campaigns" or "C1234567890").  # pragma: allowlist secret
             text: Message text (supports Slack markdown).
-            **kwargs: Additional message parameters.
+            **kwargs: Additional message parameters (blocks, attachments, etc.).
 
         Returns:
             Slack API response with message timestamp.
 
         Raises:
-            SlackError: If API request fails.
+            SlackError: If API request fails after retries.
         """
         payload = {
             "channel": channel,
@@ -77,32 +108,94 @@ class SlackClient:
         }
 
         try:
-            response = await self._http_client.post(
-                "/chat.postMessage",
-                json=payload,
+            response = await self.post("/chat.postMessage", json=payload)
+
+            # Slack API returns ok: false for errors with 200 status
+            if not response.get("ok"):
+                error = response.get("error", "Unknown error")
+                logger.error(
+                    f"[{self.name}] API error: {error}",
+                    extra={"channel": channel, "error": error},
+                )
+                raise SlackError(
+                    message=f"Slack API error: {error}",
+                    response_data=response,
+                )
+
+            logger.info(
+                f"[{self.name}] Sent message to {channel}",
+                extra={"channel": channel, "ts": response.get("ts")},
             )
-            response.raise_for_status()
-            data: dict[str, Any] = response.json()
+            return response
 
-            if not data.get("ok"):
-                error = data.get("error", "Unknown error")
-                logger.error(f"Slack API error: {error}")
-                raise SlackError(error)
+        except IntegrationError as e:
+            logger.error(
+                f"[{self.name}] send_message failed: {e}",
+                extra={"channel": channel},
+            )
+            raise SlackError(
+                message=str(e),
+                status_code=e.status_code,
+                response_data=e.response_data,
+            ) from e
 
-            logger.info(f"Sent message to {channel}, ts={data.get('ts')}")
-            return data
+    async def send_block_message(
+        self,
+        channel: str,
+        blocks: list[dict[str, Any]],
+        text: str = "",
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """
+        Send a rich Block Kit message to a Slack channel.
 
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Slack HTTP error: {e.response.status_code}")
-            raise SlackError(str(e), status_code=e.response.status_code) from e
-        except httpx.TimeoutException as e:
-            logger.error(f"Slack request timeout: {e}")
-            raise SlackError("Request timeout") from e
+        Args:
+            channel: Channel name or ID.
+            blocks: Block Kit blocks defining the message structure.
+            text: Fallback text for notifications (recommended).
+            **kwargs: Additional message parameters.
+
+        Returns:
+            Slack API response with message timestamp.
+
+        Raises:
+            SlackError: If API request fails.
+        """
+        return await self.send_message(
+            channel=channel,
+            text=text or "New message",
+            blocks=blocks,
+            **kwargs,
+        )
+
+    async def health_check(self) -> dict[str, Any]:
+        """
+        Check Slack API connectivity.
+
+        Returns:
+            Health check status with API connectivity info.
+        """
+        try:
+            # Use auth.test which is a simple, rate-limit-friendly endpoint
+            response = await self.get("/auth.test")
+
+            if response.get("ok"):
+                return {
+                    "name": self.name,
+                    "healthy": True,
+                    "team": response.get("team"),
+                    "user": response.get("user"),
+                }
+            return {
+                "name": self.name,
+                "healthy": False,
+                "error": response.get("error", "Unknown error"),
+            }
+
         except Exception as e:
-            logger.error(f"Unexpected Slack error: {e}")
-            raise SlackError(str(e)) from e
-
-    async def close(self) -> None:
-        """Close the HTTP client."""
-        await self._http_client.aclose()
-        logger.debug("Closed SlackClient")
+            logger.error(f"[{self.name}] Health check failed: {e}")
+            return {
+                "name": self.name,
+                "healthy": False,
+                "error": str(e),
+            }
