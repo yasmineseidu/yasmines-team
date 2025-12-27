@@ -10,7 +10,7 @@
 agent:
   id: email_sending_agent
   name: "Email Sending Agent"
-  version: "2.0.0"
+  version: "2.1.0"
   phase: 5
   phase_name: "Campaign Execution"
 
@@ -25,6 +25,7 @@ agent:
 tool_configuration:
   discovery:
     enabled: true
+    check_on_startup: true
 
   required_tools:
     - name: instantly_api
@@ -36,6 +37,108 @@ tool_configuration:
         - pause_campaign
         - resume_campaign
         - get_analytics
+        - get_lead_status
+
+    - name: database_connection
+      type: internal
+      required: true
+
+  circuit_breakers:
+    instantly_api:
+      failure_threshold: 5
+      failure_rate_threshold: 0.3
+      recovery_timeout_seconds: 300
+      half_open_max_calls: 3
+
+# ==============================================================================
+# ERROR HANDLING & RETRY
+# ==============================================================================
+
+error_handling:
+  global_circuit_breaker:
+    enabled: true
+    failure_threshold: 10
+    failure_rate_threshold: 0.4
+    minimum_calls: 20
+    recovery_timeout_seconds: 300
+
+  on_batch_failure:
+    action: log_and_continue
+    max_consecutive_failures: 3
+    on_max_failures: pause_and_alert
+
+retry:
+  default:
+    max_attempts: 5
+    strategy: exponential_jitter
+    base_delay_seconds: 5
+    max_delay_seconds: 120
+    retry_on:
+      - ConnectionError
+      - TimeoutError
+      - RateLimitError
+      - InstantlyAPIError
+      - BatchUploadError
+    dont_retry_on:
+      - AuthenticationError
+      - CampaignNotFoundError
+      - InvalidLeadDataError
+
+  provider_overrides:
+    instantly_api:
+      max_attempts: 5
+      base_delay_seconds: 10
+      max_delay_seconds: 300
+
+# ==============================================================================
+# RATE LIMITING
+# ==============================================================================
+
+rate_limits:
+  agent:
+    requests_per_minute: 100
+    requests_per_hour: 2000
+    batches_per_minute: 10
+
+  providers:
+    instantly_api:
+      rpm: 60
+      daily: 10000
+      concurrent: 5
+      batch_size_limit: 100
+
+# ==============================================================================
+# COST CONTROLS
+# ==============================================================================
+
+cost_controls:
+  enabled: true
+  budget:
+    max_per_campaign: 100.00
+    max_per_batch: 5.00
+    alert_at_percent: 80
+
+  tracking:
+    per_lead_cost: 0.001
+    per_batch_cost: 0.01
+
+  on_budget_exceeded:
+    action: pause_and_wait
+    complete_current_batch: true
+    alert: true
+    alert_channel: slack
+    alert_message: |
+      :warning: *Budget Alert - Email Sending*
+      Campaign: {{ campaign.name }}
+      Budget used: {{ budget_used }} / {{ budget_limit }}
+      Leads uploaded: {{ leads_uploaded }} / {{ total_leads }}
+
+      Reply with:
+      • `continue` - Resume uploading remaining leads (additional costs will apply)
+      • `stop` - Stop here, start campaign with uploaded leads only
+    wait_for_response: true
+    timeout_minutes: 60
+    on_timeout: stop
 
 # ==============================================================================
 # PARALLEL EXECUTION
@@ -43,31 +146,43 @@ tool_configuration:
 
 parallel_execution:
   enabled: true
+
   batch_upload:
     batch_size: 100
     max_parallel_batches: 5
     delay_between_batches_seconds: 2
+    stagger_start_seconds: 1
+
+  priority_order:
+    - tier_a_first: true
+    - then_tier_b: true
+    - then_tier_c: true
 
 # ==============================================================================
-# EXECUTION & RETRY
+# EXECUTION CONFIGURATION
 # ==============================================================================
 
 execution:
   mode: parallel_batch
-  timeout_seconds: 3600
+  timeout_seconds: 3600  # 1 hour
+
   idempotency:
     enabled: true
     key_template: "email_sending:{campaign_id}:{lead_id}"
+    ttl_hours: 168  # 7 days
+
   checkpoint:
     enabled: true
     interval_leads: 500
+    interval_batches: 5
+    storage: postgresql
+    table: workflow_checkpoints
 
-retry:
-  default:
-    max_attempts: 3
-    strategy: exponential_jitter
-    base_delay_seconds: 5
-    retry_on: [ConnectionError, TimeoutError, RateLimitError]
+  resume:
+    enabled: true
+    skip_already_uploaded: true
+    resume_from_last_batch: true
+    verify_previous_uploads: true
 
 # ==============================================================================
 # INPUTS & DATABASE
@@ -90,19 +205,23 @@ inputs:
     - name: send_tier_a_first
       type: boolean
       default: true
+    - name: max_leads_per_run
+      type: integer
+      default: 10000
 
 database:
   reads:
     - id: get_leads_to_send
       table: leads
       operation: SELECT
-      fields: [id, email, first_name, last_name, company_name, lead_tier, generated_email_id]
+      fields: [id, email, first_name, last_name, company_name, lead_tier,
+               generated_email_id, lead_score]
       filter: |
         campaign_id = :campaign_id
         AND email_status = 'valid'
         AND email_generation_status = 'generated'
-        AND sending_status IS NULL
-      order_by: "lead_score DESC"
+        AND (sending_status IS NULL OR sending_status = 'pending')
+      order_by: "lead_score DESC, lead_tier ASC"
       pagination:
         enabled: true
         batch_size: 100
@@ -111,9 +230,22 @@ database:
     - id: get_generated_emails
       table: generated_emails
       operation: SELECT
-      fields: [id, lead_id, subject_line, full_email]
+      fields: [id, lead_id, subject_line, full_email, quality_score]
       filter: "lead_id = ANY(:lead_ids)"
       required: true
+
+    - id: get_upload_progress
+      table: sending_logs
+      operation: SELECT
+      custom_query: |
+        SELECT
+          COUNT(*) as batches_completed,
+          SUM(leads_uploaded) as leads_uploaded,
+          MAX(batch_number) as last_batch
+        FROM sending_logs
+        WHERE campaign_id = :campaign_id
+          AND status = 'uploaded'
+      required: false
 
   writes:
     - id: update_lead_sending_status
@@ -134,10 +266,14 @@ database:
       fields:
         id: { source: generated, type: uuid }
         campaign_id: { source: inputs, field: campaign_id }
+        instantly_campaign_id: { source: db_lookup, table: instantly_campaigns, filter: "campaign_id = :campaign_id", field: id }
         batch_number: { source: batch, field: number }
         leads_uploaded: { source: batch, field: count }
+        lead_ids: { source: batch, field: lead_ids, type: "uuid[]" }
         status: { value: "uploaded" }
+        instantly_response: { source: instantly_response, type: jsonb }
         created_at: { source: now }
+        completed_at: { source: now }
 
     - id: update_campaign_sending
       table: campaigns
@@ -148,6 +284,17 @@ database:
       fields:
         leads_queued: { source: agent_state, field: total_queued }
         sending_status: { value: "sending" }
+        updated_at: { source: now }
+
+    - id: update_instantly_campaign_stats
+      table: instantly_campaigns
+      operation: UPDATE
+      timing: on_complete
+      filter: "campaign_id = :campaign_id"
+      fields:
+        leads_uploaded: { source: agent_output, field: total_uploaded }
+        sending_started_at: { source: now }
+        status: { value: "active" }
         updated_at: { source: now }
 
 # ==============================================================================
@@ -175,23 +322,51 @@ lead_upload_format:
     - name: company
       source: lead.company_name
 
+  # Validation before upload
+  validation:
+    required_fields: [email, first_name, subject_line, full_email]
+    email_format: strict
+    max_body_length: 10000
+
 # ==============================================================================
 # AGENT STEPS
 # ==============================================================================
 
 steps:
+  - id: check_resume_state
+    name: "Check Resume State"
+    description: "Check if resuming from previous run"
+
+    resume_check:
+      query: db_reads.get_upload_progress
+      if_resuming:
+        log: "Resuming from batch {{ last_batch }}, {{ leads_uploaded }} leads already uploaded"
+        skip_uploaded: true
+
+    output:
+      is_resuming: boolean
+      start_from_batch: integer
+      previously_uploaded: integer
+
   - id: load_leads
     name: "Load Leads for Sending"
     description: "Load leads with generated emails"
+    depends_on: [check_resume_state]
 
     priority_order:
       - tier_a_first: true
       - then_tier_b: true
       - then_tier_c: true
 
+    exclude:
+      already_uploaded: true
+
     output:
       total_leads: integer
-      by_tier: object
+      by_tier:
+        tier_a: integer
+        tier_b: integer
+        tier_c: integer
 
   - id: upload_to_instantly
     name: "Upload Leads to Instantly"
@@ -200,6 +375,7 @@ steps:
     parallel_execution:
       enabled: true
       max_concurrent: 5
+      stagger_start_ms: 500
 
     for_each: lead_batches
 
@@ -210,9 +386,23 @@ steps:
       campaign_id: "{{ inputs.instantly_campaign_id }}"
       leads: "{{ batch.leads_formatted }}"
 
+    on_batch_success:
+      - update_lead_status: queued
+      - log_batch: sending_logs
+      - increment_counter: total_uploaded
+
+    on_batch_failure:
+      - log_error: true
+      - retry_batch: true
+      - if_max_retries:
+          action: skip_batch
+          log_skipped_leads: true
+
     output:
       batches_uploaded: integer
       leads_uploaded: integer
+      batches_failed: integer
+      leads_skipped: integer
 
   - id: verify_upload
     name: "Verify Upload Success"
@@ -222,15 +412,19 @@ steps:
     action: get_campaign_status
 
     verify:
-      leads_count_matches: true
+      leads_count_matches:
+        tolerance_percent: 5
       status: active
 
     output:
       verification_passed: boolean
+      instantly_lead_count: integer
+      discrepancy: integer
 
   - id: start_sending
     name: "Start Campaign Sending"
     depends_on: [verify_upload]
+    condition: "verification_passed = true"
 
     tool: instantly_api
     action: resume_campaign
@@ -247,15 +441,30 @@ system_prompt: |
   You are a cold email sending specialist managing campaign execution.
 
   Upload Strategy:
-  1. Upload leads in batches of 100
-  2. Prioritize Tier A leads first
-  3. Include personalized email content
-  4. Verify successful upload
+  1. Check if resuming from previous run
+  2. Load leads prioritized by tier (A first, then B, then C)
+  3. Upload in batches of 100 leads
+  4. Include personalized email content
+  5. Verify successful upload
+  6. Start campaign sending
+
+  Batch Processing Rules:
+  - Process up to 5 batches in parallel
+  - Stagger batch starts by 500ms to avoid rate limits
+  - Wait 2 seconds between batch groups
+  - Checkpoint every 500 leads for resume capability
+
+  Error Handling:
+  - Retry failed batches up to 5 times
+  - Skip batches that fail after max retries
+  - Log all skipped leads for investigation
+  - Pause campaign if 3 consecutive batches fail
 
   Monitoring:
-  - Track successful uploads
-  - Handle rate limits gracefully
+  - Track successful uploads per tier
+  - Handle rate limits gracefully (back off and retry)
   - Report any failures immediately
+  - Verify final lead count matches expected
 
 # ==============================================================================
 # OUTPUT SCHEMA & SUCCESS CRITERIA
@@ -267,21 +476,40 @@ outputs:
     required: [total_uploaded, sending_started]
     properties:
       total_uploaded: { type: integer }
+      total_leads: { type: integer }
       tier_a_uploaded: { type: integer }
       tier_b_uploaded: { type: integer }
       tier_c_uploaded: { type: integer }
+      batches_completed: { type: integer }
+      batches_failed: { type: integer }
+      leads_skipped: { type: integer }
       sending_started: { type: boolean }
       campaign_status: { type: string }
+      upload_rate: { type: number }
+      cost_incurred: { type: number }
 
 success_criteria:
   hard:
     - id: leads_uploaded
-      condition: "total_uploaded >= 100"
+      condition: "total_uploaded >= MIN(100, total_leads)"
+      description: "At least 100 leads uploaded (or all if fewer available)"
+
+    - id: minimum_upload_rate
+      condition: "total_uploaded / total_leads >= 0.90"
+      description: "At least 90% of leads must be uploaded"
+
     - id: sending_started
       condition: "sending_started = true"
+      description: "Campaign must be started in Instantly"
+
   soft:
     - id: high_upload_rate
-      condition: "total_uploaded >= total_leads * 0.95"
+      condition: "total_uploaded / total_leads >= 0.98"
+      description: "Target 98% upload rate"
+
+    - id: no_failed_batches
+      condition: "batches_failed = 0"
+      description: "No batches should fail"
 
 # ==============================================================================
 # HANDOFF
@@ -299,5 +527,10 @@ handoff:
     - field: total_uploaded
       source: outputs.total_uploaded
       required: true
+    - field: tier_breakdown
+      source: outputs
+      fields: [tier_a_uploaded, tier_b_uploaded, tier_c_uploaded]
+      required: false
   conditions:
     - "sending_started = true"
+    - "total_uploaded >= 1"

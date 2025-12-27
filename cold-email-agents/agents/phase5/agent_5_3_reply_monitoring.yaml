@@ -10,7 +10,7 @@
 agent:
   id: reply_monitoring_agent
   name: "Reply Monitoring Agent"
-  version: "2.0.0"
+  version: "2.1.0"
   phase: 5
   phase_name: "Campaign Execution"
 
@@ -26,6 +26,7 @@ agent:
 tool_configuration:
   discovery:
     enabled: true
+    check_on_startup: true
 
   required_tools:
     - name: instantly_api
@@ -35,6 +36,8 @@ tool_configuration:
         - get_replies
         - get_campaign_analytics
         - mark_lead_status
+        - pause_sequence
+        - get_lead_details
 
     - name: llm_classification
       type: internal
@@ -43,14 +46,156 @@ tool_configuration:
       config:
         model: claude-sonnet-4-20250514
         temperature: 0.3
+        max_tokens: 500
+
+    - name: database_connection
+      type: internal
+      required: true
 
   optional_tools:
     - name: slack_api
       type: api
       use_for: interested_lead_notifications
+      fallback_action: log_to_database
     - name: gohighlevel_api
       type: api
       use_for: crm_updates
+      fallback_action: queue_for_later
+    - name: calendly_api
+      type: api
+      use_for: meeting_scheduling
+      fallback_action: send_manual_calendar_link
+
+  circuit_breakers:
+    instantly_api:
+      failure_threshold: 5
+      failure_rate_threshold: 0.3
+      recovery_timeout_seconds: 300
+      half_open_max_calls: 3
+
+    llm_classification:
+      failure_threshold: 10
+      failure_rate_threshold: 0.5
+      recovery_timeout_seconds: 120
+      half_open_max_calls: 5
+
+    slack_api:
+      failure_threshold: 3
+      recovery_timeout_seconds: 60
+
+# ==============================================================================
+# ERROR HANDLING & RETRY
+# ==============================================================================
+
+error_handling:
+  global_circuit_breaker:
+    enabled: true
+    failure_threshold: 15
+    failure_rate_threshold: 0.5
+    minimum_calls: 30
+    recovery_timeout_seconds: 300
+
+  on_classification_failure:
+    action: use_fallback_classifier
+    fallback: keyword_matching
+    log: true
+
+  on_action_failure:
+    action: queue_for_retry
+    max_queue_size: 1000
+    retry_interval_seconds: 300
+
+retry:
+  default:
+    max_attempts: 5
+    strategy: exponential_jitter
+    base_delay_seconds: 10
+    max_delay_seconds: 300
+    retry_on:
+      - ConnectionError
+      - TimeoutError
+      - RateLimitError
+      - InstantlyAPIError
+      - ClassificationError
+      - TransientError
+    dont_retry_on:
+      - AuthenticationError
+      - CampaignNotFoundError
+      - InvalidReplyError
+
+  provider_overrides:
+    instantly_api:
+      max_attempts: 5
+      base_delay_seconds: 15
+      max_delay_seconds: 300
+
+    llm_classification:
+      max_attempts: 3
+      base_delay_seconds: 5
+      max_delay_seconds: 60
+
+    slack_api:
+      max_attempts: 3
+      base_delay_seconds: 2
+      max_delay_seconds: 30
+
+# ==============================================================================
+# RATE LIMITING
+# ==============================================================================
+
+rate_limits:
+  agent:
+    polls_per_minute: 12  # Poll every 5 seconds max
+    classifications_per_minute: 60
+    actions_per_minute: 30
+
+  providers:
+    instantly_api:
+      rpm: 60
+      daily: 5000
+      concurrent: 3
+
+    llm_classification:
+      rpm: 100
+      concurrent: 10
+
+    slack_api:
+      rpm: 30
+      daily: 1000
+
+# ==============================================================================
+# COST CONTROLS
+# ==============================================================================
+
+cost_controls:
+  enabled: true
+  budget:
+    max_per_campaign: 50.00
+    max_per_day: 10.00
+    alert_at_percent: 80
+
+  tracking:
+    per_llm_classification: 0.002
+    per_instantly_api_call: 0.001
+    per_slack_notification: 0.00
+
+  on_budget_exceeded:
+    action: pause_and_wait
+    alert: true
+    alert_channel: slack
+    alert_message: |
+      :warning: *Budget Alert - Reply Monitoring*
+      Campaign: {{ campaign.name }}
+      Budget used: {{ budget_used }} / {{ budget_limit }}
+      LLM classifications today: {{ llm_calls_today }}
+
+      Reply with:
+      • `continue` - Keep using LLM classification (additional costs will apply)
+      • `fallback` - Switch to keyword-based classification (free, less accurate)
+      • `pause` - Pause monitoring until tomorrow's budget resets
+    wait_for_response: true
+    timeout_minutes: 30
+    on_timeout: fallback
 
 # ==============================================================================
 # EXECUTION CONFIGURATION
@@ -59,23 +204,55 @@ tool_configuration:
 execution:
   mode: continuous_polling
   polling_interval_seconds: 300  # Check every 5 minutes
+  min_polling_interval_seconds: 60  # Can speed up if high activity
+  max_polling_interval_seconds: 600  # Slow down if no activity
+  adaptive_polling: true
   timeout_seconds: null  # Runs continuously
 
   webhook_support:
     enabled: true
     endpoint: "/webhooks/instantly/reply"
-    events: [reply, bounce, unsubscribe]
+    events: [reply, bounce, unsubscribe, open, click]
+    fallback_to_polling: true
+    verify_signature: true
 
   checkpoint:
     enabled: true
     save_last_processed: true
     storage: postgresql
+    table: reply_monitoring_state
+    checkpoint_interval_replies: 10
+
+  idempotency:
+    enabled: true
+    key_template: "reply_processing:{instantly_reply_id}"
+    ttl_hours: 168  # 7 days
+
+  resume:
+    enabled: true
+    resume_from_last_reply: true
+    verify_no_missed_replies: true
 
 # ==============================================================================
 # REPLY CLASSIFICATION
 # ==============================================================================
 
 reply_classification:
+  # Primary classifier: LLM
+  primary:
+    tool: llm_classification
+    confidence_threshold: 0.7
+    on_low_confidence: use_fallback
+
+  # Fallback classifier: Keyword matching
+  fallback:
+    enabled: true
+    strategy: keyword_matching
+    use_when:
+      - llm_fails: true
+      - confidence_below: 0.6
+      - circuit_breaker_open: true
+
   categories:
     interested:
       description: "Positive response, wants to learn more"
@@ -86,8 +263,12 @@ reply_classification:
         - "let's chat"
         - "set up a call"
         - "send more info"
+        - "sounds good"
+        - "I'd like to"
+        - "love to hear"
       priority: 1
       action: notify_sales
+      urgency: high
 
     meeting_request:
       description: "Wants to schedule a meeting"
@@ -96,8 +277,12 @@ reply_classification:
         - "schedule"
         - "available"
         - "what times"
+        - "book a call"
+        - "let's meet"
+        - "when can we"
       priority: 1
       action: send_calendar_link
+      urgency: high
 
     not_interested:
       description: "Declined or not a fit"
@@ -107,8 +292,12 @@ reply_classification:
         - "remove me"
         - "unsubscribe"
         - "don't contact"
+        - "stop emailing"
+        - "take me off"
+        - "not a fit"
       priority: 2
       action: mark_not_interested
+      add_to_exclusion: true
 
     out_of_office:
       description: "Auto-reply, person is away"
@@ -118,8 +307,11 @@ reply_classification:
         - "will return"
         - "limited access"
         - "auto-reply"
+        - "away from"
+        - "back on"
       priority: 3
       action: reschedule_followup
+      reschedule_days: 7
 
     wrong_person:
       description: "Not the right contact"
@@ -128,18 +320,24 @@ reply_classification:
         - "no longer"
         - "left the company"
         - "try reaching"
+        - "doesn't work here"
+        - "not the right"
       priority: 2
       action: find_replacement
+      flag_for_research: true
 
     question:
       description: "Has questions, needs more info"
       indicators:
         - "?"
-        - "what"
-        - "how"
+        - "what is"
+        - "how does"
         - "can you explain"
+        - "what do you mean"
+        - "tell me about"
       priority: 2
       action: queue_for_response
+      needs_human_reply: true
 
     bounce:
       description: "Email bounced or invalid"
@@ -147,8 +345,13 @@ reply_classification:
         - "delivery failed"
         - "mailbox not found"
         - "address rejected"
+        - "undeliverable"
+        - "user unknown"
+        - "550"
+        - "554"
       priority: 1
       action: mark_bounced
+      update_email_status: true
 
 # ==============================================================================
 # INPUTS & DATABASE
@@ -164,20 +367,36 @@ inputs:
       type: string
       source: handoff.email_sending_agent.instantly_campaign_id
 
+  optional:
+    - name: polling_interval
+      type: integer
+      default: 300
+    - name: classification_model
+      type: string
+      default: "claude-sonnet-4-20250514"
+
 database:
   reads:
     - id: get_last_check
       table: reply_monitoring_state
       operation: SELECT
-      fields: [last_reply_id, last_checked_at]
+      fields: [last_reply_id, last_checked_at, total_replies, status]
       filter: "campaign_id = :campaign_id"
       required: false
 
     - id: get_lead_by_email
       table: leads
       operation: SELECT
-      fields: [id, first_name, last_name, company_name, lead_tier, email]
+      fields: [id, first_name, last_name, company_name, lead_tier, email,
+               title, linkedin_url, lead_score]
       filter: "campaign_id = :campaign_id AND email = :email"
+      required: true
+
+    - id: get_campaign_stats
+      table: campaigns
+      operation: SELECT
+      fields: [id, name, total_replies, interested_count, meetings_booked]
+      filter: "id = :campaign_id"
       required: true
 
   writes:
@@ -185,19 +404,31 @@ database:
       table: email_replies
       operation: INSERT
       timing: per_reply
+      on_conflict:
+        columns: [instantly_reply_id]
+        action: DO_NOTHING
       fields:
         id: { source: generated, type: uuid }
         campaign_id: { source: inputs, field: campaign_id }
         lead_id: { source: lead, field: id }
+        instantly_campaign_id: { source: db_lookup, table: instantly_campaigns, filter: "campaign_id = :campaign_id", field: id }
         instantly_reply_id: { source: reply, field: id }
-        reply_text: { source: reply, field: text }
+        instantly_lead_id: { source: reply, field: lead_id }
         reply_subject: { source: reply, field: subject }
+        reply_text: { source: reply, field: text }
+        reply_html: { source: reply, field: html }
         category: { source: classification, field: category }
         confidence: { source: classification, field: confidence }
         sentiment: { source: classification, field: sentiment }
+        classification_model: { source: classification, field: model }
+        raw_classification: { source: classification, field: raw, type: jsonb }
         action_taken: { source: action, field: type }
+        action_details: { source: action, field: details, type: jsonb }
+        action_completed_at: { source: action, field: completed_at }
         received_at: { source: reply, field: timestamp }
         processed_at: { source: now }
+        created_at: { source: now }
+        updated_at: { source: now }
 
     - id: update_lead_reply_status
       table: leads
@@ -207,19 +438,41 @@ database:
       fields:
         reply_status: { source: classification, field: category }
         replied_at: { source: reply, field: timestamp }
-        reply_count: { value: "reply_count + 1" }
+        reply_count: { value: "COALESCE(reply_count, 0) + 1" }
         updated_at: { source: now }
 
     - id: update_monitoring_state
       table: reply_monitoring_state
       operation: UPSERT
       timing: after_batch
-      on_conflict: { columns: [campaign_id], action: UPDATE }
+      on_conflict:
+        columns: [campaign_id]
+        action: UPDATE
       fields:
         campaign_id: { source: inputs, field: campaign_id }
         last_reply_id: { source: batch, field: last_id }
         last_checked_at: { source: now }
-        total_replies: { source: batch, field: total }
+        total_replies: { value: "COALESCE(total_replies, 0) + :batch_count" }
+        interested_count: { source: batch, field: interested_count, increment: true }
+        not_interested_count: { source: batch, field: not_interested_count, increment: true }
+        meetings_count: { source: batch, field: meetings_count, increment: true }
+        bounces_count: { source: batch, field: bounces_count, increment: true }
+        ooo_count: { source: batch, field: ooo_count, increment: true }
+        last_batch_size: { source: batch, field: count }
+        status: { value: "active" }
+        updated_at: { source: now }
+
+    - id: update_campaign_stats
+      table: campaigns
+      operation: UPDATE
+      timing: after_batch
+      filter: "id = :campaign_id"
+      fields:
+        total_replies: { source: monitoring_state, field: total_replies }
+        interested_count: { source: monitoring_state, field: interested_count }
+        meetings_booked: { source: monitoring_state, field: meetings_count }
+        bounce_count: { source: monitoring_state, field: bounces_count }
+        updated_at: { source: now }
 
 # ==============================================================================
 # AGENT STEPS
@@ -236,39 +489,61 @@ steps:
     input:
       campaign_id: "{{ inputs.instantly_campaign_id }}"
       since: "{{ db_reads.get_last_check.last_checked_at }}"
+      limit: 100
+
+    pagination:
+      enabled: true
+      page_size: 100
+      max_pages: 10
 
     output:
       replies: array
       reply_count: integer
+      has_more: boolean
 
   - id: classify_replies
     name: "Classify Replies"
     depends_on: [fetch_new_replies]
+    condition: "reply_count > 0"
 
     for_each: replies
 
     classification:
-      tool: llm_classification
+      primary:
+        tool: llm_classification
+        prompt: |
+          Classify this email reply from a cold email campaign.
 
-      prompt: |
-        Classify this email reply:
+          Subject: {{ reply.subject }}
+          Body: {{ reply.text }}
 
-        Subject: {{ reply.subject }}
-        Body: {{ reply.text }}
+          Categories (choose one):
+          - interested: Positive response, wants to learn more or schedule a call
+          - meeting_request: Specifically asking to schedule a meeting/call
+          - not_interested: Declined, asked to stop contact, or unsubscribe
+          - out_of_office: Auto-reply indicating person is away
+          - wrong_person: Contact no longer at company or not the right person
+          - question: Asking questions, needs more information before deciding
+          - bounce: Delivery failure message
 
-        Categories:
-        - interested: Wants to learn more or schedule a call
-        - meeting_request: Specifically asking to schedule
-        - not_interested: Declined or asked to stop contact
-        - out_of_office: Auto-reply, person is away
-        - wrong_person: Not the right contact
-        - question: Has questions
-        - bounce: Delivery failure
+          Sentiment (choose one): positive, neutral, negative
 
-        Return JSON: {"category": "...", "confidence": 0.0-1.0, "sentiment": "positive/neutral/negative"}
+          Return JSON only:
+          {"category": "...", "confidence": 0.0-1.0, "sentiment": "...", "reasoning": "..."}
+
+      fallback:
+        enabled: true
+        strategy: keyword_matching
+        use_indicators_from: reply_classification.categories
+
+      confidence:
+        minimum_threshold: 0.6
+        on_low_confidence: use_fallback_then_manual_review
 
     output:
       classifications: array
+      fallback_used_count: integer
+      manual_review_count: integer
 
   - id: take_actions
     name: "Take Actions Based on Classification"
@@ -280,36 +555,89 @@ steps:
       interested:
         - notify_slack:
             channel: "#hot-leads"
-            message: "Hot Lead: {{ lead.first_name }} {{ lead.last_name }} @ {{ lead.company_name }}"
+            message: |
+              :fire: *Hot Lead Alert*
+              *Name:* {{ lead.first_name }} {{ lead.last_name }}
+              *Company:* {{ lead.company_name }}
+              *Title:* {{ lead.title }}
+              *Tier:* {{ lead.lead_tier }}
+              *Reply:* {{ reply.text | truncate(200) }}
+            fallback: log_to_database
         - add_to_crm:
             status: "interested"
             priority: "high"
+            fallback: queue_for_later
 
       meeting_request:
         - send_calendar_link:
             to: "{{ lead.email }}"
+            include_availabilities: true
+            fallback: notify_for_manual_scheduling
         - notify_slack:
             channel: "#meetings"
+            message: |
+              :calendar: *Meeting Request*
+              *From:* {{ lead.first_name }} {{ lead.last_name }} @ {{ lead.company_name }}
+            fallback: log_to_database
 
       not_interested:
         - mark_in_instantly:
             status: "not_interested"
-        - add_to_exclusion_list: true
+        - add_to_exclusion_list:
+            reason: "replied_not_interested"
+            campaign_id: "{{ inputs.campaign_id }}"
 
       out_of_office:
-        - pause_sequence: true
-        - reschedule_days: 7
+        - pause_sequence:
+            lead_id: "{{ lead.id }}"
+        - reschedule_followup:
+            days: 7
+            reason: "out_of_office"
+
+      wrong_person:
+        - flag_for_research:
+            lead_id: "{{ lead.id }}"
+            reason: "wrong_person"
+        - pause_sequence:
+            lead_id: "{{ lead.id }}"
+
+      question:
+        - queue_for_human_response:
+            lead_id: "{{ lead.id }}"
+            priority: "medium"
+        - notify_slack:
+            channel: "#lead-questions"
+            message: |
+              :question: *Lead Has Question*
+              *From:* {{ lead.first_name }} {{ lead.last_name }}
+              *Question:* {{ reply.text | truncate(300) }}
+            fallback: log_to_database
 
       bounce:
-        - mark_email_invalid: true
-        - update_email_status: "bounced"
+        - mark_email_invalid:
+            lead_id: "{{ lead.id }}"
+            email: "{{ lead.email }}"
+        - update_email_status:
+            status: "bounced"
+        - remove_from_sequence: true
 
     output:
       actions_taken: array
+      actions_failed: array
 
   - id: update_state
     name: "Update Monitoring State"
     depends_on: [take_actions]
+
+    aggregation:
+      total_processed: count
+      by_category:
+        interested: count_where(category = 'interested')
+        meeting_request: count_where(category = 'meeting_request')
+        not_interested: count_where(category = 'not_interested')
+        out_of_office: count_where(category = 'out_of_office')
+        question: count_where(category = 'question')
+        bounce: count_where(category = 'bounce')
 
     output:
       total_processed: integer
@@ -326,17 +654,28 @@ system_prompt: |
   - "Interested": Any positive response or desire to learn more
   - "Meeting request": Specifically wants to schedule a call/meeting
   - "Not interested": Clear decline or unsubscribe request
-  - "Out of office": Auto-replies indicating absence
+  - "Out of office": Auto-replies indicating absence (look for return dates)
   - "Wrong person": Contact no longer at company or wrong role
-  - "Question": Asking for more information
-  - "Bounce": Delivery failure messages
+  - "Question": Asking for more information (neutral, not yet interested)
+  - "Bounce": Delivery failure messages (technical errors)
 
   Sentiment Analysis:
-  - Positive: Excited, interested, engaged
-  - Neutral: Informational, matter-of-fact
+  - Positive: Excited, interested, engaged, friendly
+  - Neutral: Informational, matter-of-fact, questioning
   - Negative: Annoyed, dismissive, requesting removal
 
-  Be conservative with "interested" - only use for genuine interest signals.
+  Important Rules:
+  - Be CONSERVATIVE with "interested" - only use for GENUINE interest signals
+  - A question alone does not mean interested - it means they need more info
+  - "Who is this?" or "What do you want?" is a question, not interest
+  - Watch for sarcasm or passive-aggressive responses
+  - If unsure, classify as "question" rather than "interested"
+
+  Confidence Scoring:
+  - 0.9-1.0: Very clear classification
+  - 0.7-0.9: Confident but some ambiguity
+  - 0.5-0.7: Somewhat uncertain
+  - Below 0.5: Flag for manual review
 
 # ==============================================================================
 # OUTPUT SCHEMA & SUCCESS CRITERIA
@@ -352,15 +691,31 @@ outputs:
       meeting_requests: { type: integer }
       not_interested_count: { type: integer }
       bounces: { type: integer }
+      questions: { type: integer }
       by_category: { type: object }
+      actions_completed: { type: integer }
+      actions_failed: { type: integer }
+      fallback_used: { type: integer }
+      manual_review_needed: { type: integer }
 
 success_criteria:
   hard:
     - id: processing_complete
       condition: "total_processed == reply_count"
+      description: "All fetched replies must be processed"
+
   soft:
     - id: actions_taken
-      condition: "actions_taken.length > 0"
+      condition: "actions_completed > 0 OR reply_count = 0"
+      description: "Actions should be taken for classified replies"
+
+    - id: low_fallback_rate
+      condition: "fallback_used / total_processed <= 0.2"
+      description: "LLM should handle at least 80% of classifications"
+
+    - id: no_action_failures
+      condition: "actions_failed = 0"
+      description: "All actions should complete successfully"
 
 # ==============================================================================
 # HANDOFF
@@ -368,6 +723,7 @@ success_criteria:
 
 handoff:
   to_agent: campaign_analytics_agent
+  trigger_mode: continuous
   data:
     - field: campaign_id
       source: inputs.campaign_id
@@ -375,5 +731,15 @@ handoff:
     - field: instantly_campaign_id
       source: inputs.instantly_campaign_id
       required: true
+    - field: total_processed
+      source: outputs.total_processed
+      required: false
+    - field: interested_count
+      source: outputs.interested_count
+      required: false
   conditions:
-    - always: true  # Continuous handoff for analytics
+    - type: periodic
+      interval_minutes: 60
+    - type: threshold
+      condition: "interested_count > 0"
+      immediate: true

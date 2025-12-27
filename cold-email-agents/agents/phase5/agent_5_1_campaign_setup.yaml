@@ -9,7 +9,7 @@
 agent:
   id: campaign_setup_agent
   name: "Campaign Setup Agent"
-  version: "2.0.0"
+  version: "2.1.0"
   phase: 5
   phase_name: "Campaign Execution"
 
@@ -24,34 +24,128 @@ agent:
 tool_configuration:
   discovery:
     enabled: true
+    check_on_startup: true
 
   required_tools:
     - name: instantly_api
       type: api
       description: "Instantly.ai API"
       required: true
-      endpoints: [create_campaign, add_sequence, configure_schedule]
+      endpoints:
+        - create_campaign
+        - add_sequence
+        - configure_schedule
+        - configure_warmup
+        - get_sending_accounts
 
     - name: database_connection
       type: internal
       required: true
 
+  circuit_breakers:
+    instantly_api:
+      failure_threshold: 3
+      failure_rate_threshold: 0.5
+      recovery_timeout_seconds: 120
+      half_open_max_calls: 2
+
 # ==============================================================================
-# EXECUTION & RETRY
+# ERROR HANDLING & RETRY
 # ==============================================================================
 
-execution:
-  mode: single
-  timeout_seconds: 300
-  idempotency:
+error_handling:
+  global_circuit_breaker:
     enabled: true
-    key_template: "campaign_setup:{campaign_id}"
+    failure_threshold: 5
+    failure_rate_threshold: 0.5
+    minimum_calls: 5
+    recovery_timeout_seconds: 120
 
 retry:
   default:
     max_attempts: 3
     strategy: exponential_jitter
     base_delay_seconds: 5
+    max_delay_seconds: 60
+    retry_on:
+      - ConnectionError
+      - TimeoutError
+      - RateLimitError
+      - InstantlyAPIError
+    dont_retry_on:
+      - AuthenticationError
+      - InvalidCampaignConfigError
+      - InsufficientCreditsError
+
+  provider_overrides:
+    instantly_api:
+      max_attempts: 5
+      base_delay_seconds: 10
+
+# ==============================================================================
+# RATE LIMITING
+# ==============================================================================
+
+rate_limits:
+  agent:
+    requests_per_minute: 30
+    requests_per_hour: 500
+
+  providers:
+    instantly_api:
+      rpm: 60
+      daily: 1000
+      concurrent: 3
+
+# ==============================================================================
+# COST CONTROLS
+# ==============================================================================
+
+cost_controls:
+  enabled: true
+  budget:
+    max_per_campaign: 25.00
+    max_per_setup: 1.00
+    alert_at_percent: 80
+
+  tracking:
+    per_api_call: 0.01
+    per_campaign_create: 0.10
+    per_sequence_config: 0.05
+
+  on_budget_exceeded:
+    action: pause_and_wait
+    alert: true
+    alert_channel: slack
+    alert_message: |
+      :warning: *Budget Alert - Campaign Setup*
+      Campaign: {{ campaign.name }}
+      Budget used: {{ budget_used }} / {{ budget_limit }}
+
+      Reply with:
+      • `continue` - Proceed with setup (additional costs will apply)
+      • `abort` - Cancel setup and notify team
+    wait_for_response: true
+    timeout_minutes: 60
+    on_timeout: abort
+
+# ==============================================================================
+# EXECUTION CONFIGURATION
+# ==============================================================================
+
+execution:
+  mode: single
+  timeout_seconds: 300
+
+  idempotency:
+    enabled: true
+    key_template: "campaign_setup:{campaign_id}"
+    ttl_hours: 24
+
+  checkpoint:
+    enabled: true
+    storage: postgresql
+    table: workflow_checkpoints
 
 # ==============================================================================
 # INPUTS & DATABASE
@@ -62,6 +156,8 @@ inputs:
     - name: campaign_id
       type: string
       format: uuid
+      source: human_gate.approve_email_campaign.campaign_id
+
   optional:
     - name: sending_limit_per_day
       type: integer
@@ -69,16 +165,38 @@ inputs:
     - name: sequence_delay_days
       type: array
       default: [3, 5, 7]
+    - name: warmup_enabled
+      type: boolean
+      default: true
 
 database:
   reads:
     - id: get_campaign
       table: campaigns
+      operation: SELECT
+      fields: [id, name, niche_id, status, total_emails_generated, avg_email_quality]
       filter: "id = :campaign_id AND status = 'approved_for_sending'"
       required: true
+
     - id: get_sending_accounts
       table: email_accounts
-      filter: "status = 'active'"
+      operation: SELECT
+      fields: [id, email_address, daily_limit, warmup_status, health_score]
+      filter: "status = 'active' AND warmup_status IN ('completed', 'in_progress')"
+      required: true
+
+    - id: get_lead_count
+      table: leads
+      operation: SELECT
+      custom_query: |
+        SELECT COUNT(*) as total_leads,
+               COUNT(CASE WHEN lead_tier = 'A' THEN 1 END) as tier_a,
+               COUNT(CASE WHEN lead_tier = 'B' THEN 1 END) as tier_b,
+               COUNT(CASE WHEN lead_tier = 'C' THEN 1 END) as tier_c
+        FROM leads
+        WHERE campaign_id = :campaign_id
+          AND email_status = 'valid'
+          AND email_generation_status = 'generated'
       required: true
 
   writes:
@@ -90,8 +208,13 @@ database:
         id: { source: generated, type: uuid }
         campaign_id: { source: inputs, field: campaign_id }
         instantly_campaign_id: { source: instantly_response, field: id }
+        instantly_workspace_id: { source: instantly_response, field: workspace_id }
         status: { value: "created" }
+        sequence_config: { source: agent_output, field: sequence_config, type: jsonb }
+        schedule_config: { source: agent_output, field: schedule_config, type: jsonb }
+        limits_config: { source: agent_output, field: limits_config, type: jsonb }
         created_at: { source: now }
+        updated_at: { source: now }
 
     - id: update_campaign_status
       table: campaigns
@@ -102,6 +225,7 @@ database:
         instantly_campaign_id: { source: instantly_response, field: id }
         sending_status: { value: "ready" }
         setup_completed_at: { source: now }
+        updated_at: { source: now }
 
 # ==============================================================================
 # CAMPAIGN CONFIG
@@ -111,50 +235,156 @@ campaign_config:
   sequence:
     - step: 1
       delay: 0
+      type: initial_email
     - step: 2
       delay_days: 3
       condition: no_reply
+      type: followup_1
     - step: 3
       delay_days: 5
       condition: no_reply
+      type: followup_2
     - step: 4
       delay_days: 7
       condition: no_reply
+      type: breakup
 
   schedule:
     days: [monday, tuesday, wednesday, thursday, friday]
     start_time: "09:00"
     end_time: "17:00"
     timezone: "America/New_York"
+    respect_recipient_timezone: true
 
   limits:
     per_account_daily: 50
     gap_between_emails_seconds: 120
+    max_new_leads_per_day: 100
+
+  warmup:
+    enabled: true
+    min_days_before_sending: 14
+    daily_limit_during_warmup: 20
+    increase_rate_per_day: 2
 
 # ==============================================================================
-# STEPS & OUTPUT
+# AGENT STEPS
 # ==============================================================================
 
 steps:
   - id: validate_prerequisites
     name: "Validate Prerequisites"
-    output: { total_leads: integer }
+    description: "Verify campaign is approved and has leads ready"
+
+    validations:
+      - check: campaign_approved
+        condition: "db_reads.get_campaign.status = 'approved_for_sending'"
+        error: "Campaign not approved for sending"
+
+      - check: has_leads
+        condition: "db_reads.get_lead_count.total_leads >= 1"
+        error: "No valid leads with generated emails"
+
+      - check: has_sending_accounts
+        condition: "LENGTH(db_reads.get_sending_accounts) >= 1"
+        error: "No active sending accounts available"
+
+    output:
+      total_leads: integer
+      accounts_available: integer
+      validation_passed: boolean
 
   - id: create_instantly_campaign
     name: "Create Campaign in Instantly"
     depends_on: [validate_prerequisites]
+
     tool: instantly_api
-    output: { instantly_campaign_id: string }
+    action: create_campaign
+
+    input:
+      name: "{{ db_reads.get_campaign.name }}"
+      schedule: "{{ campaign_config.schedule }}"
+      daily_limit: "{{ inputs.sending_limit_per_day }}"
+
+    output:
+      instantly_campaign_id: string
+      instantly_workspace_id: string
 
   - id: configure_sequence
-    name: "Configure Sequence"
+    name: "Configure Email Sequence"
     depends_on: [create_instantly_campaign]
-    output: { sequence_configured: boolean }
+
+    tool: instantly_api
+    action: add_sequence
+
+    input:
+      campaign_id: "{{ steps.create_instantly_campaign.instantly_campaign_id }}"
+      steps: "{{ campaign_config.sequence }}"
+
+    output:
+      sequence_configured: boolean
+      sequence_config: object
+
+  - id: configure_warmup
+    name: "Configure Warmup Settings"
+    depends_on: [create_instantly_campaign]
+    condition: "inputs.warmup_enabled = true"
+
+    tool: instantly_api
+    action: configure_warmup
+
+    input:
+      campaign_id: "{{ steps.create_instantly_campaign.instantly_campaign_id }}"
+      warmup_config: "{{ campaign_config.warmup }}"
+
+    output:
+      warmup_configured: boolean
 
   - id: finalize_setup
     name: "Finalize Setup"
-    depends_on: [configure_sequence]
-    output: { setup_complete: boolean }
+    depends_on: [configure_sequence, configure_warmup]
+
+    output:
+      setup_complete: boolean
+      schedule_config: object
+      limits_config: object
+
+# ==============================================================================
+# SYSTEM PROMPT
+# ==============================================================================
+
+system_prompt: |
+  You are a campaign setup specialist configuring email campaigns in Instantly.ai.
+
+  Setup Checklist:
+  1. Verify campaign prerequisites:
+     - Campaign status is 'approved_for_sending'
+     - At least 1 lead with valid email and generated email content
+     - At least 1 active sending account
+  2. Create campaign in Instantly with correct parameters
+  3. Configure 4-step email sequence:
+     - Step 1: Initial email (immediate)
+     - Step 2: Follow-up 1 (3 days, if no reply)
+     - Step 3: Follow-up 2 (5 days, if no reply)
+     - Step 4: Breakup (7 days, if no reply)
+  4. Set sending schedule (Mon-Fri, 9am-5pm EST)
+  5. Configure warmup if enabled
+  6. Verify setup completion
+
+  Critical Rules:
+  - NEVER skip warmup configuration for new accounts
+  - Verify sending accounts are active and healthy
+  - Respect daily sending limits per account
+  - Log all Instantly API responses for debugging
+
+  Error Handling:
+  - If Instantly API fails, retry with exponential backoff
+  - If account health is poor, exclude from campaign
+  - If setup partially fails, cleanup and retry
+
+# ==============================================================================
+# OUTPUT SCHEMA & SUCCESS CRITERIA
+# ==============================================================================
 
 outputs:
   schema:
@@ -162,12 +392,33 @@ outputs:
     required: [instantly_campaign_id, setup_complete]
     properties:
       instantly_campaign_id: { type: string }
+      instantly_workspace_id: { type: string }
       setup_complete: { type: boolean }
+      sequence_configured: { type: boolean }
+      warmup_configured: { type: boolean }
+      schedule_config: { type: object }
+      limits_config: { type: object }
+      total_leads: { type: integer }
+      accounts_used: { type: integer }
 
 success_criteria:
   hard:
     - id: campaign_created
       condition: "instantly_campaign_id IS NOT NULL"
+      description: "Campaign must be created in Instantly"
+
+    - id: sequence_configured
+      condition: "sequence_configured = true"
+      description: "Email sequence must be configured"
+
+  soft:
+    - id: warmup_enabled
+      condition: "warmup_configured = true OR inputs.warmup_enabled = false"
+      description: "Warmup should be configured if enabled"
+
+# ==============================================================================
+# HANDOFF
+# ==============================================================================
 
 handoff:
   to_agent: email_sending_agent
@@ -178,5 +429,12 @@ handoff:
     - field: instantly_campaign_id
       source: outputs.instantly_campaign_id
       required: true
+    - field: instantly_workspace_id
+      source: outputs.instantly_workspace_id
+      required: false
+    - field: total_leads
+      source: outputs.total_leads
+      required: true
   conditions:
     - "setup_complete = true"
+    - "sequence_configured = true"

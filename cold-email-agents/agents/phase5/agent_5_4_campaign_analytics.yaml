@@ -5,14 +5,16 @@
 # Purpose: Track metrics, generate reports, optimize campaigns
 # Execution: Scheduled analytics with real-time dashboards
 # Depends On: Reply Monitoring Agent (5.3)
+# Terminal: Yes - Final agent in Phase 5
 # ==============================================================================
 
 agent:
   id: campaign_analytics_agent
   name: "Campaign Analytics Agent"
-  version: "2.0.0"
+  version: "2.1.0"
   phase: 5
   phase_name: "Campaign Execution"
+  terminal: true
 
   description: |
     Tracks campaign performance metrics, generates daily/weekly reports,
@@ -25,6 +27,7 @@ agent:
 tool_configuration:
   discovery:
     enabled: true
+    check_on_startup: true
 
   required_tools:
     - name: instantly_api
@@ -34,6 +37,8 @@ tool_configuration:
         - get_campaign_analytics
         - get_email_stats
         - get_sequence_performance
+        - get_account_health
+        - pause_campaign
 
     - name: database_connection
       type: internal
@@ -43,9 +48,138 @@ tool_configuration:
     - name: google_sheets_api
       type: api
       use_for: report_export
+      fallback: csv_export
     - name: slack_api
       type: api
       use_for: daily_summaries
+      fallback: log_to_database
+    - name: email_api
+      type: api
+      use_for: report_delivery
+      fallback: skip
+
+  circuit_breakers:
+    instantly_api:
+      failure_threshold: 5
+      failure_rate_threshold: 0.3
+      recovery_timeout_seconds: 300
+      half_open_max_calls: 3
+
+    google_sheets_api:
+      failure_threshold: 3
+      recovery_timeout_seconds: 120
+
+    slack_api:
+      failure_threshold: 3
+      recovery_timeout_seconds: 60
+
+# ==============================================================================
+# ERROR HANDLING & RETRY
+# ==============================================================================
+
+error_handling:
+  global_circuit_breaker:
+    enabled: true
+    failure_threshold: 10
+    failure_rate_threshold: 0.5
+    minimum_calls: 20
+    recovery_timeout_seconds: 300
+
+  on_metrics_failure:
+    action: use_cached_metrics
+    max_cache_age_minutes: 60
+    log: true
+
+  on_report_failure:
+    action: retry_later
+    retry_after_minutes: 30
+    max_retries: 3
+
+retry:
+  default:
+    max_attempts: 5
+    strategy: exponential_jitter
+    base_delay_seconds: 10
+    max_delay_seconds: 300
+    retry_on:
+      - ConnectionError
+      - TimeoutError
+      - RateLimitError
+      - InstantlyAPIError
+      - ReportGenerationError
+    dont_retry_on:
+      - AuthenticationError
+      - CampaignNotFoundError
+      - InvalidDateRangeError
+
+  provider_overrides:
+    instantly_api:
+      max_attempts: 5
+      base_delay_seconds: 15
+
+    google_sheets_api:
+      max_attempts: 3
+      base_delay_seconds: 5
+
+    slack_api:
+      max_attempts: 2
+      base_delay_seconds: 2
+
+# ==============================================================================
+# RATE LIMITING
+# ==============================================================================
+
+rate_limits:
+  agent:
+    metrics_collections_per_hour: 60
+    reports_per_hour: 10
+    alerts_per_hour: 50
+
+  providers:
+    instantly_api:
+      rpm: 60
+      daily: 2000
+      concurrent: 3
+
+    google_sheets_api:
+      rpm: 30
+      daily: 500
+
+    slack_api:
+      rpm: 20
+      daily: 200
+
+# ==============================================================================
+# COST CONTROLS
+# ==============================================================================
+
+cost_controls:
+  enabled: true
+  budget:
+    max_per_day: 10.00
+    alert_at_percent: 80
+
+  tracking:
+    per_api_call: 0.001
+    per_report: 0.01
+
+  on_budget_exceeded:
+    action: pause_and_wait
+    alert: true
+    alert_channel: slack
+    alert_message: |
+      :warning: *Budget Alert - Campaign Analytics*
+      Campaign: {{ campaign.name }}
+      Budget used: {{ budget_used }} / {{ budget_limit }}
+      Reports generated today: {{ reports_today }}
+
+      Reply with:
+      • `continue` - Keep current analytics frequency (additional costs will apply)
+      • `reduce` - Reduce to hourly metrics only (skip detailed reports)
+      • `pause` - Pause analytics until tomorrow's budget resets
+    wait_for_response: true
+    timeout_minutes: 30
+    on_timeout: reduce
 
 # ==============================================================================
 # EXECUTION CONFIGURATION
@@ -57,16 +191,36 @@ execution:
     - id: hourly_metrics
       cron: "0 * * * *"  # Every hour
       action: collect_metrics
+      enabled: true
 
     - id: daily_report
       cron: "0 8 * * *"  # 8am daily
       action: generate_daily_report
+      timezone: "America/New_York"
+      enabled: true
 
     - id: weekly_report
       cron: "0 9 * * 1"  # 9am Monday
       action: generate_weekly_report
+      timezone: "America/New_York"
+      enabled: true
+
+    - id: alert_check
+      cron: "*/15 * * * *"  # Every 15 minutes
+      action: check_alerts
+      enabled: true
 
   timeout_seconds: 600
+
+  idempotency:
+    enabled: true
+    key_template: "analytics:{campaign_id}:{snapshot_type}:{date}"
+    ttl_hours: 24
+
+  checkpoint:
+    enabled: true
+    storage: postgresql
+    table: workflow_checkpoints
 
 # ==============================================================================
 # METRICS TRACKING
@@ -101,43 +255,64 @@ metrics:
   calculated_rates:
     - name: delivery_rate
       formula: "emails_delivered / emails_sent * 100"
+      format: percentage
+      precision: 2
 
     - name: open_rate
       formula: "emails_opened / emails_delivered * 100"
+      format: percentage
+      precision: 2
 
     - name: click_rate
       formula: "emails_clicked / emails_delivered * 100"
+      format: percentage
+      precision: 2
 
     - name: reply_rate
       formula: "emails_replied / emails_delivered * 100"
+      format: percentage
+      precision: 2
 
     - name: bounce_rate
       formula: "emails_bounced / emails_sent * 100"
+      format: percentage
+      precision: 2
 
   outcome_metrics:
     - name: interested_leads
       source: database
-      filter: "reply_status = 'interested'"
+      table: email_replies
+      filter: "category = 'interested'"
 
     - name: meetings_booked
       source: database
-      filter: "reply_status = 'meeting_request'"
+      table: email_replies
+      filter: "category = 'meeting_request'"
 
     - name: conversion_rate
       formula: "interested_leads / emails_delivered * 100"
+      format: percentage
+      precision: 2
 
   cost_metrics:
     - name: total_cost
-      sources: [scraping_cost, enrichment_cost, sending_cost]
+      sources: [scraping_cost, enrichment_cost, verification_cost, sending_cost]
+      aggregation: sum
 
     - name: cost_per_lead
       formula: "total_cost / emails_sent"
+      format: currency
+      precision: 4
 
     - name: cost_per_interested
       formula: "total_cost / interested_leads"
+      format: currency
+      precision: 2
 
     - name: cost_per_meeting
       formula: "total_cost / meetings_booked"
+      format: currency
+      precision: 2
 
 # ==============================================================================
 # BENCHMARKS & ALERTS
@@ -148,46 +323,74 @@ benchmarks:
     good: 50
     warning: 30
     critical: 15
+    unit: percent
 
   reply_rate:
     good: 5
     warning: 2
     critical: 0.5
+    unit: percent
 
   bounce_rate:
     good: 2
     warning: 5
     critical: 10
+    unit: percent
 
   conversion_rate:
     good: 3
     warning: 1
     critical: 0.3
+    unit: percent
+
+  delivery_rate:
+    good: 95
+    warning: 90
+    critical: 80
+    unit: percent
 
 alerts:
   - id: high_bounce_rate
     condition: "bounce_rate > 5"
     severity: warning
     action: pause_and_notify
-    message: "Bounce rate exceeds 5% - review list quality"
+    message: "Bounce rate exceeds 5% ({{ bounce_rate }}%) - review list quality"
+    cooldown_minutes: 60
 
   - id: critical_bounce_rate
     condition: "bounce_rate > 10"
     severity: critical
     action: pause_campaign
-    message: "Critical: Bounce rate exceeds 10% - campaign paused"
+    message: "Critical: Bounce rate exceeds 10% ({{ bounce_rate }}%) - campaign paused"
+    immediate: true
 
   - id: low_open_rate
-    condition: "open_rate < 15"
+    condition: "open_rate < 15 AND emails_sent > 200"
     severity: warning
     action: notify
-    message: "Open rate below 15% - review subject lines"
+    message: "Open rate below 15% ({{ open_rate }}%) - review subject lines"
+    cooldown_minutes: 240
 
   - id: no_replies
     condition: "emails_sent > 500 AND emails_replied = 0"
     severity: warning
     action: notify
     message: "No replies after 500 emails - review messaging"
+    cooldown_minutes: 480
+
+  - id: high_unsubscribe_rate
+    condition: "unsubscribe_rate > 1"
+    severity: warning
+    action: notify
+    message: "Unsubscribe rate exceeds 1% - review targeting"
+    cooldown_minutes: 240
+
+  - id: excellent_performance
+    condition: "reply_rate > 10 AND open_rate > 60"
+    severity: info
+    action: notify
+    message: "Excellent campaign performance! Reply rate: {{ reply_rate }}%"
+    cooldown_minutes: 1440
 
 # ==============================================================================
 # INPUTS & DATABASE
@@ -198,16 +401,35 @@ inputs:
     - name: campaign_id
       type: string
       format: uuid
+      source: handoff.reply_monitoring_agent.campaign_id
+
+  optional:
+    - name: instantly_campaign_id
+      type: string
+      source: handoff.reply_monitoring_agent.instantly_campaign_id
+    - name: report_recipients
+      type: array
+      default: []
+    - name: timezone
+      type: string
+      default: "America/New_York"
 
 database:
   reads:
     - id: get_campaign
       table: campaigns
+      operation: SELECT
+      fields: [id, name, niche_id, status, created_at, total_replies,
+               interested_count, meetings_booked, bounce_count,
+               current_open_rate, current_reply_rate, current_bounce_rate]
       filter: "id = :campaign_id"
       required: true
 
     - id: get_instantly_stats
       table: instantly_campaigns
+      operation: SELECT
+      fields: [instantly_campaign_id, status, leads_uploaded, emails_sent,
+               last_sync_at]
       filter: "campaign_id = :campaign_id"
       required: true
 
@@ -234,11 +456,30 @@ database:
           COUNT(*) as total,
           COUNT(CASE WHEN sending_status = 'sent' THEN 1 END) as sent,
           COUNT(CASE WHEN reply_status = 'interested' THEN 1 END) as interested,
-          COUNT(CASE WHEN reply_status = 'meeting_request' THEN 1 END) as meetings
+          COUNT(CASE WHEN reply_status = 'meeting_request' THEN 1 END) as meetings,
+          COUNT(CASE WHEN reply_status = 'not_interested' THEN 1 END) as not_interested,
+          COUNT(CASE WHEN reply_status = 'bounce' THEN 1 END) as bounced
         FROM leads
         WHERE campaign_id = :campaign_id
         GROUP BY lead_tier
+        ORDER BY lead_tier
       required: true
+
+    - id: get_previous_metrics
+      table: campaign_metrics
+      operation: SELECT
+      fields: [metrics, calculated_rates, collected_at]
+      filter: "campaign_id = :campaign_id AND snapshot_type = :snapshot_type"
+      order_by: "collected_at DESC"
+      limit: 1
+      required: false
+
+    - id: get_active_alerts
+      table: campaign_alerts
+      operation: SELECT
+      fields: [id, alert_type, severity, message, created_at]
+      filter: "campaign_id = :campaign_id AND status = 'active'"
+      required: false
 
   writes:
     - id: save_metrics_snapshot
@@ -251,8 +492,15 @@ database:
         snapshot_type: { source: collection, field: type }
         metrics: { source: collection, field: metrics, type: jsonb }
         calculated_rates: { source: collection, field: rates, type: jsonb }
+        outcome_metrics: { source: collection, field: outcomes, type: jsonb }
+        cost_metrics: { source: collection, field: costs, type: jsonb }
         benchmark_status: { source: collection, field: benchmarks, type: jsonb }
+        tier_breakdown: { source: collection, field: tier_breakdown, type: jsonb }
+        compared_to_previous: { source: collection, field: comparison, type: jsonb }
+        period_start: { source: collection, field: period_start }
+        period_end: { source: collection, field: period_end }
         collected_at: { source: now }
+        created_at: { source: now }
 
     - id: save_alert
       table: campaign_alerts
@@ -264,8 +512,27 @@ database:
         alert_type: { source: alert, field: id }
         severity: { source: alert, field: severity }
         message: { source: alert, field: message }
+        details: { source: alert, field: details, type: jsonb }
+        metric_name: { source: alert, field: metric_name }
+        metric_value: { source: alert, field: metric_value }
+        threshold_value: { source: alert, field: threshold }
         action_taken: { source: alert, field: action }
+        action_completed_at: { source: action, field: completed_at }
+        status: { value: "active" }
         created_at: { source: now }
+        updated_at: { source: now }
+
+    - id: update_campaign_metrics
+      table: campaigns
+      operation: UPDATE
+      timing: per_collection
+      filter: "id = :campaign_id"
+      fields:
+        current_open_rate: { source: collection, field: open_rate }
+        current_reply_rate: { source: collection, field: reply_rate }
+        current_bounce_rate: { source: collection, field: bounce_rate }
+        last_metrics_at: { source: now }
+        updated_at: { source: now }
 
 # ==============================================================================
 # REPORT TEMPLATES
@@ -273,45 +540,80 @@ database:
 
 reports:
   daily:
+    name: "Daily Campaign Report"
     sections:
       - title: "Today's Performance"
-        metrics: [emails_sent, emails_opened, emails_replied]
+        metrics: [emails_sent, emails_opened, emails_replied, emails_bounced]
         compare_to: yesterday
+        show_delta: true
 
       - title: "Rates"
-        metrics: [open_rate, reply_rate, bounce_rate]
+        metrics: [open_rate, reply_rate, bounce_rate, delivery_rate]
         show_benchmarks: true
+        color_code: true
 
       - title: "Outcomes"
         metrics: [interested_leads, meetings_booked]
+        show_cumulative: true
 
-      - title: "Alerts"
+      - title: "Active Alerts"
         show_active_alerts: true
+        max_alerts: 5
+
+    delivery:
+      slack:
+        channel: "#campaign-reports"
+        format: summary_with_charts
+      email:
+        to: "{{ report_recipients }}"
+        subject: "Daily Campaign Report: {{ campaign.name }}"
 
   weekly:
+    name: "Weekly Campaign Report"
     sections:
       - title: "Weekly Summary"
         metrics: [emails_sent, emails_delivered, emails_replied]
         compare_to: last_week
+        show_delta: true
+        show_trend: true
 
       - title: "Performance Trends"
         charts:
           - type: line
             metric: open_rate
             period: daily
+            days: 7
           - type: line
             metric: reply_rate
             period: daily
+            days: 7
+          - type: bar
+            metric: replies_by_category
+            period: weekly
 
       - title: "Tier Performance"
-        breakdown_by: score_tier
-        metrics: [sent, replied, conversion_rate]
+        breakdown_by: lead_tier
+        metrics: [sent, replied, interested, conversion_rate]
+        show_best_performer: true
 
       - title: "Cost Analysis"
-        metrics: [total_cost, cost_per_lead, cost_per_interested]
+        metrics: [total_cost, cost_per_lead, cost_per_interested, cost_per_meeting]
+        show_roi: true
 
       - title: "Recommendations"
         auto_generate: true
+        based_on: [benchmark_status, tier_performance, trends]
+
+    delivery:
+      slack:
+        channel: "#campaign-reports"
+        format: full_report
+      google_sheets:
+        append_to: "Campaign Reports {{ current_year }}"
+        create_new_tab: true
+      email:
+        to: "{{ report_recipients }}"
+        subject: "Weekly Campaign Report: {{ campaign.name }}"
 
 # ==============================================================================
 # AGENT STEPS
@@ -322,18 +624,21 @@ steps:
     name: "Collect Campaign Metrics"
     description: "Fetch metrics from Instantly and database"
 
-    sources:
+    parallel_sources:
       - instantly_api: get_campaign_analytics
       - database: get_reply_stats
       - database: get_lead_performance
 
     calculations:
       - apply: calculated_rates
+      - apply: outcome_metrics
       - apply: cost_metrics
 
     output:
       metrics: object
       rates: object
+      outcomes: object
+      costs: object
 
   - id: check_benchmarks
     name: "Check Against Benchmarks"
@@ -348,6 +653,20 @@ steps:
       benchmark_results: object
       alerts_triggered: array
 
+  - id: compare_to_previous
+    name: "Compare to Previous Period"
+    depends_on: [collect_metrics]
+
+    comparison:
+      current: "{{ steps.collect_metrics.metrics }}"
+      previous: "{{ db_reads.get_previous_metrics.metrics }}"
+      calculate: [delta, percent_change, trend]
+
+    output:
+      comparison: object
+      improvements: array
+      declines: array
+
   - id: trigger_alerts
     name: "Trigger Alerts if Needed"
     depends_on: [check_benchmarks]
@@ -355,6 +674,8 @@ steps:
     for_each: alerts_triggered
 
     actions:
+      info:
+        - log_alert
       warning:
         - send_slack_notification
         - log_alert
@@ -362,19 +683,29 @@ steps:
         - pause_campaign
         - send_urgent_notification
         - log_alert
+        - notify_on_call
 
     output:
       alerts_sent: integer
+      campaigns_paused: boolean
 
   - id: generate_report
     name: "Generate Report"
-    depends_on: [check_benchmarks]
+    depends_on: [check_benchmarks, compare_to_previous]
     condition: "schedule_type IN ('daily_report', 'weekly_report')"
 
     template: "{{ schedule_type == 'daily_report' ? reports.daily : reports.weekly }}"
 
+    include:
+      - metrics: "{{ steps.collect_metrics }}"
+      - benchmarks: "{{ steps.check_benchmarks.benchmark_results }}"
+      - comparison: "{{ steps.compare_to_previous.comparison }}"
+      - tier_breakdown: "{{ db_reads.get_lead_performance }}"
+      - active_alerts: "{{ db_reads.get_active_alerts }}"
+
     output:
       report_generated: boolean
+      report_data: object
       report_url: string
 
   - id: send_report
@@ -386,13 +717,17 @@ steps:
       - slack:
           channel: "#campaign-reports"
           format: summary_with_link
+          fallback: log_to_database
       - google_sheets:
           append_to: "Campaign Reports {{ current_year }}"
+          fallback: skip
       - email:
-          to: "{{ campaign_owner_email }}"
+          to: "{{ inputs.report_recipients }}"
+          fallback: skip
 
     output:
       report_sent: boolean
+      delivery_status: object
 
 # ==============================================================================
 # SYSTEM PROMPT
@@ -402,26 +737,38 @@ system_prompt: |
   You are a campaign analytics specialist tracking cold email performance.
 
   Key Metrics to Monitor:
-  - Delivery rate (target: >95%)
-  - Open rate (target: >50%)
-  - Reply rate (target: >5%)
-  - Bounce rate (warning: >5%, critical: >10%)
-  - Conversion rate (interested / delivered)
+  - Delivery rate: Target >95% (critical if <80%)
+  - Open rate: Target >50% (warning if <30%, critical if <15%)
+  - Reply rate: Target >5% (warning if <2%, critical if <0.5%)
+  - Bounce rate: Warning if >5%, critical if >10%
+  - Conversion rate: interested / delivered
 
-  Benchmarks:
+  Benchmarks (industry standard for cold email):
   - Good open rate: 50%+
   - Good reply rate: 5%+
   - Acceptable bounce rate: <2%
+  - Good conversion rate: 3%+
 
   Alert Priorities:
-  1. Critical: High bounce rate (>10%) - pause immediately
-  2. Warning: Low open rate (<15%) - review subject lines
-  3. Warning: No replies after 500 sends - review messaging
+  1. CRITICAL: High bounce rate (>10%) - PAUSE IMMEDIATELY
+  2. CRITICAL: Delivery rate <80% - investigate domain issues
+  3. WARNING: Low open rate (<15%) - review subject lines
+  4. WARNING: No replies after 500 sends - review messaging
+  5. WARNING: High unsubscribe rate (>1%) - review targeting
 
   Report Focus:
-  - Compare to previous period
+  - Compare to previous period (show improvement/decline)
   - Highlight wins and concerns
+  - Break down by tier (A/B/C performance)
   - Provide actionable recommendations
+  - Track cost efficiency (cost per interested lead, cost per meeting)
+
+  Recommendations to Generate:
+  - If open rate low: suggest subject line A/B testing
+  - If reply rate low: suggest messaging review
+  - If Tier A underperforming: suggest persona refinement
+  - If bounce rate high: suggest list verification
+  - If cost per meeting high: suggest qualification improvements
 
 # ==============================================================================
 # OUTPUT SCHEMA
@@ -438,18 +785,35 @@ outputs:
           emails_sent: { type: integer }
           emails_delivered: { type: integer }
           emails_opened: { type: integer }
+          emails_clicked: { type: integer }
           emails_replied: { type: integer }
           emails_bounced: { type: integer }
       rates:
         type: object
         properties:
+          delivery_rate: { type: number }
           open_rate: { type: number }
+          click_rate: { type: number }
           reply_rate: { type: number }
           bounce_rate: { type: number }
           conversion_rate: { type: number }
+      outcomes:
+        type: object
+        properties:
+          interested_leads: { type: integer }
+          meetings_booked: { type: integer }
+      costs:
+        type: object
+        properties:
+          total_cost: { type: number }
+          cost_per_lead: { type: number }
+          cost_per_interested: { type: number }
+          cost_per_meeting: { type: number }
       benchmark_status: { type: object }
       alerts_triggered: { type: array }
+      comparison: { type: object }
       report_url: { type: string }
+      report_sent: { type: boolean }
 
 # ==============================================================================
 # SUCCESS CRITERIA
@@ -459,6 +823,43 @@ success_criteria:
   hard:
     - id: metrics_collected
       condition: "metrics IS NOT NULL"
+      description: "Metrics must be collected successfully"
+
   soft:
     - id: healthy_campaign
       condition: "bounce_rate < 5 AND reply_rate > 1"
+      description: "Campaign should be performing within healthy parameters"
+
+    - id: report_delivered
+      condition: "report_sent = true OR schedule_type NOT IN ('daily_report', 'weekly_report')"
+      description: "Reports should be delivered when scheduled"
+
+    - id: no_critical_alerts
+      condition: "critical_alerts_count = 0"
+      description: "No critical alerts should be active"
+
+# ==============================================================================
+# HANDOFF - TERMINAL AGENT
+# ==============================================================================
+
+handoff:
+  terminal: true
+  description: "Final agent in Phase 5 - Campaign Execution"
+
+  # Can loop back to reply monitoring for continuous operation
+  continuous_loop:
+    enabled: true
+    to_agent: reply_monitoring_agent
+    trigger: on_schedule
+    interval_minutes: 60
+
+  # Phase completion criteria
+  phase_completion:
+    conditions:
+      - campaign_status: completed
+      - emails_sent: all_queued
+      - monitoring_duration_days: 30
+    actions:
+      - generate_final_report: true
+      - archive_campaign: true
+      - update_status: "completed"
