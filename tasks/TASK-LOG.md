@@ -4,6 +4,14 @@ Chronological record of completed tasks.
 
 | Date | Domain | Task | Status | Feature |
 |------|--------|------|--------|---------|
+| 2025-12-27 | backend | 001-phase5-campaign-setup-agent | COMPLETED | Campaign Setup Agent (Phase 5.1) - Instantly campaign creation, 4-step sequences, warmup, 6 SDK MCP tools |
+| 2025-12-27 | backend | 002-phase5-email-sending-agent | COMPLETED | Email Sending Agent (Phase 5.2) - Parallel batch uploads, circuit breaker, rate limiter, resume capability, 6 SDK MCP tools |
+| 2025-12-26 | backend | 001-phase4-company-research-agent | COMPLETED | Company Research Agent (Phase 4.1) - Parallel batch processing, 6 SDK MCP tools, tiered API strategy |
+| 2025-12-26 | backend | 004-phase4-personalization-finalizer-agent | COMPLETED | Personalization Finalizer Agent (Phase 4.4) - Stats compilation, Google Sheets export, Telegram approval gate |
+| 2025-12-26 | backend | 002-phase4-lead-research-agent | COMPLETED | Lead Research Agent (Phase 4.2) - Tier-based research, fact extraction with scoring, SDK MCP tools |
+| 2025-12-26 | backend | 003-phase4-email-generation-agent | COMPLETED | Email Generation Agent (Phase 4.3) - AI email generation with quality scoring, tier-based frameworks, personalization library |
+| 2025-12-26 | backend | phase4-task-creation | COMPLETED | Created 4 comprehensive Phase 4 task files with full checklists, testing requirements, and SDK patterns |
+| 2025-12-26 | backend | phase4-schema-migration | COMPLETED | Created Alembic migration for Phase 4/5 (generated_emails, instantly_campaigns, sending_logs tables) |
 | 2025-12-26 | backend | 012-verification-finalizer-agent | COMPLETED | Verification Finalizer Agent (Phase 3, Agent 3.3) - Quality reports, Google Sheets export, Telegram approval |
 | 2025-12-25 | backend | 010-email-verification-agent | COMPLETED | Email Verification Agent (Phase 3, Agent 3.1) - Waterfall email finding/verification with 7 providers |
 | 2025-12-25 | backend | phase3-task-updates | COMPLETED | Updated Phase 3 tasks (010, 011, 012) with correct provider order and repository APIs |
@@ -26,7 +34,198 @@ Chronological record of completed tasks.
 
 ---
 
+## 2025-12-27
+
+### Completed: Campaign Setup Agent (Phase 5.1)
+
+**Agent:** `src/agents/campaign_setup/`
+**Tests:** 49 unit tests, 100% pass rate
+**Status:** Phase 5 entry agent - creates campaigns in Instantly.ai
+
+**Core Components:**
+- `schemas.py` - EmailSequenceStep, SendingSchedule, CampaignSetupResult, PrerequisiteCheckResult
+- `tools.py` - 6 SDK MCP tools for campaign creation, warmup, and lead management
+- `agent.py` - CampaignSetupAgent with 4-step email sequence defaults
+
+**SDK MCP Tools:**
+1. `validate_campaign_prerequisites` - Check campaign approved, has leads, has accounts
+2. `create_instantly_campaign` - Create campaign with sequence, schedule, accounts
+3. `configure_warmup` - Enable warmup for sending accounts
+4. `add_leads_to_campaign` - Bulk add leads with personalization variables
+5. `update_campaign_setup_complete` - Store Instantly campaign ID in database
+6. `send_setup_notification` - Slack notification on completion
+
+**Extended Integrations:**
+- `src/integrations/instantly.py` - Added AccountStatus, WarmupStatus enums, EmailAccount dataclass, list_accounts(), enable_warmup_for_accounts(), disable_warmup_for_accounts(), get_warmup_analytics(), get_background_job()
+- `src/integrations/slack.py` (NEW) - Minimal async client for campaign notifications
+
+**Default Configuration:**
+- 4-step email sequence (Day 0, +3, +4, +7)
+- Business hours schedule (9-5 EST, weekdays)
+- 50 emails/day limit per account
+- Warmup enabled by default
+
+**SDK Patterns:**
+- @tool decorator with `# type: ignore[misc]` (LEARN-017)
+- Import inside @tool functions (LEARN-003)
+- get_session() async context manager
+- MCP tool response format: `{content: [...], is_error: bool}`
+
+**Commit:** `da292d1`
+
+---
+
 ## 2025-12-26
+
+### Completed: Company Research Agent (Phase 4.1)
+
+**Agent:** `src/agents/company_research/`
+**Tests:** 55 unit tests, 100% pass rate
+**Status:** Phase 4 entry agent - researches companies for personalization
+
+**Core Components:**
+- `schemas.py` - CompanyToResearch, ResearchResult, ExtractedFact, CostTracker dataclasses
+- `prompts.py` - System prompt for company research context
+- `tools.py` - 6 SDK MCP tools for search, extraction, and aggregation
+- `agent.py` - CompanyResearchAgent with parallel batch processing (20+ companies)
+
+**SDK MCP Tools:**
+1. `search_company_news` - Search recent news, press releases, announcements (6 months)
+2. `search_company_funding` - Search funding rounds, investments, financial milestones
+3. `search_company_hiring` - Search job postings, team growth, new hires
+4. `search_company_tech` - Search product launches, technology initiatives
+5. `extract_and_score_facts` - Extract and score facts (recency 30%, specificity 25%, relevance 25%, hook 20%)
+6. `aggregate_company_research` - Combine results and generate primary personalization hook
+
+**Key Features:**
+- Tiered tool strategy: FREE (web_search) → CHEAP (serper/tavily) → MODERATE (perplexity)
+- Parallel batch processing with asyncio.Semaphore (20 concurrent companies)
+- Cost tracking: $0.10/company max, $100/campaign max, 80% budget alerts
+- Rate limiting with TokenBucketRateLimiter
+- Circuit breaker pattern for API resilience
+- Database models: company_research_data, extracted_facts tables
+
+**Commit:** `897e320` - feat(agents): implement Company Research Agent (Phase 4.1)
+
+---
+
+### Completed: Personalization Finalizer Agent (Phase 4.4)
+
+**Agent:** `src/agents/personalization_finalizer/`
+**Tests:** 68 unit tests, 100% pass rate
+**Status:** Phase 4 completion gate - creates human approval workflow
+
+**Core Components:**
+- `reports.py` - PersonalizationReport, TierBreakdown, FrameworkUsage, QualityDistribution dataclasses
+- `exports.py` - EmailSamplesExporter for Google Sheets integration
+- `tools.py` - 6 SDK MCP tools for stats, reports, exports, notifications
+- `agent.py` - PersonalizationFinalizerAgent with SDK async iterator pattern
+
+**SDK MCP Tools:**
+1. `get_personalization_stats` - Compile quality metrics from generated_emails
+2. `generate_personalization_report` - Create structured report from stats
+3. `get_email_samples` - Retrieve top samples per tier for review
+4. `export_emails_to_sheets` - Export to Google Sheets with summary sheet
+5. `send_phase4_approval_notification` - Telegram notification with metrics
+6. `update_campaign_personalization_complete` - Mark campaign ready for Phase 5
+
+**Quality Metrics:**
+- Tier breakdown (A/B/C counts, avg quality)
+- Framework usage distribution (PAS, BAB, AIDA, etc.)
+- Personalization level stats (hyper_personalized, personalized, templated)
+- Quality distribution (excellent 80+, good 60-79, acceptable 40-59, needs_improvement 0-39)
+
+**Handoff:**
+- **Input:** `generated_emails` table (from Agent 4.3)
+- **Output:** `campaigns.personalization_summary`, `campaigns.email_samples_url`
+- **Gate:** Human approval required before Phase 5 (Campaign Execution)
+
+---
+
+### Completed: Lead Research Agent (Phase 4.2)
+
+**Agent:** `src/agents/lead_research/`
+**Tests:** 56 unit tests, 100% pass rate
+**Migration:** `20251226_add_lead_research_tables.py`
+
+**Core Components:**
+- `schemas.py` - LeadData, TierConfig, ResearchResult, COST_CONTROLS
+- `tools.py` - 5 SDK MCP tools for research
+- `fact_extractor.py` - Weighted fact scoring engine
+- `agent.py` - LeadResearchAgent with tier-based research
+
+**SDK MCP Tools:**
+1. `search_linkedin_posts` - Tavily search for LinkedIn posts
+2. `search_linkedin_profile` - Serper search for profile info
+3. `search_articles_authored` - Tavily search filtering LinkedIn
+4. `search_podcast_appearances` - Tavily with podcast keywords
+5. `analyze_headline` - Zero-cost keyword/hook extraction
+
+**Tier-Based Research:**
+- **Tier A ($0.15 max):** Deep research - posts, profile, articles, podcasts
+- **Tier B ($0.05 max):** Standard - posts, profile, articles
+- **Tier C ($0.01 max):** Basic - headline analysis only (zero cost)
+
+**Fact Scoring (Weighted):**
+- Recency: 30% (60-day decay)
+- Specificity: 25% (numbers, details)
+- Business Relevance: 25% (keywords)
+- Emotional Hook: 20% (achievement, passion)
+
+**Features:**
+- Cost tracking per lead, tier, and campaign
+- Circuit breakers per service (Tavily, Serper, Perplexity)
+- Rate limiters per service
+- Parallel research with asyncio.Semaphore (30 concurrent)
+- Fallback to company research when no angles found
+
+---
+
+### Completed: Phase 4 Task Files & Schema Migration
+
+**Schema Migration (20251226_add_phase4_phase5_schema.py):**
+- Created Alembic migration for Phase 4/5 database requirements
+- **New Tables:**
+  - `generated_emails` - Stores AI-generated personalized emails with quality scores
+  - `instantly_campaigns` - Tracks Instantly.ai campaign mappings
+  - `sending_logs` - Logs email sending batches
+- **Columns Added to `leads`:**
+  - `company_research_id`, `lead_research_id` - FK references to research tables
+  - `generated_email_id` - FK to generated_emails
+  - `email_generation_status` - Status tracking
+  - `sending_status`, `queued_at` - Phase 5 sending tracking
+- **Columns Added to `campaigns`:**
+  - Phase 4: `email_samples_url`, `personalization_summary`, `total_emails_generated`, `avg_email_quality`, `personalization_completed_at`
+  - Phase 3→4 handoff: `verified_lead_list_url`, `verification_summary`, `total_leads_ready`
+  - Phase 5: `sending_status`, `setup_completed_at`, `sending_approved_at/by`, `sending_scope`, `leads_queued`
+
+**Task Files Created:**
+- `tasks/backend/pending/001-phase4-company-research-agent.md` - Company Research Agent (Agent 4.1)
+- `tasks/backend/pending/002-phase4-lead-research-agent.md` - Lead Research Agent (Agent 4.2)
+- `tasks/backend/pending/003-phase4-email-generation-agent.md` - Email Generation Agent (Agent 4.3)
+- `tasks/backend/pending/004-phase4-personalization-finalizer-agent.md` - Personalization Finalizer Agent (Agent 4.4)
+
+**Task File Structure (Comprehensive):**
+- MUST-DO CHECKLIST with context & SDK requirements
+- Self-Healing & Learning requirements (read SELF-HEALING.md)
+- Summary with tool priority and cost controls
+- Database schema documentation
+- Files to create/modify (detailed listing)
+- Implementation checklist with phases
+- Verification commands (pytest, ruff, mypy, make check)
+- Output schema (JSON format)
+- Handoff information
+
+**YAML Fixes Applied (v2.0.0 → v2.1.0):**
+- Fixed table names (`company_research` → `company_research_data`, etc.)
+- Added error_handling blocks with circuit breakers
+- Added retry configurations with exponential jitter
+- Added cost_controls per campaign and per-item
+- Added rate limits for each API tool
+- Added checkpoint/resume via workflow_checkpoints table
+- Integrated with existing tables (extracted_facts, personalization_library, ranked_angles)
+
+---
 
 ### Completed: 012-verification-finalizer-agent
 - **Implemented:** Verification Finalizer Agent (Phase 3, Agent 3.3)
